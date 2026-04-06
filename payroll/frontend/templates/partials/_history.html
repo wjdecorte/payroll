@@ -1,0 +1,47 @@
+{# _history.html — list of saved payroll runs #}
+{# Context var: history (list of run dicts) #}
+
+{% if history %}
+<table class="table table-sm mb-0 history-table">
+  <thead class="table-light">
+    <tr>
+      <th>Period</th>
+      <th class="text-end">Gross</th>
+      <th class="text-end">Net Pay</th>
+      <th class="no-print" style="width:2.5rem"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in history %}
+    <tr hx-get="/htmx/runs/{{ run.id }}"
+        hx-target="#results-panel"
+        hx-swap="innerHTML"
+        title="Load run #{{ run.id }}{% if run.notes %} — {{ run.notes }}{% endif %}">
+      <td>
+        {{ run.payPeriod }}
+        {% if run.notes %}
+        <div class="text-muted" style="font-size:.72rem">{{ run.notes }}</div>
+        {% endif %}
+      </td>
+      <td class="text-end">{{ run.grossSalary | currency }}</td>
+      <td class="text-end">{{ run.netPay | currency }}</td>
+      <td class="text-end no-print">
+        <button class="btn btn-sm btn-outline-danger py-0 px-1"
+                hx-delete="/htmx/runs/{{ run.id }}"
+                hx-target="#history-panel"
+                hx-swap="innerHTML"
+                hx-confirm="Delete run for {{ run.payPeriod }}?"
+                title="Delete this run"
+                onclick="event.stopPropagation()">
+          <i class="bi bi-trash3" style="font-size:.75rem"></i>
+        </button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="p-3 text-center text-muted" style="font-size:.82rem">
+  <i class="bi bi-inbox me-1"></i>No saved runs yet.
+</div>
+{% endif %}

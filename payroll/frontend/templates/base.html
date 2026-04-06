@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}S-Corp Payroll{% endblock %}</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <!-- HTMX -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
+
+  <style>
+    :root {
+      --brand:        #1a4a8a;
+      --brand-dark:   #113264;
+      --brand-light:  #e8f0fc;
+      --success:      #2e7d32;
+      --debit-bg:     #fff8e1;
+      --credit-bg:    #e8f5e9;
+      --sidebar-w:    300px;
+    }
+
+    body {
+      background: #f0f2f5;
+      font-size: 0.9rem;
+      min-height: 100vh;
+    }
+
+    /* ── Topbar ────────────────────────────────────────────────── */
+    .topbar {
+      background: var(--brand);
+      color: #fff;
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    }
+    .topbar .brand { font-size: 1.1rem; font-weight: 700; letter-spacing: .02em; }
+    .topbar .meta  { font-size: 0.75rem; opacity: .75; }
+
+    /* ── Layout ────────────────────────────────────────────────── */
+    .layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 1.25rem;
+      padding: 1.25rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    /* ── Cards ─────────────────────────────────────────────────── */
+    .card {
+      border: none;
+      border-radius: 10px;
+      box-shadow: 0 1px 6px rgba(0,0,0,.08);
+      margin-bottom: 1rem;
+    }
+    .card-header {
+      font-weight: 600;
+      font-size: 0.82rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      border-radius: 10px 10px 0 0 !important;
+      padding: 0.6rem 1rem;
+    }
+    .card-header.bg-primary   { background: var(--brand) !important; color: #fff; }
+    .card-header.bg-success   { background: var(--success) !important; color: #fff; }
+    .card-header.bg-warning   { background: #e65100 !important; color: #fff; }
+    .card-header.bg-secondary { background: #546e7a !important; color: #fff; }
+    .card-header.bg-info      { background: #0277bd !important; color: #fff; }
+    .card-header.bg-dark      { background: #37474f !important; color: #fff; }
+
+    /* ── Form elements ──────────────────────────────────────────── */
+    .form-label { font-weight: 600; font-size: 0.8rem; color: #37474f; margin-bottom: 2px; }
+    .input-group-text { background: var(--brand-light); color: var(--brand); font-weight: 700; border-color: #c5d5f0; }
+    .form-control, .form-select { border-color: #c5d5f0; font-size: 0.88rem; }
+    .form-control:focus, .form-select:focus { border-color: var(--brand); box-shadow: 0 0 0 .2rem rgba(26,74,138,.15); }
+    .form-check-label { font-size: 0.82rem; }
+    .section-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #90a4ae; margin: 1rem 0 0.4rem; }
+
+    /* ── Buttons ────────────────────────────────────────────────── */
+    .btn-brand { background: var(--brand); color: #fff; border: none; font-weight: 600; }
+    .btn-brand:hover { background: var(--brand-dark); color: #fff; }
+    .btn-brand:disabled { background: #90a4ae; }
+
+    /* ── Summary rows ───────────────────────────────────────────── */
+    .s-row { display: flex; justify-content: space-between; padding: .3rem 0; border-bottom: 1px solid #eee; }
+    .s-row:last-child { border: none; }
+    .s-row.total { font-weight: 700; font-size: 1rem; border-top: 2px solid #333; padding-top: .5rem; margin-top: .25rem; }
+    .s-row.net   { font-weight: 700; font-size: 1.1rem; color: var(--success); }
+    .s-row.er    { color: #546e7a; }
+    .amount-neg  { color: #c62828; }
+    .amount-pos  { color: var(--success); }
+
+    /* ── Journal entries ────────────────────────────────────────── */
+    .je-card { border-radius: 8px; overflow: hidden; margin-bottom: .75rem; border: 1px solid #e0e0e0; }
+    .je-title { background: #37474f; color: #fff; padding: .45rem .9rem; font-weight: 600; font-size: 0.82rem; }
+    .je-note  { background: #fffde7; padding: .3rem .9rem; font-size: 0.78rem; color: #5d4037; border-bottom: 1px solid #f9a825; }
+    .je-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .je-table th { background: #eceff1; padding: .3rem .6rem; font-weight: 600; color: #37474f; border-bottom: 2px solid #cfd8dc; text-align: left; }
+    .je-table th.r, .je-table td.r { text-align: right; }
+    .je-table td { padding: .28rem .6rem; border-bottom: 1px solid #f0f0f0; }
+    .je-table tr.dr-row { background: var(--debit-bg); }
+    .je-table tr.cr-row { background: var(--credit-bg); }
+    .je-table tr.cr-row td.account { padding-left: 1.6rem; font-style: italic; }
+    .je-table tr.tot-row td { font-weight: 700; background: #eceff1; border-top: 2px solid #b0bec5; }
+    .badge-dr { background: #f57f17; color: #fff; border-radius: 3px; padding: 1px 5px; font-size: .7rem; font-weight: 700; }
+    .badge-cr { background: var(--success); color: #fff; border-radius: 3px; padding: 1px 5px; font-size: .7rem; font-weight: 700; }
+
+    /* ── History table ──────────────────────────────────────────── */
+    .history-table { font-size: 0.82rem; }
+    .history-table tbody tr { cursor: pointer; }
+    .history-table tbody tr:hover { background: var(--brand-light); }
+    .history-table td, .history-table th { vertical-align: middle; }
+
+    /* ── HTMX indicators ────────────────────────────────────────── */
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator { display: inline-block; }
+    .htmx-request.htmx-indicator { display: inline-block; }
+
+    /* ── Misc ───────────────────────────────────────────────────── */
+    .tax-note { font-size: 0.73rem; color: #90a4ae; margin-top: 2px; }
+    .results-placeholder {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 300px; color: #b0bec5;
+    }
+    .results-placeholder i { font-size: 3rem; margin-bottom: .5rem; }
+
+    @media print {
+      .topbar, .no-print { display: none !important; }
+      body { background: #fff; }
+      .card { box-shadow: none !important; border: 1px solid #ddd !important; }
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<div class="topbar no-print">
+  <div>
+    <span class="brand"><i class="bi bi-building me-2"></i>S-Corp Payroll Calculator</span>
+  </div>
+  <div class="meta">Georgia &nbsp;·&nbsp; Single Filing &nbsp;·&nbsp; Monthly &nbsp;·&nbsp; Tax Year 2026</div>
+</div>
+
+{% block content %}{% endblock %}
+
+<!-- Bootstrap JS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

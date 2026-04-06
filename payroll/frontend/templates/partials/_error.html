@@ -1,0 +1,14 @@
+{# _error.html — API or server error fragment #}
+{# Context vars: message (str), status_code (int, optional) #}
+
+<div class="alert alert-danger d-flex align-items-start gap-2 m-0" role="alert">
+  <i class="bi bi-exclamation-octagon-fill flex-shrink-0 mt-1"></i>
+  <div>
+    {% if status_code %}
+    <strong>Error {{ status_code }}</strong> —
+    {% else %}
+    <strong>Error</strong> —
+    {% endif %}
+    {{ message }}
+  </div>
+</div>

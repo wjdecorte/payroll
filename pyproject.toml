@@ -1,0 +1,65 @@
+[project]
+name = "payroll"
+version = "1.0.0"
+description = "S-Corp owner payroll calculator with QuickBooks journal entries"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi==0.*",
+    "uvicorn[standard]==0.*",
+    "sqlmodel==0.*",
+    "pydantic-settings==2.*",
+    "alembic==1.*",
+    "gunicorn==23.*",
+    "uvicorn-worker==0.*",
+    "python-multipart==0.*",
+    "httpx==0.*",
+    "jinja2==3.*",
+    "psycopg2-binary==2.*",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest==8.*",
+    "pytest-cov==6.*",
+    "ruff>=0.8.0",
+]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --cov=payroll --cov-report=term-missing"
+
+[tool.coverage.run]
+omit = [
+    "*/migrations/*",
+    "payroll/app.py",
+    "payroll/gunicorn_config.py",
+    "payroll/exceptions.py",
+    "payroll/common/middleware.py",
+    "*/site-packages/*",
+]
+
+# ---------------------------------------------------------------------------
+# ruff — linter + formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["payroll"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

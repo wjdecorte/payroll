@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}S-Corp Payroll Calculator{% endblock %}
+
+{% block content %}
+<div class="layout">
+
+  <!-- ── LEFT COLUMN: Input form ─────────────────────────────────── -->
+  <div>
+
+    <!-- Pay Period & Salary -->
+    <div class="card">
+      <div class="card-header bg-primary">
+        <i class="bi bi-calendar3 me-2"></i>Pay Period &amp; Salary
+      </div>
+      <div class="card-body">
+        <form id="payroll-form"
+              hx-post="/htmx/calculate"
+              hx-target="#results-panel"
+              hx-swap="innerHTML"
+              hx-indicator="#calc-spinner">
+
+          <div class="row g-2 mb-2">
+            <div class="col-7">
+              <label class="form-label">Pay Period</label>
+              <input type="month" class="form-control" name="pay_period"
+                     value="{{ now_month }}"
+                     required>
+            </div>
+            <div class="col-5">
+              <label class="form-label">Gross Salary</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="gross_salary"
+                       min="0" step="0.01" placeholder="0.00" required>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pre-tax Benefits -->
+          <div class="section-label">Pre-tax Benefits</div>
+
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <label class="form-label">Health Insurance</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="health_insurance"
+                       id="health_insurance" min="0" step="0.01" value="0.00">
+              </div>
+            </div>
+            <div class="col-6">
+              <label class="form-label">HSA Contribution</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="hsa_contribution"
+                       id="hsa_contribution" min="0" step="0.01" value="0.00">
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <div class="form-check mt-1">
+                <input class="form-check-input" type="checkbox" name="health_in_income_tax"
+                       id="health_in_income_tax" value="true">
+                <label class="form-check-label" for="health_in_income_tax">
+                  Add health ins to income tax wages
+                  <div class="tax-note">Required for S-Corp &gt;2% owners</div>
+                </label>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="form-check mt-1">
+                <input class="form-check-input" type="checkbox" name="hsa_in_income_tax"
+                       id="hsa_in_income_tax" value="true">
+                <label class="form-check-label" for="hsa_in_income_tax">
+                  Add HSA to income tax wages
+                  <div class="tax-note">Per employer contribution rules</div>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- YTD -->
+          <div class="section-label">Year-to-Date</div>
+          <div class="row g-2 mb-3">
+            <div class="col-7">
+              <label class="form-label">YTD FICA Wages (prior periods)</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="ytd_fica_wages"
+                       min="0" step="0.01" value="0.00">
+              </div>
+              <div class="tax-note">Used to cap Social Security at $184,500</div>
+            </div>
+          </div>
+
+          <!-- Save & Notes -->
+          <div class="section-label">Save Run</div>
+          <div class="mb-2">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="save_run"
+                     id="save_run" value="true">
+              <label class="form-check-label" for="save_run">
+                Save this payroll run to history
+              </label>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Notes <span class="fw-normal text-muted">(optional)</span></label>
+            <textarea class="form-control" name="notes" rows="2"
+                      placeholder="e.g. January 2026 payroll"></textarea>
+          </div>
+
+          <div class="d-grid">
+            <button type="submit" class="btn btn-brand">
+              <span id="calc-spinner" class="htmx-indicator spinner-border spinner-border-sm me-2" role="status"></span>
+              <i class="bi bi-calculator me-2"></i>Calculate Payroll
+            </button>
+          </div>
+
+        </form>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card">
+      <div class="card-header bg-dark">
+        <i class="bi bi-clock-history me-2"></i>Saved Runs
+        <button class="btn btn-sm btn-outline-light float-end py-0 px-2 no-print"
+                hx-get="/htmx/history"
+                hx-target="#history-panel"
+                hx-swap="innerHTML"
+                title="Refresh history">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="card-body p-0" id="history-panel">
+        {% include "partials/_history.html" %}
+      </div>
+    </div>
+
+  </div><!-- end left column -->
+
+  <!-- ── RIGHT COLUMN: Results ───────────────────────────────────── -->
+  <div id="results-panel">
+    <div class="results-placeholder">
+      <i class="bi bi-calculator"></i>
+      <p class="mb-0">Enter payroll details and click<br><strong>Calculate Payroll</strong> to see results.</p>
+    </div>
+  </div>
+
+</div><!-- end layout -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Set default pay period to current month
+  (function () {
+    const input = document.querySelector('input[name="pay_period"]');
+    if (input && !input.value) {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm   = String(now.getMonth() + 1).padStart(2, '0');
+      input.value = `${yyyy}-${mm}`;
+    }
+  })();
+</script>
+{% endblock %}

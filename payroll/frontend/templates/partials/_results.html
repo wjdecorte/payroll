@@ -1,0 +1,251 @@
+{# _results.html — rendered when a calculation succeeds (fresh calc or loaded saved run) #}
+{# Context vars: result (dict), history (list), save_run (bool) #}
+
+{% set r = result %}
+{% set td = r.taxDetail %}
+
+<!-- ── Pay Summary ───────────────────────────────────────────────── -->
+<div class="card">
+  <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-receipt me-2"></i>Payroll Summary — {{ r.payPeriod }}</span>
+    <button class="btn btn-sm btn-outline-light py-0 px-2 no-print" onclick="window.print()">
+      <i class="bi bi-printer me-1"></i>Print
+    </button>
+  </div>
+  <div class="card-body">
+
+    <div class="row g-3">
+
+      <!-- Employee: Gross → Net -->
+      <div class="col-md-6">
+        <div class="section-label">Employee Earnings</div>
+        <div class="s-row">
+          <span>Gross Salary</span>
+          <span>{{ r.grossSalary | currency }}</span>
+        </div>
+        {% if r.healthInsurance %}
+        <div class="s-row">
+          <span>Health Insurance Premium</span>
+          <span class="amount-neg">{{ r.healthInsurance | currency }}</span>
+        </div>
+        {% endif %}
+        {% if r.hsaContribution %}
+        <div class="s-row">
+          <span>HSA Contribution</span>
+          <span class="amount-neg">{{ r.hsaContribution | currency }}</span>
+        </div>
+        {% endif %}
+        <div class="s-row">
+          <span>Federal Withholding</span>
+          <span class="amount-neg">{{ td.federalWithholding | currency }}</span>
+        </div>
+        <div class="s-row">
+          <span>Georgia Withholding</span>
+          <span class="amount-neg">{{ td.gaWithholding | currency }}</span>
+        </div>
+        <div class="s-row">
+          <span>Social Security (EE 6.2%)</span>
+          <span class="amount-neg">{{ td.ssEe | currency }}</span>
+        </div>
+        <div class="s-row">
+          <span>Medicare (EE 1.45%)</span>
+          <span class="amount-neg">{{ td.medicareEe | currency }}</span>
+        </div>
+        {% if td.additionalMedicare and td.additionalMedicare > 0 %}
+        <div class="s-row">
+          <span>Additional Medicare (0.9%)</span>
+          <span class="amount-neg">{{ td.additionalMedicare | currency }}</span>
+        </div>
+        {% endif %}
+        <div class="s-row net">
+          <span>Net Pay</span>
+          <span class="amount-pos">{{ td.netPay | currency }}</span>
+        </div>
+      </div>
+
+      <!-- Employer costs -->
+      <div class="col-md-6">
+        <div class="section-label">Employer Costs</div>
+        <div class="s-row">
+          <span>Gross Salary</span>
+          <span>{{ r.grossSalary | currency }}</span>
+        </div>
+        {% if r.healthInsurance %}
+        <div class="s-row">
+          <span>Health Insurance (ER paid)</span>
+          <span>{{ r.healthInsurance | currency }}</span>
+        </div>
+        {% endif %}
+        {% if r.hsaContribution %}
+        <div class="s-row">
+          <span>HSA (ER paid)</span>
+          <span>{{ r.hsaContribution | currency }}</span>
+        </div>
+        {% endif %}
+        <div class="s-row er">
+          <span>Social Security (ER 6.2%)</span>
+          <span>{{ td.ssEr | currency }}</span>
+        </div>
+        <div class="s-row er">
+          <span>Medicare (ER 1.45%)</span>
+          <span>{{ td.medicareEr | currency }}</span>
+        </div>
+        <div class="s-row total">
+          <span>Total ER Cost</span>
+          <span>{{ td.totalEmployerCost | currency }}</span>
+        </div>
+      </div>
+
+    </div><!-- row -->
+
+    <!-- Tax Wage Bases -->
+    <div class="section-label mt-3">Tax Wage Bases</div>
+    <div class="row g-2">
+      <div class="col-sm-4">
+        <div class="bg-light rounded p-2 text-center">
+          <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">FICA Wages</div>
+          <div class="fw-bold">{{ td.ficaWages | currency }}</div>
+        </div>
+      </div>
+      <div class="col-sm-4">
+        <div class="bg-light rounded p-2 text-center">
+          <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">Income Tax Wages</div>
+          <div class="fw-bold">{{ td.incomeTaxWages | currency }}</div>
+        </div>
+      </div>
+      <div class="col-sm-4">
+        <div class="bg-light rounded p-2 text-center">
+          <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">YTD FICA (after)</div>
+          <div class="fw-bold">{{ td.ytdFicaAfter | currency }}</div>
+        </div>
+      </div>
+    </div>
+
+    {% if r.id %}
+    <div class="mt-2 text-muted" style="font-size:.75rem">
+      <i class="bi bi-floppy me-1"></i>Run #{{ r.id }} saved
+      {% if r.notes %} · {{ r.notes }}{% endif %}
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+<!-- ── Tax Payment Summary (EFTPS / GA DOR) ─────────────────────── -->
+{% set tps = r.taxPaymentSummary %}
+<div class="card">
+  <div class="card-header bg-warning">
+    <i class="bi bi-bank me-2"></i>Tax Payments Due
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="section-label">EFTPS (Federal)</div>
+        <div class="s-row">
+          <span>Social Security (EE + ER)</span>
+          <span>{{ tps.socialSecurityTotal | currency }}</span>
+        </div>
+        <div class="s-row">
+          <span>Medicare (EE + ER)</span>
+          <span>{{ tps.medicareTotal | currency }}</span>
+        </div>
+        <div class="s-row">
+          <span>Federal Income Tax Withholding</span>
+          <span>{{ tps.federalIncomeTax | currency }}</span>
+        </div>
+        <div class="s-row total">
+          <span>Total EFTPS Deposit</span>
+          <span>{{ tps.totalFederalEftps | currency }}</span>
+        </div>
+        <div class="tax-note mt-1">{{ tps.federalDueDateNote }}</div>
+      </div>
+      <div class="col-md-6">
+        <div class="section-label">Georgia DOR</div>
+        <div class="s-row">
+          <span>GA Income Tax Withheld</span>
+          <span>{{ tps.georgiaIncomeTax | currency }}</span>
+        </div>
+        <div class="s-row total">
+          <span>Total GA Payment</span>
+          <span>{{ tps.georgiaIncomeTax | currency }}</span>
+        </div>
+        <div class="tax-note mt-1">{{ tps.georgiaDueDateNote }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Journal Entries ───────────────────────────────────────────── -->
+{% if r.journalEntries %}
+<div class="card">
+  <div class="card-header bg-success">
+    <i class="bi bi-journal-text me-2"></i>QuickBooks Journal Entries
+  </div>
+  <div class="card-body">
+
+    {% for je in r.journalEntries %}
+    <div class="je-card">
+      <div class="je-title">{{ je.title }}</div>
+      {% if je.note %}
+      <div class="je-note"><i class="bi bi-info-circle me-1"></i>{{ je.note }}</div>
+      {% endif %}
+      <table class="je-table">
+        <thead>
+          <tr>
+            <th style="width:2.5rem"></th>
+            <th>Account</th>
+            <th>Memo</th>
+            <th class="r" style="width:8rem">Debit</th>
+            <th class="r" style="width:8rem">Credit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in je.lines %}
+          {% if line.debit %}
+          <tr class="dr-row">
+            <td><span class="badge-dr">DR</span></td>
+            <td class="account">{{ line.account }}</td>
+            <td>{{ line.memo or '' }}</td>
+            <td class="r">{{ line.debit | currency }}</td>
+            <td class="r">—</td>
+          </tr>
+          {% else %}
+          <tr class="cr-row">
+            <td><span class="badge-cr">CR</span></td>
+            <td class="account">{{ line.account }}</td>
+            <td>{{ line.memo or '' }}</td>
+            <td class="r">—</td>
+            <td class="r">{{ line.credit | currency }}</td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="tot-row">
+            <td colspan="3" class="r fw-bold">Totals</td>
+            <td class="r">{{ je.drTotal | currency }}</td>
+            <td class="r">{{ je.crTotal | currency }}</td>
+          </tr>
+        </tfoot>
+      </table>
+      {% if not je.isBalanced %}
+      <div class="p-2 bg-danger text-white" style="font-size:.75rem">
+        <i class="bi bi-exclamation-triangle me-1"></i>
+        Warning: Journal entry is not balanced (DR ≠ CR)
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+
+  </div>
+</div>
+{% endif %}
+
+<!-- If save_run, also swap in the updated history panel via OOB swap -->
+{% if save_run and history %}
+<div hx-swap-oob="innerHTML:#history-panel">
+  {% with h = history %}
+  {% include "partials/_history.html" %}
+  {% endwith %}
+</div>
+{% endif %}
