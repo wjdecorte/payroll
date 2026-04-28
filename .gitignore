@@ -47,3 +47,6 @@ Thumbs.db
 
 # Docker
 *.log
+
+# Spec Story
+.specstory/
