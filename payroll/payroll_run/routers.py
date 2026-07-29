@@ -7,6 +7,8 @@ from payroll import app_settings
 from payroll.common.dependencies import get_session
 from payroll.common.middleware import LogRoute
 
+from .config_schemas import PayrollConfigRead, PayrollConfigUpdate
+from .config_services import PayrollConfigService
 from .schemas import PayrollInput, PayrollResult, PayrollRunSummary
 from .services import PayrollRunService
 
@@ -114,3 +116,35 @@ async def get_tax_constants() -> dict:
     from payroll.tax.schemas import TaxConstantsSchema
 
     return TaxConstantsSchema().model_dump(by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# Admin configuration
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/config",
+    response_model=PayrollConfigRead,
+    status_code=status.HTTP_200_OK,
+    summary="View payroll configuration",
+)
+async def get_payroll_config(
+    session: Session = Depends(get_session),
+) -> PayrollConfigRead:
+    service = PayrollConfigService(session)
+    return service.get_config()
+
+
+@router.put(
+    "/config",
+    response_model=PayrollConfigRead,
+    status_code=status.HTTP_200_OK,
+    summary="Update payroll configuration",
+)
+async def update_payroll_config(
+    payload: PayrollConfigUpdate,
+    session: Session = Depends(get_session),
+) -> PayrollConfigRead:
+    service = PayrollConfigService(session)
+    return service.update_config(payload)

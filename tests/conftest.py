@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlmodel import Session, SQLModel
 
 # Import all models so SQLModel registers their metadata before creating tables
+import payroll.payroll_run.config_models  # noqa: F401
 import payroll.payroll_run.models  # noqa: F401
 from payroll.app import app
 from payroll.common.dependencies import get_session

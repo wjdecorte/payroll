@@ -42,8 +42,10 @@
       z-index: 100;
       box-shadow: 0 2px 8px rgba(0,0,0,.2);
     }
-    .topbar .brand { font-size: 1.1rem; font-weight: 700; letter-spacing: .02em; }
+    .topbar .brand { font-size: 1.1rem; font-weight: 700; letter-spacing: .02em; color: #fff; text-decoration: none; }
     .topbar .meta  { font-size: 0.75rem; opacity: .75; }
+    .topbar .nav-link { color: rgba(255,255,255,.78); font-size: .82rem; padding: .2rem .55rem; }
+    .topbar .nav-link:hover { color: #fff; }
 
     /* ── Layout ────────────────────────────────────────────────── */
     .layout {
@@ -148,9 +150,13 @@
 
 <div class="topbar no-print">
   <div>
-    <span class="brand"><i class="bi bi-building me-2"></i>S-Corp Payroll Calculator</span>
+    <a class="brand" href="/"><i class="bi bi-building me-2"></i>S-Corp Payroll Calculator</a>
   </div>
-  <div class="meta">Georgia &nbsp;·&nbsp; Single Filing &nbsp;·&nbsp; Monthly &nbsp;·&nbsp; Tax Year 2026</div>
+  <div class="d-flex align-items-center gap-2">
+    <a class="nav-link" href="/"><i class="bi bi-calculator me-1"></i>Calculator</a>
+    <a class="nav-link" href="/admin"><i class="bi bi-sliders me-1"></i>Admin</a>
+    <div class="meta d-none d-md-block">Georgia &nbsp;·&nbsp; Single Filing &nbsp;·&nbsp; Monthly &nbsp;·&nbsp; Tax Year 2026</div>
+  </div>
 </div>
 
 {% block content %}{% endblock %}

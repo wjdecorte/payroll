@@ -32,7 +32,8 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="gross_salary"
-                       min="0" step="0.01" placeholder="0.00" required>
+                       min="0" step="0.01" placeholder="0.00"
+                       value="{{ '%.2f' % config.defaultGrossSalary if config else '' }}" required>
               </div>
             </div>
           </div>
@@ -42,11 +43,11 @@
 
           <div class="row g-2 mb-2">
             <div class="col-6">
-              <label class="form-label">Health Insurance</label>
+              <label class="form-label">Medical Insurance</label>
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="health_insurance"
-                       id="health_insurance" min="0" step="0.01" value="0.00">
+                       id="health_insurance" min="0" step="0.01" value="{{ '%.2f' % config.defaultHealthInsurance if config else ('%.2f' % latest_run.healthInsurance if latest_run else '0.00') }}">
               </div>
             </div>
             <div class="col-6">
@@ -54,7 +55,7 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="hsa_contribution"
-                       id="hsa_contribution" min="0" step="0.01" value="0.00">
+                       id="hsa_contribution" min="0" step="0.01" value="{{ '%.2f' % config.defaultHsaContribution if config else ('%.2f' % latest_run.hsaContribution if latest_run else '0.00') }}">
               </div>
             </div>
           </div>
@@ -63,9 +64,9 @@
             <div class="col-6">
               <div class="form-check mt-1">
                 <input class="form-check-input" type="checkbox" name="health_in_income_tax"
-                       id="health_in_income_tax" value="true">
+                       id="health_in_income_tax" value="true" {{ 'checked' if ((config and config.defaultHealthInIncomeTax) or (not config and latest_run and latest_run.healthInIncomeTax)) else '' }}>
                 <label class="form-check-label" for="health_in_income_tax">
-                  Add health ins to income tax wages
+                  Add medical to income tax wages
                   <div class="tax-note">Required for S-Corp &gt;2% owners</div>
                 </label>
               </div>
@@ -73,7 +74,7 @@
             <div class="col-6">
               <div class="form-check mt-1">
                 <input class="form-check-input" type="checkbox" name="hsa_in_income_tax"
-                       id="hsa_in_income_tax" value="true">
+                       id="hsa_in_income_tax" value="true" {{ 'checked' if ((config and config.defaultHsaInIncomeTax) or (not config and latest_run and latest_run.hsaInIncomeTax)) else '' }}>
                 <label class="form-check-label" for="hsa_in_income_tax">
                   Add HSA to income tax wages
                   <div class="tax-note">Per employer contribution rules</div>
@@ -90,9 +91,18 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="ytd_fica_wages"
-                       min="0" step="0.01" value="0.00">
+                       min="0" step="0.01" value="{{ '%.2f' % ytd_fica_default }}">
               </div>
               <div class="tax-note">Used to cap Social Security at $184,500</div>
+            </div>
+            <div class="col-5 d-flex align-items-end">
+              <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" name="use_previous_ytd_fica"
+                       id="use_previous_ytd_fica" value="true" {{ 'checked' if (config and config.defaultUsePreviousYtdFica) else '' }}>
+                <label class="form-check-label" for="use_previous_ytd_fica">
+                  Use latest saved run
+                </label>
+              </div>
             </div>
           </div>
 
@@ -101,7 +111,7 @@
           <div class="mb-2">
             <div class="form-check">
               <input class="form-check-input" type="checkbox" name="save_run"
-                     id="save_run" value="true">
+                     id="save_run" value="true" {{ 'checked' if (config and config.defaultSaveRun) else '' }}>
               <label class="form-check-label" for="save_run">
                 Save this payroll run to history
               </label>
@@ -110,7 +120,7 @@
           <div class="mb-3">
             <label class="form-label">Notes <span class="fw-normal text-muted">(optional)</span></label>
             <textarea class="form-control" name="notes" rows="2"
-                      placeholder="e.g. January 2026 payroll"></textarea>
+                      placeholder="e.g. January 2026 payroll">{{ config.defaultNotes if config and config.defaultNotes else '' }}</textarea>
           </div>
 
           <div class="d-grid">

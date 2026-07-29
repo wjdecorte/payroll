@@ -137,3 +137,37 @@ class TestTaxConstantsEndpoint:
     def test_returns_ss_wage_base(self, client):
         data = client.get(f"{PREFIX}/payroll/tax-constants").json()
         assert data["ssWageBase"] == 184_500.0
+
+
+class TestConfigEndpoint:
+    def test_get_config_returns_defaults(self, client):
+        response = client.get(f"{PREFIX}/payroll/config")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["acctChecking"] == "Checking Account"
+        assert data["defaultHealthInIncomeTax"] is True
+
+    def test_update_config_persists_accounts_and_benefits(self, client):
+        data = client.get(f"{PREFIX}/payroll/config").json()
+        data["defaultHealthInsurance"] = 725.50
+        data["defaultHsaContribution"] = 350.00
+        data["acctChecking"] = "Operating Bank"
+
+        response = client.put(f"{PREFIX}/payroll/config", json=data)
+        assert response.status_code == 200
+
+        updated = client.get(f"{PREFIX}/payroll/config").json()
+        assert updated["defaultHealthInsurance"] == 725.50
+        assert updated["defaultHsaContribution"] == 350.00
+        assert updated["acctChecking"] == "Operating Bank"
+
+    def test_calculate_uses_configured_checking_account(self, client, payroll_input):
+        config = client.get(f"{PREFIX}/payroll/config").json()
+        config["acctChecking"] = "Operating Bank"
+        client.put(f"{PREFIX}/payroll/config", json=config)
+
+        payroll_input["saveRun"] = False
+        data = client.post(f"{PREFIX}/payroll/runs/calculate", json=payroll_input).json()
+
+        accounts = [line["account"] for entry in data["journalEntries"] for line in entry["lines"]]
+        assert "Operating Bank" in accounts

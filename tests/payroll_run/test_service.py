@@ -5,6 +5,7 @@ with a real in-memory database session.
 
 import pytest
 
+from payroll.payroll_run.config_schemas import PayrollConfigUpdate
 from payroll.payroll_run.exceptions import (
     InvalidPayPeriodError,
     PayrollRunAlreadyExistsError,
@@ -48,6 +49,19 @@ class TestCalculate:
         result = service.calculate(base_input)
         for entry in result.journal_entries:
             assert entry.is_balanced, f"Entry '{entry.title}' is not balanced"
+
+    def test_journal_entries_use_configured_accounts(self, service, base_input):
+        config = service.config_service.get_config()
+        updated = PayrollConfigUpdate.model_validate(
+            config.model_dump() | {"acct_checking": "Operating Bank"}
+        )
+        service.config_service.update_config(updated)
+
+        base_input.save_run = False
+        result = service.calculate(base_input)
+
+        accounts = [line.account for entry in result.journal_entries for line in entry.lines]
+        assert "Operating Bank" in accounts
 
     def test_saved_run_has_id(self, service, base_input):
         result = service.calculate(base_input)

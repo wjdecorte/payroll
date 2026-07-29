@@ -41,16 +41,115 @@ router = APIRouter()
 async def index(request: Request) -> HTMLResponse:
     """Render the main page with an empty results panel."""
     client = PayrollAPIClient()
+    latest_run = None
+    config = None
+    ytd_fica_default = 0.0
+
     try:
+        config = await client.get_config()
         history = await client.list_runs()
+        if history:
+            latest_run = await client.get_run(history[0]["id"])
+
+            # Only pre-fill YTD FICA if the previous run is in the same year as now
+            import datetime
+
+            current_year = str(datetime.datetime.now().year)
+            if latest_run.get("payPeriod", "").startswith(current_year):
+                ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", 0.0)
+
     except Exception:
         history = []
 
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"history": history},
+        {
+            "history": history,
+            "latest_run": latest_run,
+            "config": config,
+            "ytd_fica_default": ytd_fica_default,
+        },
     )
+
+
+@router.get("/admin", response_class=HTMLResponse)
+async def admin(request: Request) -> HTMLResponse:
+    """Render the payroll configuration admin page."""
+    client = PayrollAPIClient()
+    try:
+        config = await client.get_config()
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            {"config": config, "saved": False},
+        )
+    except APIError as exc:
+        return templates.TemplateResponse(
+            request,
+            "partials/_error.html",
+            {"message": exc.detail, "status_code": exc.status_code},
+            status_code=exc.status_code,
+        )
+
+
+@router.post("/admin", response_class=HTMLResponse)
+async def admin_save(request: Request) -> HTMLResponse:
+    """Save payroll configuration and render the admin page."""
+    client = PayrollAPIClient()
+    form = await request.form()
+
+    def money(name: str) -> float:
+        return float(form.get(name) or 0)
+
+    def checked(name: str) -> bool:
+        return form.get(name) == "true"
+
+    payload = {
+        "defaultGrossSalary": money("default_gross_salary"),
+        "defaultHealthInsurance": money("default_health_insurance"),
+        "defaultHsaContribution": money("default_hsa_contribution"),
+        "defaultHealthInIncomeTax": checked("default_health_in_income_tax"),
+        "defaultHsaInIncomeTax": checked("default_hsa_in_income_tax"),
+        "defaultUsePreviousYtdFica": checked("default_use_previous_ytd_fica"),
+        "defaultSaveRun": checked("default_save_run"),
+        "defaultNotes": form.get("default_notes") or None,
+        "acctOfficerCompensation": form.get("acct_officer_compensation"),
+        "acctPayrollTaxExpense": form.get("acct_payroll_tax_expense"),
+        "acctHealthInsuranceExp": form.get("acct_health_insurance_exp"),
+        "acctHsaExpense": form.get("acct_hsa_expense"),
+        "acctFedTaxPayable": form.get("acct_fed_tax_payable"),
+        "acctGaTaxPayable": form.get("acct_ga_tax_payable"),
+        "acctSsPayableEe": form.get("acct_ss_payable_ee"),
+        "acctSsPayableEr": form.get("acct_ss_payable_er"),
+        "acctMedicarePayableEe": form.get("acct_medicare_payable_ee"),
+        "acctMedicarePayableEr": form.get("acct_medicare_payable_er"),
+        "acctHealthInsPayable": form.get("acct_health_ins_payable"),
+        "acctHsaPayable": form.get("acct_hsa_payable"),
+        "acctChecking": form.get("acct_checking"),
+        "federalDueDateNote": form.get("federal_due_date_note"),
+        "georgiaDueDateNote": form.get("georgia_due_date_note"),
+    }
+
+    try:
+        config = await client.update_config(payload)
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            {"config": config, "saved": True},
+        )
+    except APIError as exc:
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            {
+                "config": payload,
+                "saved": False,
+                "error": exc.detail,
+                "status_code": exc.status_code,
+            },
+            status_code=exc.status_code,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +167,7 @@ async def htmx_calculate(
     health_in_income_tax: bool = Form(False),
     hsa_in_income_tax: bool = Form(False),
     ytd_fica_wages: float = Form(0.0),
+    use_previous_ytd_fica: bool = Form(False),
     save_run: bool = Form(False),
     notes: str = Form(""),
 ) -> HTMLResponse:
@@ -83,6 +183,7 @@ async def htmx_calculate(
                 "healthInIncomeTax": health_in_income_tax,
                 "hsaInIncomeTax": hsa_in_income_tax,
                 "ytdFicaWages": ytd_fica_wages,
+                "usePreviousYtdFica": use_previous_ytd_fica,
                 "saveRun": save_run,
                 "notes": notes or None,
             }

@@ -23,6 +23,7 @@ async def lifespan(application: FastAPI):
     #   python -m payroll.migrations.alembic_runner upgrade
     from sqlmodel import SQLModel
 
+    import payroll.payroll_run.config_models  # noqa: F401 — registers models with metadata
     import payroll.payroll_run.models  # noqa: F401 — registers models with metadata
     from payroll.common.dependencies import engine
 

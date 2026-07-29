@@ -77,3 +77,24 @@ class PayrollAPIClient:
             )
             if not response.is_success:
                 raise APIError(response.status_code, _extract_error_message(response))
+
+    async def get_config(self) -> dict:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/payroll/config",
+                timeout=10.0,
+            )
+            if not response.is_success:
+                raise APIError(response.status_code, _extract_error_message(response))
+            return response.json()
+
+    async def update_config(self, payload: dict) -> dict:
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"{self.base_url}/payroll/config",
+                json=payload,
+                timeout=10.0,
+            )
+            if not response.is_success:
+                raise APIError(response.status_code, _extract_error_message(response))
+            return response.json()

@@ -22,6 +22,7 @@ from payroll.tax import constants as tax
 from payroll.tax.engine import calc_payroll
 from payroll.tax.schemas import PayrollCalculation, TaxConstantsSchema
 
+from .config_services import PayrollConfigService
 from .exceptions import (
     InvalidPayPeriodError,
     PayrollRunAlreadyExistsError,
@@ -48,7 +49,7 @@ class PayrollRunService:
 
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.accounts = app_settings.accounts
+        self.config_service = PayrollConfigService(session)
 
     # ------------------------------------------------------------------
     # Public API
@@ -224,7 +225,7 @@ class PayrollRunService:
         calc: PayrollCalculation,
         run: PayrollRun | None,
     ) -> PayrollResult:
-        acct = self.accounts
+        acct = self.config_service.get_accounts()
         gross = payload.gross_salary
         health = payload.health_insurance
         hsa = payload.hsa_contribution
@@ -289,7 +290,7 @@ class PayrollRunService:
         entries: list[JournalEntry] = []
 
         # ---- Entry 1: Gross payroll wages and withholdings ----
-        # The debit to Officer Compensation includes the health insurance W-2
+        # The debit to Officer Compensation includes the medical insurance W-2
         # addback so the entry represents total W-2 Box 1 wages.
         dr_compensation = gross + (health if health_in_it and health > 0 else 0.0)
 
@@ -299,7 +300,7 @@ class PayrollRunService:
                 memo=(
                     f"Gross salary ${gross:,.2f}"
                     + (
-                        f" + health ins W-2 addback ${health:,.2f}"
+                        f" + medical insurance W-2 addback ${health:,.2f}"
                         if health_in_it and health > 0
                         else ""
                     )
@@ -329,12 +330,12 @@ class PayrollRunService:
             ),
         ]
 
-        # Health insurance payable offset (cleared when premium paid to insurer)
+        # Medical insurance payable offset (cleared when premium paid to insurer)
         if health_in_it and health > 0:
             entry1_lines.append(
                 JournalLine(
                     account=acct["health_ins_payable"],
-                    memo="Health insurance premium — clear when paid to insurer",
+                    memo="Medical insurance premium - clear when paid to insurer",
                     credit=health,
                 )
             )
@@ -380,20 +381,20 @@ class PayrollRunService:
             )
         )
 
-        # ---- Entry 3: Clear health insurance payable (when premium is paid) ----
+        # ---- Entry 3: Clear medical insurance payable (when premium is paid) ----
         if health > 0:
             if health_in_it:
                 entries.append(
                     JournalEntry(
-                        title="Entry 3: Pay Health Insurance Premium to Insurer",
+                        title="Entry 3: Pay Medical Insurance Premium to Insurer",
                         note=(
                             "Record when you pay the insurance company. "
-                            "Clears the Health Insurance Payable from Entry 1."
+                            "Clears the medical insurance payable from Entry 1."
                         ),
                         lines=[
                             JournalLine(
                                 account=acct["health_ins_payable"],
-                                memo="Clear health insurance payable",
+                                memo="Clear medical insurance payable",
                                 debit=health,
                             ),
                             JournalLine(
@@ -407,7 +408,7 @@ class PayrollRunService:
             else:
                 entries.append(
                     JournalEntry(
-                        title="Entry 3: Health Insurance Premium (Direct Payment)",
+                        title="Entry 3: Medical Insurance Premium (Direct Payment)",
                         note=(
                             "Paid directly — not routed through payroll. "
                             "Confirm W-2 Box 1 addback treatment with your CPA."
@@ -415,7 +416,7 @@ class PayrollRunService:
                         lines=[
                             JournalLine(
                                 account=acct["health_insurance_exp"],
-                                memo="Monthly health insurance premium",
+                                memo="Monthly medical insurance premium",
                                 debit=health,
                             ),
                             JournalLine(
@@ -456,10 +457,13 @@ class PayrollRunService:
         med_total = round(calc.total_medicare_ee + calc.medicare_er, 2)
         total_eftps = round(calc.federal_withholding + ss_total + med_total, 2)
 
+        federal_due_note, georgia_due_note = self.config_service.get_due_date_notes()
         return TaxPaymentSummary(
             federal_income_tax=calc.federal_withholding,
             social_security_total=ss_total,
             medicare_total=med_total,
             total_federal_eftps=total_eftps,
             georgia_income_tax=calc.ga_withholding,
+            federal_due_date_note=federal_due_note,
+            georgia_due_date_note=georgia_due_note,
         )

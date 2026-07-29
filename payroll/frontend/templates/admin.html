@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}Payroll Admin{% endblock %}
+
+{% block content %}
+<div class="layout">
+  <div>
+    <div class="card">
+      <div class="card-header bg-primary">
+        <i class="bi bi-sliders me-2"></i>Payroll Defaults
+      </div>
+      <div class="card-body">
+        {% if saved %}
+          <div class="alert alert-success py-2 mb-3">
+            <i class="bi bi-check-circle me-1"></i>Configuration saved.
+          </div>
+        {% endif %}
+        {% if error %}
+          <div class="alert alert-danger py-2 mb-3">
+            <i class="bi bi-exclamation-triangle me-1"></i>{{ error }}
+          </div>
+        {% endif %}
+
+        <form id="admin-form" method="post" action="/admin">
+          <div class="row g-2 mb-2">
+            <div class="col-12">
+              <label class="form-label">Default Gross Salary</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="default_gross_salary"
+                       min="0" step="0.01" value="{{ '%.2f' % config.defaultGrossSalary }}" required>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label">Medical &amp; HSA</div>
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <label class="form-label">Medical Insurance</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="default_health_insurance"
+                       min="0" step="0.01" value="{{ '%.2f' % config.defaultHealthInsurance }}" required>
+              </div>
+            </div>
+            <div class="col-6">
+              <label class="form-label">HSA Contribution</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="default_hsa_contribution"
+                       min="0" step="0.01" value="{{ '%.2f' % config.defaultHsaContribution }}" required>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="default_health_in_income_tax"
+                       id="default_health_in_income_tax" value="true" {{ 'checked' if config.defaultHealthInIncomeTax else '' }}>
+                <label class="form-check-label" for="default_health_in_income_tax">
+                  Add medical to income tax wages
+                </label>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="default_hsa_in_income_tax"
+                       id="default_hsa_in_income_tax" value="true" {{ 'checked' if config.defaultHsaInIncomeTax else '' }}>
+                <label class="form-check-label" for="default_hsa_in_income_tax">
+                  Add HSA to income tax wages
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label">Run Behavior</div>
+          <div class="mb-2">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="default_use_previous_ytd_fica"
+                     id="default_use_previous_ytd_fica" value="true" {{ 'checked' if config.defaultUsePreviousYtdFica else '' }}>
+              <label class="form-check-label" for="default_use_previous_ytd_fica">
+                Use the latest saved run for YTD FICA by default
+              </label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="default_save_run"
+                     id="default_save_run" value="true" {{ 'checked' if config.defaultSaveRun else '' }}>
+              <label class="form-check-label" for="default_save_run">
+                Save runs by default
+              </label>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Default Notes</label>
+            <textarea class="form-control" name="default_notes" rows="2">{{ config.defaultNotes or '' }}</textarea>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <div class="card-header bg-dark">
+        <i class="bi bi-journal-text me-2"></i>QuickBooks Accounts
+      </div>
+      <div class="card-body">
+        <div class="row g-2">
+          {% set account_fields = [
+            ("acct_officer_compensation", "Officer Compensation", config.acctOfficerCompensation),
+            ("acct_payroll_tax_expense", "Payroll Tax Expense", config.acctPayrollTaxExpense),
+            ("acct_health_insurance_exp", "Medical Insurance Expense", config.acctHealthInsuranceExp),
+            ("acct_hsa_expense", "HSA Expense", config.acctHsaExpense),
+            ("acct_fed_tax_payable", "Federal Tax Payable", config.acctFedTaxPayable),
+            ("acct_ga_tax_payable", "Georgia Tax Payable", config.acctGaTaxPayable),
+            ("acct_ss_payable_ee", "Social Security Payable - Employee", config.acctSsPayableEe),
+            ("acct_ss_payable_er", "Social Security Payable - Employer", config.acctSsPayableEr),
+            ("acct_medicare_payable_ee", "Medicare Payable - Employee", config.acctMedicarePayableEe),
+            ("acct_medicare_payable_er", "Medicare Payable - Employer", config.acctMedicarePayableEr),
+            ("acct_health_ins_payable", "Medical Insurance Payable", config.acctHealthInsPayable),
+            ("acct_hsa_payable", "HSA Payable", config.acctHsaPayable),
+            ("acct_checking", "Checking", config.acctChecking),
+          ] %}
+          {% for name, label, value in account_fields %}
+            <div class="col-md-6">
+              <label class="form-label">{{ label }}</label>
+              <input form="admin-form" type="text" class="form-control" name="{{ name }}"
+                     value="{{ value }}" required>
+            </div>
+          {% endfor %}
+        </div>
+
+        <div class="section-label">Payment Notes</div>
+        <div class="mb-2">
+          <label class="form-label">Federal Tax Due Note</label>
+          <textarea form="admin-form" class="form-control" name="federal_due_date_note" rows="2" required>{{ config.federalDueDateNote }}</textarea>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Georgia Tax Due Note</label>
+          <textarea form="admin-form" class="form-control" name="georgia_due_date_note" rows="2" required>{{ config.georgiaDueDateNote }}</textarea>
+        </div>
+
+        <div class="d-flex justify-content-end gap-2">
+          <a href="/" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Calculator
+          </a>
+          <button form="admin-form" type="submit" class="btn btn-brand">
+            <i class="bi bi-save me-1"></i>Save Configuration
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
