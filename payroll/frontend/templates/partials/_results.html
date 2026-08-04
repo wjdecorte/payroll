@@ -1,5 +1,5 @@
 {# _results.html — rendered when a calculation succeeds (fresh calc or loaded saved run) #}
-{# Context vars: result (dict), history (list), save_run (bool) #}
+{# Context vars: result (dict), history (list), save_run (bool), next_journal_no (int) #}
 
 {% set r = result %}
 {% set td = r.taxDetail %}
@@ -8,9 +8,33 @@
 <div class="card">
   <div class="card-header bg-primary d-flex justify-content-between align-items-center">
     <span><i class="bi bi-receipt me-2"></i>Payroll Summary — {{ r.payPeriod }}</span>
-    <button class="btn btn-sm btn-outline-light py-0 px-2 no-print" onclick="window.print()">
-      <i class="bi bi-printer me-1"></i>Print
-    </button>
+    <div class="d-flex align-items-center gap-2 no-print">
+      {% if r.id %}
+        <span class="badge bg-success py-1 px-2">
+          <i class="bi bi-check-lg me-1"></i>Saved · Run #{{ r.id }}{% if r.notes %} · {{ r.notes }}{% endif %}
+        </span>
+      {% else %}
+        <form id="save-run-form"
+              hx-post="/htmx/save-run"
+              hx-target="#results-panel"
+              hx-swap="innerHTML">
+          <input type="hidden" name="pay_period"           value="{{ r.payPeriod }}">
+          <input type="hidden" name="gross_salary"         value="{{ r.grossSalary }}">
+          <input type="hidden" name="health_insurance"     value="{{ r.healthInsurance }}">
+          <input type="hidden" name="hsa_contribution"     value="{{ r.hsaContribution }}">
+          <input type="hidden" name="health_in_income_tax" value="{{ 'true' if r.healthInIncomeTax else 'false' }}">
+          <input type="hidden" name="hsa_in_income_tax"    value="{{ 'true' if r.hsaInIncomeTax else 'false' }}">
+          <input type="hidden" name="ytd_fica_wages"       value="{{ td.ytdFicaBefore | default(0) }}">
+          <input type="hidden" name="notes"                value="{{ r.notes or '' }}">
+          <button type="submit" class="btn btn-sm btn-success py-0 px-2">
+            <i class="bi bi-floppy me-1"></i>Save to History
+          </button>
+        </form>
+      {% endif %}
+      <button class="btn btn-sm btn-outline-light py-0 px-2" onclick="window.print()">
+        <i class="bi bi-printer me-1"></i>Print
+      </button>
+    </div>
   </div>
   <div class="card-body">
 
@@ -101,32 +125,31 @@
     <!-- Tax Wage Bases -->
     <div class="section-label mt-3">Tax Wage Bases</div>
     <div class="row g-2">
-      <div class="col-sm-4">
+      <div class="col-sm-3">
         <div class="bg-light rounded p-2 text-center">
           <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">FICA Wages</div>
           <div class="fw-bold">{{ td.ficaWages | currency }}</div>
         </div>
       </div>
-      <div class="col-sm-4">
+      <div class="col-sm-3">
         <div class="bg-light rounded p-2 text-center">
           <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">Income Tax Wages</div>
           <div class="fw-bold">{{ td.incomeTaxWages | currency }}</div>
         </div>
       </div>
-      <div class="col-sm-4">
+      <div class="col-sm-3">
+        <div class="bg-light rounded p-2 text-center">
+          <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">YTD FICA (before)</div>
+          <div class="fw-bold">{{ td.ytdFicaBefore | default(0) | currency }}</div>
+        </div>
+      </div>
+      <div class="col-sm-3">
         <div class="bg-light rounded p-2 text-center">
           <div class="text-muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">YTD FICA (after)</div>
-          <div class="fw-bold">{{ td.ytdFicaAfter | currency }}</div>
+          <div class="fw-bold">{{ td.ytdFicaAfter | default(0) | currency }}</div>
         </div>
       </div>
     </div>
-
-    {% if r.id %}
-    <div class="mt-2 text-muted" style="font-size:.75rem">
-      <i class="bi bi-floppy me-1"></i>Run #{{ r.id }} saved
-      {% if r.notes %} · {{ r.notes }}{% endif %}
-    </div>
-    {% endif %}
 
   </div>
 </div>
@@ -175,11 +198,23 @@
   </div>
 </div>
 
+<!-- Embed payroll data for client-side QBO CSV generation -->
+<script>
+const _qboPayroll = {{ result | tojson }};
+const _nextJournalNo = {{ next_journal_no | default(202) }};
+</script>
+
 <!-- ── Journal Entries ───────────────────────────────────────────── -->
 {% if r.journalEntries %}
 <div class="card">
-  <div class="card-header bg-success">
-    <i class="bi bi-journal-text me-2"></i>QuickBooks Journal Entries
+  <div class="card-header bg-success d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-journal-text me-2"></i>QuickBooks Journal Entries</span>
+    <div class="d-flex align-items-center gap-2 no-print">
+      <span id="je-no-badge" class="badge bg-secondary">Next JE #: {{ next_journal_no | default(202) }}</span>
+      <button class="btn btn-sm btn-light py-0 px-2" onclick="downloadQboCsv()">
+        <i class="bi bi-download me-1"></i>Download QBO CSV
+      </button>
+    </div>
   </div>
   <div class="card-body">
 
@@ -240,6 +275,116 @@
   </div>
 </div>
 {% endif %}
+
+<!-- QBO CSV export function -->
+<script>
+function downloadQboCsv() {
+  const d = _qboPayroll;
+  const td = d.taxDetail;
+  const fmt = v => Number(v).toFixed(2);
+  const r2  = v => Math.round(v * 100) / 100;
+
+  // Journal date = last day of pay period (YYYY-MM → MM/DD/YYYY)
+  const [yr, mo] = d.payPeriod.split('-').map(Number);
+  const lastDay = new Date(yr, mo, 0).getDate();
+  const jDate = `${String(mo).padStart(2,'0')}/${String(lastDay).padStart(2,'0')}/${yr}`;
+
+  const desc = d.payPeriod + ' Payroll';
+
+  // Entry 1 wages DR: gross + health addback + HSA (all officer compensation)
+  let wagesDr = d.grossSalary;
+  if (d.healthInsurance > 0 && d.healthInIncomeTax) wagesDr += d.healthInsurance;
+  if (d.hsaContribution > 0) wagesDr += d.hsaContribution;
+  wagesDr = r2(wagesDr);
+
+  // Federal EE grouped: income tax + SS EE + Medicare EE (incl. additional)
+  const fedEe = r2(td.federalWithholding + td.ssEe + td.totalMedicareEe);
+  // Employer taxes grouped: SS ER + Medicare ER
+  const erTax = r2(td.ssEr + td.medicareEr);
+
+  // Column order per QBO import format:
+  // *JournalNo, *JournalDate, *AccountName, *Debits, *Credits, Description, Name, Currency, Location, Class
+  const rows = [
+    ['*JournalNo', '*JournalDate', '*AccountName', '*Debits', '*Credits', 'Description', 'Name', 'Currency', 'Location', 'Class'],
+  ];
+
+  let je = _nextJournalNo;
+  let jeCount = 0;
+
+  // Helper: push one line. isFirst=true → include date and currency on this row.
+  function line(isFirst, account, debit, credit, memo) {
+    rows.push([
+      je,
+      isFirst ? jDate : '',
+      account,
+      debit  ? fmt(debit)  : '',
+      credit ? fmt(credit) : '',
+      memo || '',
+      '',
+      isFirst ? 'USD' : '',
+      '',
+      '',
+    ]);
+  }
+
+  // ── Entry 1: Monthly Payroll — Wages & Withholdings ──
+  line(true,  'Payroll Expenses: Wages',                          wagesDr,            null,               desc + ' - Gross wages, health insurance & HSA addback');
+  line(false, 'Payroll Liabilities: Federal Taxes (941/943/944)', null,               fedEe,              desc + ' - Federal income tax, SS & Medicare (EE)');
+  line(false, 'Payroll Liabilities: GA Income Tax',               null,               td.gaWithholding,   desc + ' - Georgia income tax withheld');
+  if (d.healthInsurance > 0 && d.healthInIncomeTax) {
+    line(false, 'Payroll Liabilities: S-Corp Health Insurance',   null,               d.healthInsurance,  desc + ' - Health insurance premium payable');
+  }
+  if (d.hsaContribution > 0) {
+    line(false, 'Payroll Liabilities: Co. HSA',                   null,               d.hsaContribution,  desc + ' - HSA contribution payable');
+  }
+  line(false, 'Business Checking',                                null,               td.netPay,          desc + ' - Net paycheck to officer');
+  je++; jeCount++;
+
+  // ── Entry 2: Employer Payroll Taxes ──
+  line(true,  'Payroll Expenses: Taxes',                          erTax,              null,               desc + ' - Employer SS + Medicare');
+  line(false, 'Payroll Liabilities: Federal Taxes (941/943/944)', null,               erTax,              desc + ' - Employer SS + Medicare payable');
+  je++; jeCount++;
+
+  // ── Entry 3: Pay Medical Insurance Premium to Insurer ──
+  if (d.healthInsurance > 0 && d.healthInIncomeTax) {
+    line(true,  'Payroll Liabilities: S-Corp Health Insurance',   d.healthInsurance,  null,               desc + ' - Clear health insurance payable');
+    line(false, 'Business Checking',                              null,               d.healthInsurance,  desc + ' - Payment to insurance company');
+    je++; jeCount++;
+  }
+
+  // ── Entry 4: HSA Employer Contribution ──
+  if (d.hsaContribution > 0) {
+    line(true,  'Payroll Liabilities: Co. HSA',                   d.hsaContribution,  null,               desc + ' - Clear HSA payable');
+    line(false, 'Business Checking',                              null,               d.hsaContribution,  desc + ' - Transfer to HSA account');
+    je++; jeCount++;
+  }
+
+  // Build CSV string
+  const csv = rows.map(r =>
+    r.map(cell => {
+      const s = String(cell);
+      return (s.includes(',') || s.includes('"') || s.includes('\n'))
+        ? '"' + s.replace(/"/g, '""') + '"'
+        : s;
+    }).join(',')
+  ).join('\r\n');
+
+  // Trigger download
+  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = 'qbo_journal_' + d.payPeriod + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Increment journal number, update badge
+  htmx.ajax('POST', `/htmx/increment-journal-no?count=${jeCount}`,
+            {target: '#je-no-badge', swap: 'outerHTML'});
+}
+</script>
 
 <!-- If save_run, also swap in the updated history panel via OOB swap -->
 {% if save_run and history %}

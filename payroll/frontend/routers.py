@@ -11,10 +11,11 @@ HTMX partial routes — return HTML fragments, not full pages:
   DELETE /htmx/runs/{id}     → deletes a run, returns refreshed _history.html
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -129,6 +130,7 @@ async def admin_save(request: Request) -> HTMLResponse:
         "acctChecking": form.get("acct_checking"),
         "federalDueDateNote": form.get("federal_due_date_note"),
         "georgiaDueDateNote": form.get("georgia_due_date_note"),
+        "nextJournalNo": int(form.get("next_journal_no") or 202),
     }
 
     try:
@@ -168,10 +170,9 @@ async def htmx_calculate(
     hsa_in_income_tax: bool = Form(False),
     ytd_fica_wages: float = Form(0.0),
     use_previous_ytd_fica: bool = Form(False),
-    save_run: bool = Form(False),
     notes: str = Form(""),
 ) -> HTMLResponse:
-    """Calculate payroll and return the results partial."""
+    """Calculate payroll and return the results partial (never saves)."""
     client = PayrollAPIClient()
     try:
         result = await client.calculate(
@@ -184,22 +185,26 @@ async def htmx_calculate(
                 "hsaInIncomeTax": hsa_in_income_tax,
                 "ytdFicaWages": ytd_fica_wages,
                 "usePreviousYtdFica": use_previous_ytd_fica,
-                "saveRun": save_run,
+                "saveRun": False,
                 "notes": notes or None,
             }
         )
-        # Fetch updated history after a successful save
-        history = []
-        if save_run:
-            try:
-                history = await client.list_runs()
-            except Exception:
-                pass
+        next_journal_no = 202
+        try:
+            config = await client.get_config()
+            next_journal_no = config.get("nextJournalNo", 202)
+        except Exception:
+            pass
 
         return templates.TemplateResponse(
             request,
             "partials/_results.html",
-            {"result": result, "history": history, "save_run": save_run},
+            {
+                "result": result,
+                "history": [],
+                "save_run": False,
+                "next_journal_no": next_journal_no,
+            },
         )
 
     except APIError as exc:
@@ -215,6 +220,72 @@ async def htmx_calculate(
             request,
             "partials/_error.html",
             {"message": "An unexpected error occurred. Is the API running?"},
+            status_code=500,
+        )
+
+
+@router.post("/htmx/save-run", response_class=HTMLResponse)
+async def htmx_save_run(
+    request: Request,
+    pay_period: str = Form(...),
+    gross_salary: float = Form(...),
+    health_insurance: float = Form(0.0),
+    hsa_contribution: float = Form(0.0),
+    health_in_income_tax: bool = Form(False),
+    hsa_in_income_tax: bool = Form(False),
+    ytd_fica_wages: float = Form(0.0),
+    notes: str = Form(""),
+) -> HTMLResponse:
+    """Save a calculated run to history and return the updated results partial."""
+    client = PayrollAPIClient()
+    try:
+        result = await client.calculate(
+            {
+                "payPeriod": pay_period,
+                "grossSalary": gross_salary,
+                "healthInsurance": health_insurance,
+                "hsaContribution": hsa_contribution,
+                "healthInIncomeTax": health_in_income_tax,
+                "hsaInIncomeTax": hsa_in_income_tax,
+                "ytdFicaWages": ytd_fica_wages,
+                "usePreviousYtdFica": False,
+                "saveRun": True,
+                "notes": notes or None,
+            }
+        )
+        history = []
+        next_journal_no = 202
+        try:
+            config = await client.get_config()
+            next_journal_no = config.get("nextJournalNo", 202)
+            history = await client.list_runs()
+        except Exception:
+            pass
+
+        return templates.TemplateResponse(
+            request,
+            "partials/_results.html",
+            {
+                "result": result,
+                "history": history,
+                "save_run": True,
+                "next_journal_no": next_journal_no,
+            },
+        )
+
+    except APIError as exc:
+        return templates.TemplateResponse(
+            request,
+            "partials/_error.html",
+            {"message": exc.detail, "status_code": exc.status_code},
+            status_code=exc.status_code,
+        )
+    except Exception as exc:
+        logger.exception("Unexpected error during save-run: %s", exc)
+        return templates.TemplateResponse(
+            request,
+            "partials/_error.html",
+            {"message": "An unexpected error occurred saving the run."},
             status_code=500,
         )
 
@@ -244,11 +315,23 @@ async def htmx_get_run(request: Request, run_id: int) -> HTMLResponse:
     """Load a saved payroll run into the results panel."""
     client = PayrollAPIClient()
     try:
-        result = await client.get_run(run_id)
+        result, config = await asyncio.gather(
+            client.get_run(run_id),
+            client.get_config(),
+            return_exceptions=True,
+        )
+        if isinstance(result, Exception):
+            raise result
+        next_journal_no = config.get("nextJournalNo", 202) if isinstance(config, dict) else 202
         return templates.TemplateResponse(
             request,
             "partials/_results.html",
-            {"result": result, "history": [], "save_run": False},
+            {
+                "result": result,
+                "history": [],
+                "save_run": False,
+                "next_journal_no": next_journal_no,
+            },
         )
     except APIError as exc:
         return templates.TemplateResponse(
@@ -278,3 +361,20 @@ async def htmx_delete_run(request: Request, run_id: int) -> HTMLResponse:
             {"message": exc.detail},
             status_code=exc.status_code,
         )
+
+
+@router.post("/htmx/increment-journal-no", response_class=HTMLResponse)
+async def htmx_increment_journal_no(
+    request: Request,
+    count: int = Query(default=2, ge=1),
+) -> HTMLResponse:
+    """Increment next_journal_no in config after a QBO CSV export. Returns updated badge HTML."""
+    client = PayrollAPIClient()
+    try:
+        config = await client.increment_journal_no(count)
+        next_no = config.get("nextJournalNo", 202)
+        return HTMLResponse(
+            f'<span id="je-no-badge" class="badge bg-secondary ms-2">Next JE #: {next_no}</span>'
+        )
+    except Exception:
+        return HTMLResponse('<span id="je-no-badge"></span>')

@@ -267,6 +267,7 @@ class PayrollRunService:
                 net_pay=calc.net_pay,
                 total_employer_taxes=calc.total_employer_taxes,
                 total_employer_cost=calc.total_employer_cost,
+                ytd_fica_before=payload.ytd_fica_wages,
                 ytd_fica_after=calc.ytd_fica_after,
             ),
             journal_entries=journal_entries,
@@ -290,21 +291,23 @@ class PayrollRunService:
         entries: list[JournalEntry] = []
 
         # ---- Entry 1: Gross payroll wages and withholdings ----
-        # The debit to Officer Compensation includes the medical insurance W-2
-        # addback so the entry represents total W-2 Box 1 wages.
-        dr_compensation = gross + (health if health_in_it and health > 0 else 0.0)
+        # DR Officer Compensation = gross + health W-2 addback (if in income tax) + HSA.
+        # HSA is always included here because it flows through payroll as officer comp.
+        dr_compensation = round(
+            gross + (health if health_in_it and health > 0 else 0.0) + (hsa if hsa > 0 else 0.0),
+            2,
+        )
+
+        comp_memo = f"Gross salary ${gross:,.2f}"
+        if health_in_it and health > 0:
+            comp_memo += f" + medical insurance W-2 addback ${health:,.2f}"
+        if hsa > 0:
+            comp_memo += f" + HSA contribution ${hsa:,.2f}"
 
         entry1_lines: list[JournalLine] = [
             JournalLine(
                 account=acct["officer_compensation"],
-                memo=(
-                    f"Gross salary ${gross:,.2f}"
-                    + (
-                        f" + medical insurance W-2 addback ${health:,.2f}"
-                        if health_in_it and health > 0
-                        else ""
-                    )
-                ),
+                memo=comp_memo,
                 debit=dr_compensation,
             ),
             JournalLine(
@@ -330,13 +333,23 @@ class PayrollRunService:
             ),
         ]
 
-        # Medical insurance payable offset (cleared when premium paid to insurer)
+        # Medical insurance payable (cleared in Entry 3 when premium paid to insurer)
         if health_in_it and health > 0:
             entry1_lines.append(
                 JournalLine(
                     account=acct["health_ins_payable"],
                     memo="Medical insurance premium - clear when paid to insurer",
                     credit=health,
+                )
+            )
+
+        # HSA payable (cleared in Entry 4 when funds transferred to HSA account)
+        if hsa > 0:
+            entry1_lines.append(
+                JournalLine(
+                    account=acct["hsa_payable"],
+                    memo="HSA contribution payable - clear when transferred to HSA",
+                    credit=hsa,
                 )
             )
 
@@ -428,21 +441,21 @@ class PayrollRunService:
                     )
                 )
 
-        # ---- Entry 4 (or 3): HSA contribution ----
+        # ---- Entry 4 (or 3): Clear HSA payable when funds transferred to HSA ----
         if hsa > 0:
             entry_num = 4 if health > 0 else 3
             entries.append(
                 JournalEntry(
                     title=f"Entry {entry_num}: HSA Employer Contribution",
-                    note="Record when funds are transferred to the HSA account.",
+                    note="Record when you transfer funds to the HSA account. Clears the HSA payable from Entry 1.",
                     lines=[
                         JournalLine(
-                            account=acct["hsa_expense"],
-                            memo="Monthly HSA employer contribution",
+                            account=acct["hsa_payable"],
+                            memo="Clear HSA contribution payable",
                             debit=hsa,
                         ),
                         JournalLine(
-                            account=acct["hsa_payable"],
+                            account=acct["checking"],
                             memo="Transfer to HSA account",
                             credit=hsa,
                         ),

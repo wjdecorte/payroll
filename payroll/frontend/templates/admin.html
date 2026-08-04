@@ -131,6 +131,16 @@
           {% endfor %}
         </div>
 
+        <div class="section-label">QBO Journal Import</div>
+        <div class="row g-2 mb-3">
+          <div class="col-md-4">
+            <label class="form-label">Next Journal No.</label>
+            <input form="admin-form" type="number" class="form-control" name="next_journal_no"
+                   min="1" step="1" value="{{ config.nextJournalNo | default(202) }}" required>
+            <div class="form-text">Auto-incremented by 2 each time you download a QBO CSV.</div>
+          </div>
+        </div>
+
         <div class="section-label">Payment Notes</div>
         <div class="mb-2">
           <label class="form-label">Federal Tax Due Note</label>

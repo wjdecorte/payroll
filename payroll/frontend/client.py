@@ -98,3 +98,14 @@ class PayrollAPIClient:
             if not response.is_success:
                 raise APIError(response.status_code, _extract_error_message(response))
             return response.json()
+
+    async def increment_journal_no(self, count: int = 2) -> dict:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/payroll/config/increment-journal-no",
+                params={"count": count},
+                timeout=10.0,
+            )
+            if not response.is_success:
+                raise APIError(response.status_code, _extract_error_message(response))
+            return response.json()

@@ -50,6 +50,15 @@ class PayrollConfigService:
         config = self._get_or_create()
         return config.federal_due_date_note, config.georgia_due_date_note
 
+    def increment_journal_no(self, count: int) -> PayrollConfigRead:
+        """Advance next_journal_no by count and persist."""
+        config = self._get_or_create()
+        config.next_journal_no = max(1, config.next_journal_no + count)
+        self.session.add(config)
+        self.session.commit()
+        self.session.refresh(config)
+        return PayrollConfigRead.model_validate(config)
+
     def _get_or_create(self) -> PayrollConfig:
         config = self.session.exec(select(PayrollConfig).limit(1)).first()
         if config:
@@ -76,4 +85,5 @@ class PayrollConfigService:
             "acct_health_ins_payable": app_settings.acct_health_ins_payable,
             "acct_hsa_payable": app_settings.acct_hsa_payable,
             "acct_checking": app_settings.acct_checking,
+            "next_journal_no": 202,
         }

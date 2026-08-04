@@ -148,3 +148,18 @@ async def update_payroll_config(
 ) -> PayrollConfigRead:
     service = PayrollConfigService(session)
     return service.update_config(payload)
+
+
+@router.post(
+    "/config/increment-journal-no",
+    response_model=PayrollConfigRead,
+    status_code=status.HTTP_200_OK,
+    summary="Advance the next QBO journal number",
+    description="Increments next_journal_no by `count` after a CSV export.",
+)
+async def increment_journal_no(
+    count: int = Query(default=2, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> PayrollConfigRead:
+    service = PayrollConfigService(session)
+    return service.increment_journal_no(count)

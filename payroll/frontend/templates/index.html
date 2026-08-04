@@ -106,17 +106,7 @@
             </div>
           </div>
 
-          <!-- Save & Notes -->
-          <div class="section-label">Save Run</div>
-          <div class="mb-2">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="save_run"
-                     id="save_run" value="true" {{ 'checked' if (config and config.defaultSaveRun) else '' }}>
-              <label class="form-check-label" for="save_run">
-                Save this payroll run to history
-              </label>
-            </div>
-          </div>
+          <!-- Notes -->
           <div class="mb-3">
             <label class="form-label">Notes <span class="fw-normal text-muted">(optional)</span></label>
             <textarea class="form-control" name="notes" rows="2"

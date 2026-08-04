@@ -38,3 +38,6 @@ class PayrollConfig(AppBaseModel, table=True):
         "Pay via Georgia Tax Center (gtc.dor.ga.gov). "
         "Monthly if liability > $800/year; otherwise quarterly."
     )
+
+    # QBO journal import — incremented by 2 each time a CSV is exported
+    next_journal_no: int = Field(default=202, ge=1)

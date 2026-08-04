@@ -150,6 +150,7 @@ class TaxDetail(AppBaseSchema):
     net_pay: float
     total_employer_taxes: float
     total_employer_cost: float
+    ytd_fica_before: float
     ytd_fica_after: float
 
 

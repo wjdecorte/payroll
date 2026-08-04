@@ -32,6 +32,9 @@ class PayrollConfigBase(AppBaseSchema):
     federal_due_date_note: str
     georgia_due_date_note: str
 
+    # QBO journal import tracking
+    next_journal_no: int = 202
+
 
 class PayrollConfigUpdate(PayrollConfigBase):
     """Full replacement update for payroll configuration."""

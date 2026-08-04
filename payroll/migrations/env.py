@@ -11,6 +11,7 @@ from alembic import context
 from sqlmodel import SQLModel
 
 # Import all models to register them with SQLModel metadata
+import payroll.payroll_run.config_models  # noqa: F401
 import payroll.payroll_run.models  # noqa: F401
 
 # Alembic Config object — gives access to values in alembic.ini
