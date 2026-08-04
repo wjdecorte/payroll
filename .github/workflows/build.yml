@@ -3,7 +3,7 @@ name: Build and Push Image
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:   # allows manual trigger from GitHub Actions UI
 
 env:
