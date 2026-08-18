@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: payroll
       POSTGRES_DB: payroll
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       # Bind mount so DB data lives in a visible Synology folder.
       # Back this up with Hyper Backup or DSM Snapshot Replication.
@@ -22,7 +22,7 @@ services:
   api:
     # Image is built by GitHub Actions and pushed to GHCR on every push to main.
     # Replace GITHUB_USERNAME with your GitHub username or org.
-    image: ghcr.io/GITHUB_USERNAME/payroll:latest
+    image: ghcr.io/wjdecorte/payroll:latest
     ports:
       - "9000:9000"
     environment:
@@ -42,7 +42,7 @@ services:
       start_period: 10s
 
   frontend:
-    image: ghcr.io/GITHUB_USERNAME/payroll:latest
+    image: ghcr.io/wjdecorte/payroll:latest
     command: ["uvicorn", "payroll.frontend.app:app", "--host", "0.0.0.0", "--port", "8080"]
     ports:
       - "8070:8080"

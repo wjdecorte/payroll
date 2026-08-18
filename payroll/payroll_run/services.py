@@ -394,12 +394,15 @@ class PayrollRunService:
             )
         )
 
+        # Track entry number dynamically (entries 1 and 2 are always present)
+        entry_num = 3
+
         # ---- Entry 3: Clear medical insurance payable (when premium is paid) ----
         if health > 0:
             if health_in_it:
                 entries.append(
                     JournalEntry(
-                        title="Entry 3: Pay Medical Insurance Premium to Insurer",
+                        title=f"Entry {entry_num}: Pay Medical Insurance Premium to Insurer",
                         note=(
                             "Record when you pay the insurance company. "
                             "Clears the medical insurance payable from Entry 1."
@@ -421,7 +424,7 @@ class PayrollRunService:
             else:
                 entries.append(
                     JournalEntry(
-                        title="Entry 3: Medical Insurance Premium (Direct Payment)",
+                        title=f"Entry {entry_num}: Medical Insurance Premium (Direct Payment)",
                         note=(
                             "Paid directly — not routed through payroll. "
                             "Confirm W-2 Box 1 addback treatment with your CPA."
@@ -440,10 +443,10 @@ class PayrollRunService:
                         ],
                     )
                 )
+            entry_num += 1
 
-        # ---- Entry 4 (or 3): Clear HSA payable when funds transferred to HSA ----
+        # ---- Entry 3/4: Clear HSA payable when funds transferred to HSA ----
         if hsa > 0:
-            entry_num = 4 if health > 0 else 3
             entries.append(
                 JournalEntry(
                     title=f"Entry {entry_num}: HSA Employer Contribution",
@@ -462,6 +465,77 @@ class PayrollRunService:
                     ],
                 )
             )
+            entry_num += 1
+
+        # ---- Federal Tax Payment (EFTPS) ----
+        fed_total = round(
+            calc.federal_withholding
+            + calc.ss_ee
+            + calc.ss_er
+            + calc.total_medicare_ee
+            + calc.medicare_er,
+            2,
+        )
+        entries.append(
+            JournalEntry(
+                title=f"Entry {entry_num}: Federal Tax Payment (EFTPS)",
+                note="Record when you make the EFTPS deposit. Clears all federal tax payable accounts.",
+                lines=[
+                    JournalLine(
+                        account=acct["fed_tax_payable"],
+                        memo="Federal income tax withheld",
+                        debit=calc.federal_withholding,
+                    ),
+                    JournalLine(
+                        account=acct["ss_payable_ee"],
+                        memo="Employee Social Security 6.2%",
+                        debit=calc.ss_ee,
+                    ),
+                    JournalLine(
+                        account=acct["ss_payable_er"],
+                        memo="Employer Social Security 6.2%",
+                        debit=calc.ss_er,
+                    ),
+                    JournalLine(
+                        account=acct["medicare_payable_ee"],
+                        memo="Employee Medicare 1.45%"
+                        + (" + 0.9% additional" if calc.additional_medicare > 0 else ""),
+                        debit=calc.total_medicare_ee,
+                    ),
+                    JournalLine(
+                        account=acct["medicare_payable_er"],
+                        memo="Employer Medicare 1.45%",
+                        debit=calc.medicare_er,
+                    ),
+                    JournalLine(
+                        account=acct["checking"],
+                        memo="EFTPS federal tax deposit",
+                        credit=fed_total,
+                    ),
+                ],
+            )
+        )
+        entry_num += 1
+
+        # ---- Georgia Tax Payment ----
+        entries.append(
+            JournalEntry(
+                title=f"Entry {entry_num}: Georgia Tax Payment",
+                note="Record when you pay via the Georgia Tax Center. Clears the GA withholding payable.",
+                lines=[
+                    JournalLine(
+                        account=acct["ga_tax_payable"],
+                        memo="Georgia income tax withheld",
+                        debit=calc.ga_withholding,
+                    ),
+                    JournalLine(
+                        account=acct["checking"],
+                        memo="Payment to Georgia Department of Revenue",
+                        credit=calc.ga_withholding,
+                    ),
+                ],
+            )
+        )
 
         return entries
 

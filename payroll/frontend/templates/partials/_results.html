@@ -359,6 +359,17 @@ function downloadQboCsv() {
     je++; jeCount++;
   }
 
+  // ── Federal Tax Payment (EFTPS) ──
+  const totalEftps = r2(td.federalWithholding + td.ssEe + td.ssEr + td.totalMedicareEe + td.medicareEr);
+  line(true,  'Payroll Liabilities: Federal Taxes (941/943/944)', totalEftps,          null,               desc + ' - Clear federal tax payable (EFTPS deposit)');
+  line(false, 'Business Checking',                                null,                totalEftps,         desc + ' - EFTPS deposit');
+  je++; jeCount++;
+
+  // ── Georgia Tax Payment ──
+  line(true,  'Payroll Liabilities: GA Income Tax',               td.gaWithholding,    null,               desc + ' - Clear GA income tax payable');
+  line(false, 'Business Checking',                                null,                td.gaWithholding,   desc + ' - Payment to Georgia Department of Revenue');
+  je++; jeCount++;
+
   // Build CSV string
   const csv = rows.map(r =>
     r.map(cell => {
