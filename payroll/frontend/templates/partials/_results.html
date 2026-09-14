@@ -199,10 +199,8 @@
 </div>
 
 <!-- Embed payroll data for client-side QBO CSV generation -->
-<script>
-const _qboPayroll = {{ result | tojson }};
-const _nextJournalNo = {{ next_journal_no | default(202) }};
-</script>
+<script type="application/json" id="qbo-payroll-data">{{ result | tojson }}</script>
+<script type="application/json" id="qbo-journal-no">{{ next_journal_no | default(202) }}</script>
 
 <!-- ── Journal Entries ───────────────────────────────────────────── -->
 {% if r.journalEntries %}
@@ -279,7 +277,7 @@ const _nextJournalNo = {{ next_journal_no | default(202) }};
 <!-- QBO CSV export function -->
 <script>
 function downloadQboCsv() {
-  const d = _qboPayroll;
+  const d = JSON.parse(document.getElementById('qbo-payroll-data').textContent);
   const td = d.taxDetail;
   const fmt = v => Number(v).toFixed(2);
   const r2  = v => Math.round(v * 100) / 100;
@@ -308,7 +306,7 @@ function downloadQboCsv() {
     ['*JournalNo', '*JournalDate', '*AccountName', '*Debits', '*Credits', 'Description', 'Name', 'Currency', 'Location', 'Class'],
   ];
 
-  let je = _nextJournalNo;
+  let je = JSON.parse(document.getElementById('qbo-journal-no').textContent);
   let jeCount = 0;
 
   // Helper: push one line. isFirst=true → include date and currency on this row.
