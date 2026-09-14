@@ -328,45 +328,45 @@ function downloadQboCsv() {
   }
 
   // ── Entry 1: Monthly Payroll — Wages & Withholdings ──
-  line(true,  'Payroll Expenses: Wages',                          wagesDr,            null,               desc + ' - Gross wages, health insurance & HSA addback');
-  line(false, 'Payroll Liabilities: Federal Taxes (941/943/944)', null,               fedEe,              desc + ' - Federal income tax, SS & Medicare (EE)');
-  line(false, 'Payroll Liabilities: GA Income Tax',               null,               td.gaWithholding,   desc + ' - Georgia income tax withheld');
+  line(true,  'Payroll Expenses:Wages',                          wagesDr,            null,               desc + ' - Gross wages, health insurance & HSA addback');
+  line(false, 'Payroll Liabilities:Federal Taxes (941/943/944)', null,               fedEe,              desc + ' - Federal income tax, SS & Medicare (EE)');
+  line(false, 'Payroll Liabilities:GA Income Tax',               null,               td.gaWithholding,   desc + ' - Georgia income tax withheld');
   if (d.healthInsurance > 0 && d.healthInIncomeTax) {
-    line(false, 'Payroll Liabilities: S-Corp Health Insurance',   null,               d.healthInsurance,  desc + ' - Health insurance premium payable');
+    line(false, 'Payroll Liabilities:S-Corp Health Insurance',   null,               d.healthInsurance,  desc + ' - Health insurance premium payable');
   }
   if (d.hsaContribution > 0) {
-    line(false, 'Payroll Liabilities: Co. HSA',                   null,               d.hsaContribution,  desc + ' - HSA contribution payable');
+    line(false, 'Payroll Liabilities:Co. HSA',                   null,               d.hsaContribution,  desc + ' - HSA contribution payable');
   }
   line(false, 'Business Checking',                                null,               td.netPay,          desc + ' - Net paycheck to officer');
   je++; jeCount++;
 
   // ── Entry 2: Employer Payroll Taxes ──
-  line(true,  'Payroll Expenses: Taxes',                          erTax,              null,               desc + ' - Employer SS + Medicare');
-  line(false, 'Payroll Liabilities: Federal Taxes (941/943/944)', null,               erTax,              desc + ' - Employer SS + Medicare payable');
+  line(true,  'Payroll Expenses:Taxes',                          erTax,              null,               desc + ' - Employer SS + Medicare');
+  line(false, 'Payroll Liabilities:Federal Taxes (941/943/944)', null,               erTax,              desc + ' - Employer SS + Medicare payable');
   je++; jeCount++;
 
   // ── Entry 3: Pay Medical Insurance Premium to Insurer ──
   if (d.healthInsurance > 0 && d.healthInIncomeTax) {
-    line(true,  'Payroll Liabilities: S-Corp Health Insurance',   d.healthInsurance,  null,               desc + ' - Clear health insurance payable');
+    line(true,  'Payroll Liabilities:S-Corp Health Insurance',   d.healthInsurance,  null,               desc + ' - Clear health insurance payable');
     line(false, 'Business Checking',                              null,               d.healthInsurance,  desc + ' - Payment to insurance company');
     je++; jeCount++;
   }
 
   // ── Entry 4: HSA Employer Contribution ──
   if (d.hsaContribution > 0) {
-    line(true,  'Payroll Liabilities: Co. HSA',                   d.hsaContribution,  null,               desc + ' - Clear HSA payable');
+    line(true,  'Payroll Liabilities:Co. HSA',                   d.hsaContribution,  null,               desc + ' - Clear HSA payable');
     line(false, 'Business Checking',                              null,               d.hsaContribution,  desc + ' - Transfer to HSA account');
     je++; jeCount++;
   }
 
   // ── Federal Tax Payment (EFTPS) ──
   const totalEftps = r2(td.federalWithholding + td.ssEe + td.ssEr + td.totalMedicareEe + td.medicareEr);
-  line(true,  'Payroll Liabilities: Federal Taxes (941/943/944)', totalEftps,          null,               desc + ' - Clear federal tax payable (EFTPS deposit)');
+  line(true,  'Payroll Liabilities:Federal Taxes (941/943/944)', totalEftps,          null,               desc + ' - Clear federal tax payable (EFTPS deposit)');
   line(false, 'Business Checking',                                null,                totalEftps,         desc + ' - EFTPS deposit');
   je++; jeCount++;
 
   // ── Georgia Tax Payment ──
-  line(true,  'Payroll Liabilities: GA Income Tax',               td.gaWithholding,    null,               desc + ' - Clear GA income tax payable');
+  line(true,  'Payroll Liabilities:GA Income Tax',               td.gaWithholding,    null,               desc + ' - Clear GA income tax payable');
   line(false, 'Business Checking',                                null,                td.gaWithholding,   desc + ' - Payment to Georgia Department of Revenue');
   je++; jeCount++;
 
