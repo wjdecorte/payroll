@@ -63,6 +63,41 @@ class TestCalculate:
         accounts = [line.account for entry in result.journal_entries for line in entry.lines]
         assert "Operating Bank" in accounts
 
+    def test_tax_payment_entries_clear_payables_to_checking(self, service, base_input):
+        base_input.save_run = False
+        result = service.calculate(base_input)
+        entries = {e.title.split(": ", 1)[1]: e for e in result.journal_entries}
+
+        federal = entries["Federal Tax Payment (EFTPS)"]
+        georgia = entries["Georgia Tax Payment"]
+        td = result.tax_detail
+
+        expected_federal = round(
+            td.federal_withholding + td.ss_ee + td.ss_er + td.total_medicare_ee + td.medicare_er,
+            2,
+        )
+        assert sum(line.credit for line in federal.lines) == pytest.approx(expected_federal)
+        assert sum(line.credit for line in georgia.lines) == pytest.approx(td.ga_withholding)
+        assert federal.is_balanced
+        assert georgia.is_balanced
+
+    @pytest.mark.parametrize(
+        ("health", "hsa", "expected_count"),
+        [(500.0, 300.0, 6), (0.0, 300.0, 5), (500.0, 0.0, 5), (0.0, 0.0, 4)],
+    )
+    def test_entry_numbers_are_consecutive(self, service, base_input, health, hsa, expected_count):
+        base_input.save_run = False
+        base_input.health_insurance = health
+        base_input.hsa_contribution = hsa
+        result = service.calculate(base_input)
+
+        titles = [e.title for e in result.journal_entries]
+        assert len(titles) == expected_count
+        for i, title in enumerate(titles, start=1):
+            assert title.startswith(f"Entry {i}:"), titles
+        for entry in result.journal_entries:
+            assert entry.is_balanced
+
     def test_saved_run_has_id(self, service, base_input):
         result = service.calculate(base_input)
         assert result.saved is True

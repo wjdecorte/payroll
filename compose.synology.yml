@@ -20,8 +20,7 @@ services:
       start_period: 10s
 
   api:
-    # Image is built by GitHub Actions and pushed to GHCR on every push to main.
-    # Replace GITHUB_USERNAME with your GitHub username or org.
+    # Image is built by GitHub Actions and pushed to GHCR on every push to master.
     image: ghcr.io/wjdecorte/payroll:latest
     ports:
       - "9000:9000"

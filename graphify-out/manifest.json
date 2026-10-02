@@ -1,0 +1,350 @@
+{
+  "payroll/__init__.py": {
+    "mtime": 1775513795.6367252,
+    "seen": 1789653418.8396583,
+    "ast_hash": "54d6fd7b1ac4963745b3851000dcb28d",
+    "semantic_hash": ""
+  },
+  "payroll/app.py": {
+    "mtime": 1785871541.486826,
+    "seen": 1789653418.8396597,
+    "ast_hash": "ee5c710e805de9aaebb84954291a840d",
+    "semantic_hash": ""
+  },
+  "payroll/common/__init__.py": {
+    "mtime": 1775513795.6368928,
+    "seen": 1789653418.8396606,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "payroll/common/dependencies.py": {
+    "mtime": 1775513795.6371002,
+    "seen": 1789653418.8396614,
+    "ast_hash": "b565bf8fc344573e57de5ef01ee37d79",
+    "semantic_hash": ""
+  },
+  "payroll/common/exceptions.py": {
+    "mtime": 1775513795.6372278,
+    "seen": 1789653418.8396618,
+    "ast_hash": "728f5af90a63c7c8c71b01120af78ff3",
+    "semantic_hash": ""
+  },
+  "payroll/common/middleware.py": {
+    "mtime": 1775513795.637354,
+    "seen": 1789653418.8396623,
+    "ast_hash": "b2ddb386c7bee0e41ff0c3a0d2c58631",
+    "semantic_hash": ""
+  },
+  "payroll/common/models.py": {
+    "mtime": 1775513795.6374836,
+    "seen": 1789653418.839663,
+    "ast_hash": "9b046613e7ad23d05ef43282234f8097",
+    "semantic_hash": ""
+  },
+  "payroll/common/routers.py": {
+    "mtime": 1775513795.6376035,
+    "seen": 1789653418.8396635,
+    "ast_hash": "46faa6a5307abdc530b391965e54cb31",
+    "semantic_hash": ""
+  },
+  "payroll/common/schemas.py": {
+    "mtime": 1775513795.637719,
+    "seen": 1789653418.8396642,
+    "ast_hash": "308c6dd3e0270c4b9e2f87eb32349ba0",
+    "semantic_hash": ""
+  },
+  "payroll/common/services.py": {
+    "mtime": 1775513795.6378381,
+    "seen": 1789653418.839665,
+    "ast_hash": "a643ec2c54a02060d7cf3b4e255697c5",
+    "semantic_hash": ""
+  },
+  "payroll/exceptions.py": {
+    "mtime": 1775513795.6379604,
+    "seen": 1789653418.8396654,
+    "ast_hash": "5057cca826bcd0143398fdebe81651da",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/__init__.py": {
+    "mtime": 1775513795.6381,
+    "seen": 1789653418.8396661,
+    "ast_hash": "51b0fc02b45edd96b432ed626c1c0dd2",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/app.py": {
+    "mtime": 1775513795.6382263,
+    "seen": 1789653418.8396666,
+    "ast_hash": "ab445386e1efc7252c0c1b52e9f9d5a6",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/client.py": {
+    "mtime": 1785444599.2095418,
+    "seen": 1789653418.839667,
+    "ast_hash": "e2b037f65f5a7d7e78e206a880327de9",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/routers.py": {
+    "mtime": 1785871541.4869027,
+    "seen": 1789653418.8396678,
+    "ast_hash": "373d18a01c41febc2b322dc625cb61f4",
+    "semantic_hash": ""
+  },
+  "payroll/gunicorn_config.py": {
+    "mtime": 1775513795.6392968,
+    "seen": 1789653418.8396685,
+    "ast_hash": "5c922b736a2c882a64076dad6f40da4a",
+    "semantic_hash": ""
+  },
+  "payroll/logger_conf.py": {
+    "mtime": 1775513795.6394186,
+    "seen": 1789653418.839669,
+    "ast_hash": "8d30ace70beb76ca04ba453fd555b84b",
+    "semantic_hash": ""
+  },
+  "payroll/migrations/__init__.py": {
+    "mtime": 1775513795.6394534,
+    "seen": 1789653418.8396695,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "payroll/migrations/alembic_runner.py": {
+    "mtime": 1785871541.4868104,
+    "seen": 1789653418.8396702,
+    "ast_hash": "0b3f0679e4a8394eb2bfc6918008a1e3",
+    "semantic_hash": ""
+  },
+  "payroll/migrations/env.py": {
+    "mtime": 1785511806.6104205,
+    "seen": 1789653418.839671,
+    "ast_hash": "2bd9ef57e6f433d2b4c3cdc24bea8c4c",
+    "semantic_hash": ""
+  },
+  "payroll/migrations/versions/4a7f8b2c9d1e_add_next_journal_no_to_payroll_config.py": {
+    "mtime": 1785871541.4712343,
+    "seen": 1789653418.8396714,
+    "ast_hash": "083012297848a814174ca87420aec0d9",
+    "semantic_hash": ""
+  },
+  "payroll/migrations/versions/c3a8d2f19b40_initial_schema.py": {
+    "mtime": 1785875056.4023998,
+    "seen": 1789653418.839672,
+    "ast_hash": "4bfbbb4343a873ed1a44634acbc4d733",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/__init__.py": {
+    "mtime": 1775513795.6400912,
+    "seen": 1789653418.839673,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/config_models.py": {
+    "mtime": 1785444569.090466,
+    "seen": 1789653418.8396738,
+    "ast_hash": "33f834c4df9e15920a4849577e16cd50",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/config_schemas.py": {
+    "mtime": 1785444572.1545095,
+    "seen": 1789653418.8396745,
+    "ast_hash": "b3e7a345e1dc89ae6839063bbee65308",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/config_services.py": {
+    "mtime": 1785444582.349346,
+    "seen": 1789653418.839675,
+    "ast_hash": "3f2029eb92d1fb280aa4bf6e25dcc706",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/exceptions.py": {
+    "mtime": 1775513795.640281,
+    "seen": 1789653418.8396757,
+    "ast_hash": "31ccaa2e8f96fa52a588f75fccd9ede3",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/models.py": {
+    "mtime": 1775513795.6403906,
+    "seen": 1789653418.8396761,
+    "ast_hash": "d006a83a45594879f9846031514a25f3",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/routers.py": {
+    "mtime": 1785444593.292817,
+    "seen": 1789653418.8396766,
+    "ast_hash": "660759e9d54e3074356de3a06badfd01",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/schemas.py": {
+    "mtime": 1785513658.8457408,
+    "seen": 1789653418.8396773,
+    "ast_hash": "2fe04f92c458737272edff711f485f3e",
+    "semantic_hash": ""
+  },
+  "payroll/payroll_run/services.py": {
+    "mtime": 1786139713.8753104,
+    "seen": 1789653418.8396783,
+    "ast_hash": "c30e1b47eb74f30720016401ee763bec",
+    "semantic_hash": ""
+  },
+  "payroll/tax/__init__.py": {
+    "mtime": 1775513795.640862,
+    "seen": 1789653418.839679,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "payroll/tax/constants.py": {
+    "mtime": 1775513795.6410298,
+    "seen": 1789653418.8396795,
+    "ast_hash": "8f582d1616c1dd04a5ddc0dff34e1c73",
+    "semantic_hash": ""
+  },
+  "payroll/tax/engine.py": {
+    "mtime": 1775513795.641168,
+    "seen": 1789653418.8396802,
+    "ast_hash": "e0492ade49d955bba16530d5a8a611d0",
+    "semantic_hash": ""
+  },
+  "payroll/tax/schemas.py": {
+    "mtime": 1775513795.6413527,
+    "seen": 1789653418.839681,
+    "ast_hash": "8ecbfba6f50efe512e74cfa398f990ea",
+    "semantic_hash": ""
+  },
+  "pyproject.toml": {
+    "mtime": 1777436206.0143154,
+    "seen": 1789653418.8396816,
+    "ast_hash": "34270ca597b6bcd6e8fe83bd8392af3a",
+    "semantic_hash": ""
+  },
+  "tests/__init__.py": {
+    "mtime": 1775513795.641607,
+    "seen": 1789653418.8396823,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "tests/common/__init__.py": {
+    "mtime": 1775513795.6417103,
+    "seen": 1789653418.8396828,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "tests/common/test_common_routers.py": {
+    "mtime": 1775513795.6419053,
+    "seen": 1789653418.8396833,
+    "ast_hash": "cd5ea477165515f27682bd22ed9e9bf6",
+    "semantic_hash": ""
+  },
+  "tests/conftest.py": {
+    "mtime": 1780059460.7915418,
+    "seen": 1789653418.8396838,
+    "ast_hash": "974f1dc0cbf8f1f81a1cf1ad9079ef5b",
+    "semantic_hash": ""
+  },
+  "tests/payroll_run/__init__.py": {
+    "mtime": 1775513795.6420681,
+    "seen": 1789653418.8396847,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "tests/payroll_run/test_routers.py": {
+    "mtime": 1785362427.7716854,
+    "seen": 1789653418.8396852,
+    "ast_hash": "8972d55e6926d697473dbaa734c13564",
+    "semantic_hash": ""
+  },
+  "tests/payroll_run/test_service.py": {
+    "mtime": 1780059627.6887953,
+    "seen": 1789653418.839686,
+    "ast_hash": "73b3e91b7746575e61ee8ef61e0e46b6",
+    "semantic_hash": ""
+  },
+  "tests/tax/__init__.py": {
+    "mtime": 1775513795.6424618,
+    "seen": 1789653418.8396866,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": ""
+  },
+  "tests/tax/test_engine.py": {
+    "mtime": 1775513795.642663,
+    "seen": 1789653418.839687,
+    "ast_hash": "42ce45440cad935e1cccac52d3c679f9",
+    "semantic_hash": ""
+  },
+  ".github/workflows/build.yml": {
+    "mtime": 1785878059.8588545,
+    "seen": 1789653418.8396878,
+    "ast_hash": "bb5b32be5c68b9da7ccd51d092adb605",
+    "semantic_hash": ""
+  },
+  ".pre-commit-config.yaml": {
+    "mtime": 1789408534.0640218,
+    "seen": 1789653418.8396885,
+    "ast_hash": "970850eea2fc8c658a5a5e0217b70ee4",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1789653414.2023232,
+    "seen": 1789653418.839689,
+    "ast_hash": "f4390ab8abdced9cebbfc5ee06c5bc23",
+    "semantic_hash": ""
+  },
+  "CLAUDE.md": {
+    "mtime": 1789653414.2030518,
+    "seen": 1789653418.8396897,
+    "ast_hash": "5c27369b226fcf2be8a6cfe52224e767",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1775513795.6364515,
+    "seen": 1789653418.8396902,
+    "ast_hash": "cd872d3b7f543c2ec0f415a81557c0ea",
+    "semantic_hash": ""
+  },
+  "compose.synology.yml": {
+    "mtime": 1785939699.2973185,
+    "seen": 1789653418.8396907,
+    "ast_hash": "c58f99a8c6f3dfb4a432b9a43c1c8bb9",
+    "semantic_hash": ""
+  },
+  "compose.yml": {
+    "mtime": 1785362077.703374,
+    "seen": 1789653418.8396916,
+    "ast_hash": "9696b3f100e84a8bfe7e48e032119b07",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/templates/admin.html": {
+    "mtime": 1785444659.195641,
+    "seen": 1789653418.839692,
+    "ast_hash": "9406155ac6d206c408770087868814c9",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/templates/base.html": {
+    "mtime": 1780059503.818223,
+    "seen": 1789653418.8396926,
+    "ast_hash": "ab747f4a5248cb2d4e3d596164399fd1",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/templates/index.html": {
+    "mtime": 1785522377.281751,
+    "seen": 1789653418.839693,
+    "ast_hash": "39cfd17eae269bd6ce5b709deff6c6ab",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/templates/partials/_error.html": {
+    "mtime": 1775513795.638926,
+    "seen": 1789653418.8396938,
+    "ast_hash": "1c0e629a17ff2bea687dc57894aab16e",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/templates/partials/_history.html": {
+    "mtime": 1775513795.6390326,
+    "seen": 1789653418.8396943,
+    "ast_hash": "04860590cd8abbc0fe311300a2de04df",
+    "semantic_hash": ""
+  },
+  "payroll/frontend/templates/partials/_results.html": {
+    "mtime": 1789408724.6549704,
+    "seen": 1789653418.8396952,
+    "ast_hash": "26696e49d8496eec1132a63428f24319",
+    "semantic_hash": ""
+  }
+}
