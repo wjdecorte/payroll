@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 # Registry of all registered exception subclasses
-ALL_EXCEPTIONS: dict[int, type["AppBaseError"]] = {}
+ALL_EXCEPTIONS: dict[int, type[AppBaseError]] = {}
 _error_counter: int = 0
 
 
