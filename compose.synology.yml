@@ -22,6 +22,8 @@ services:
   api:
     # Image is built by GitHub Actions and pushed to GHCR on every push to master.
     image: ghcr.io/wjdecorte/payroll:latest
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "9000:9000"
     environment:
@@ -42,6 +44,8 @@ services:
 
   frontend:
     image: ghcr.io/wjdecorte/payroll:latest
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     command: ["uvicorn", "payroll.frontend.app:app", "--host", "0.0.0.0", "--port", "8080"]
     ports:
       - "8070:8080"
@@ -53,22 +57,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Optional: Watchtower (auto-update containers when a new image is pushed) ──
-  # Uncomment to enable. Watchtower checks GHCR every 5 minutes and restarts
-  # any service whose image has a newer :latest tag.
+  # ── Watchtower: auto-update containers when a new image is pushed ──
+  # Checks GHCR every 5 minutes and restarts only the services labelled
+  # com.centurylinklabs.watchtower.enable=true (api, frontend), leaving
+  # the Postgres container alone.
   #
-  # watchtower:
-  #   image: containrrr/watchtower
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock
-  #     - /volume1/docker/payroll/watchtower-config.json:/config.json
-  #   command: --interval 300 --cleanup
-  #   restart: unless-stopped
-  #
-  # If your GHCR repo is private, create watchtower-config.json:
+  # If the GHCR package is ever made private, mount a config.json with
+  # credentials at /config.json:
   # {
   #   "auths": {
   #     "ghcr.io": { "auth": "<base64(username:PAT)>" }
   #   }
   # }
   # Generate base64: echo -n "username:ghp_yourtoken" | base64
+  watchtower:
+    image: nickfedor/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup --label-enable
+    restart: unless-stopped
