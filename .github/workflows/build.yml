@@ -51,6 +51,9 @@ jobs:
           # Cache layers in the GitHub Actions cache for faster rebuilds.
           # On a code-only change (no new dependencies), the dependency
           # install layer is reused and builds typically finish in ~60s.
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_NUMBER=${{ github.run_number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # Build for x86-64 (all modern Synology NAS).
