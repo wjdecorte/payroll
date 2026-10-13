@@ -537,7 +537,23 @@ class PayrollRunService:
             )
         )
 
-        return entries
+        return self._drop_zero_amounts(entries)
+
+    @staticmethod
+    def _drop_zero_amounts(entries: list[JournalEntry]) -> list[JournalEntry]:
+        """Remove zero-amount lines and any entry left with nothing to post, then renumber."""
+        kept: list[JournalEntry] = []
+        for entry in entries:
+            lines = [ln for ln in entry.lines if ln.debit or ln.credit]
+            if not lines:
+                continue
+            title = entry.title.split(": ", 1)[-1]
+            kept.append(
+                entry.model_copy(
+                    update={"title": f"Entry {len(kept) + 1}: {title}", "lines": lines}
+                )
+            )
+        return kept
 
     def _build_tax_payment_summary(self, calc: PayrollCalculation) -> TaxPaymentSummary:
         ss_total = round(calc.ss_ee + calc.ss_er, 2)

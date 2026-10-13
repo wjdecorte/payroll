@@ -50,6 +50,29 @@ class TestCalculate:
         for entry in result.journal_entries:
             assert entry.is_balanced, f"Entry '{entry.title}' is not balanced"
 
+    def test_zero_amount_lines_and_entries_are_omitted(self, service):
+        result = service.calculate(
+            PayrollInput(
+                pay_period="2026-09",
+                gross_salary=300.00,
+                health_insurance=566.00,
+                hsa_contribution=0.0,
+                health_in_income_tax=True,
+                hsa_in_income_tax=False,
+                ytd_fica_wages=0.0,
+            )
+        )
+        assert result.tax_detail.ga_withholding == 0
+        assert result.tax_detail.federal_withholding == 0
+        titles = [e.title for e in result.journal_entries]
+        assert not any("Georgia" in t for t in titles)
+        assert [t.split(":")[0] for t in titles] == [
+            f"Entry {i}" for i in range(1, len(titles) + 1)
+        ]
+        for entry in result.journal_entries:
+            assert all(ln.debit or ln.credit for ln in entry.lines)
+            assert entry.is_balanced
+
     def test_journal_entries_use_configured_accounts(self, service, base_input):
         config = service.config_service.get_config()
         updated = PayrollConfigUpdate.model_validate(

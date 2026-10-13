@@ -144,7 +144,7 @@ class TestConfigEndpoint:
         response = client.get(f"{PREFIX}/payroll/config")
         assert response.status_code == 200
         data = response.json()
-        assert data["acctChecking"] == "Checking Account"
+        assert data["acctChecking"] == "Business Checking"
         assert data["defaultHealthInIncomeTax"] is True
 
     def test_update_config_persists_accounts_and_benefits(self, client):
