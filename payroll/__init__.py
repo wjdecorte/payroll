@@ -24,19 +24,19 @@ class Settings(BaseSettings):
     api_log_type: str = "standard"
 
     # QuickBooks Account Names — update to match your chart of accounts
-    acct_officer_compensation: str = "Officer Compensation"
-    acct_payroll_tax_expense: str = "Payroll Tax Expense"
+    acct_officer_compensation: str = "Payroll Expenses:Wages"
+    acct_payroll_tax_expense: str = "Payroll Expenses:Taxes"
     acct_health_insurance_exp: str = "Health Insurance Expense"
     acct_hsa_expense: str = "HSA Contribution Expense"
-    acct_fed_tax_payable: str = "Federal Income Tax Withholding Payable"
-    acct_ga_tax_payable: str = "Georgia Income Tax Withholding Payable"
-    acct_ss_payable_ee: str = "Social Security Tax Payable - Employee"
-    acct_ss_payable_er: str = "Social Security Tax Payable - Employer"
-    acct_medicare_payable_ee: str = "Medicare Tax Payable - Employee"
-    acct_medicare_payable_er: str = "Medicare Tax Payable - Employer"
-    acct_health_ins_payable: str = "Health Insurance Payable"
-    acct_hsa_payable: str = "HSA Payable"
-    acct_checking: str = "Checking Account"
+    acct_fed_tax_payable: str = "Payroll Liabilities:Federal Taxes (941/943/944)"
+    acct_ga_tax_payable: str = "Payroll Liabilities:GA Income Tax"
+    acct_ss_payable_ee: str = "Payroll Liabilities:Federal Taxes (941/943/944)"
+    acct_ss_payable_er: str = "Payroll Liabilities:Federal Taxes (941/943/944)"
+    acct_medicare_payable_ee: str = "Payroll Liabilities:Federal Taxes (941/943/944)"
+    acct_medicare_payable_er: str = "Payroll Liabilities:Federal Taxes (941/943/944)"
+    acct_health_ins_payable: str = "Payroll Liabilities:S-Corp Health Insurance"
+    acct_hsa_payable: str = "Payroll Liabilities:Co. HSA"
+    acct_checking: str = "Business Checking"
 
     @property
     def accounts(self) -> dict[str, str]:
