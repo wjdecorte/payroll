@@ -46,6 +46,11 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Create data directory for SQLite persistence
 RUN mkdir -p /app/data && chown appuser:0 /app/data
 
+# Commit SHA and CI run number of this build, shown in the UI and /info (declared late to keep earlier layers cached)
+ARG BUILD_SHA=dev
+ARG BUILD_NUMBER=0
+ENV BUILD_SHA=${BUILD_SHA} BUILD_NUMBER=${BUILD_NUMBER}
+
 USER appuser
 
 EXPOSE 9000

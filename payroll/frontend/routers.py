@@ -19,6 +19,7 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from payroll.frontend import frontend_settings
 from payroll.frontend.client import APIError, PayrollAPIClient
 
 logger = logging.getLogger("payroll.frontend")
@@ -29,6 +30,9 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 # Register a currency formatter so templates can write {{ value | currency }}
 templates.env.filters["currency"] = lambda v: f"${v:,.2f}" if v is not None else "$0.00"
 templates.env.filters["abs"] = abs
+templates.env.globals["app_version"] = frontend_settings.app_version
+templates.env.globals["build_number"] = frontend_settings.build_number
+templates.env.globals["build_sha"] = frontend_settings.build_sha[:7]
 
 router = APIRouter()
 

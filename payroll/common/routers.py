@@ -22,6 +22,8 @@ async def info() -> dict:
     return {
         "appName": app_settings.app_name,
         "version": app_settings.app_version,
+        "build": app_settings.build_sha[:7],
+        "buildNumber": app_settings.build_number,
         "debugMode": app_settings.debug_mode,
         "baseUrlPrefix": app_settings.base_url_prefix,
     }

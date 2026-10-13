@@ -11,7 +11,9 @@ class FrontendSettings(BaseSettings):
     )
 
     app_name: str = "Payroll"
-    app_version: str = "1.0.0"
+    app_version: str = "1.1.0"
+    build_sha: str = "dev"
+    build_number: int = 0
     frontend_port: int = 8080
     debug_mode: bool = False
 

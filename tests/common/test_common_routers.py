@@ -24,6 +24,11 @@ class TestInfo:
         data = client.get(f"{PREFIX}/info").json()
         assert "version" in data
 
+    def test_returns_build(self, client):
+        data = client.get(f"{PREFIX}/info").json()
+        assert data["build"] == "dev"
+        assert data["buildNumber"] == 0
+
     def test_returns_debug_mode(self, client):
         data = client.get(f"{PREFIX}/info").json()
         assert "debugMode" in data
