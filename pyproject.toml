@@ -1,6 +1,6 @@
 [project]
 name = "payroll"
-version = "1.1.0"
+version = "1.2.0"
 description = "S-Corp owner payroll calculator with QuickBooks journal entries"
 readme = "README.md"
 requires-python = ">=3.14"

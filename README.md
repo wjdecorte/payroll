@@ -1,4 +1,4 @@
-# Payroll
+# DCI Payroll
 
 S-Corp owner payroll calculator with QuickBooks journal entries.
 

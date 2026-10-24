@@ -18,7 +18,7 @@ class TestInfo:
 
     def test_returns_app_name(self, client):
         data = client.get(f"{PREFIX}/info").json()
-        assert data["appName"] == "Payroll"
+        assert data["appName"] == "DCI Payroll"
 
     def test_returns_version(self, client):
         data = client.get(f"{PREFIX}/info").json()
