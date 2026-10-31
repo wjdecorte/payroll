@@ -1259,3 +1259,57 @@ def test_password_typed_into_email_field_leaves_no_trace(web, session):
     assert typed.lower() not in blob.lower()
     # Not even a meaningful piece of it.
     assert all(typed.lower()[i : i + 8] not in blob.lower() for i in range(13))
+
+
+# ---------------------------------------------------------------------------
+# Final review I-2: no database transaction is held open while Argon2 runs
+# ---------------------------------------------------------------------------
+
+
+def _spy_in_transaction(monkeypatch, session, name):
+    """Wrap auth_routers.<name>; record whether ``session`` had a transaction open."""
+    seen: list[bool] = []
+    real = getattr(auth_routers, name)
+
+    def spy(*args, **kwargs):
+        seen.append(session.in_transaction())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(auth_routers, name, spy)
+    return seen
+
+
+def test_login_holds_no_transaction_while_hashing(web, session, monkeypatch):
+    user = enrolled_user(session)
+    locked = enrolled_user(
+        session, email="locked@example.com", locked_until=T0 + timedelta(hours=1)
+    )
+    verifies = _spy_in_transaction(monkeypatch, session, "verify_password")
+    hashes = _spy_in_transaction(monkeypatch, session, "hash_password")
+    monkeypatch.setattr(auth_routers, "password_needs_rehash", lambda h: True)
+    post_password(web, "nobody@example.com", PASSWORD)  # unknown email
+    post_password(web, user.email, "wrong-password-123")  # wrong password
+    post_password(web, locked.email, PASSWORD)  # locked (dummy verify)
+    assert post_password(web, user.email, PASSWORD).status_code == 303  # success + rehash
+    assert verifies == [False] * 4
+    assert hashes == [False]
+    # The race guards still work after the transaction was ended: counted once.
+    session.refresh(user)
+    assert user.failed_logins == 1  # the wrong password, counted once (reset only after MFA)
+    assert verify_password(PASSWORD, user.password_hash)  # the rehash was stored
+    [row] = [r for r in audit_rows(session, "auth.login.failure") if r.user_id == user.id]
+    assert row.after["reason"] == "bad_password"
+
+
+def test_password_change_holds_no_transaction_while_hashing(web, session, monkeypatch):
+    user = enrolled_user(session)
+    assert full_login(web, user).status_code == 303
+    verifies = _spy_in_transaction(monkeypatch, session, "verify_password")
+    hashes = _spy_in_transaction(monkeypatch, session, "hash_password")
+    assert "incorrect" in _change_password(web, "wrong-password-123", NEW_PASSWORD).text
+    assert _change_password(web, PASSWORD, NEW_PASSWORD).status_code == 200
+    assert verifies == [False, False]
+    assert hashes == [False]
+    session.refresh(user)
+    assert verify_password(NEW_PASSWORD, user.password_hash)
+    assert user.failed_logins == 1

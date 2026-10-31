@@ -15,6 +15,9 @@ Rules that matter for security:
 - Lockout: ``is_locked`` is checked before the credential, and attempts made
   while locked are never counted (no compounding). Password, MFA and enrollment
   failures all count; counters reset only once the second factor succeeds.
+- Argon2 (verify or hash) never runs inside a database transaction: the read
+  transaction is committed first (:func:`_end_read_transaction`), so a burst of
+  logins cannot leave pooled connections idle in a transaction.
 - The Argon2 password verify runs WITHOUT the user row locked: the row is
   locked only afterwards, to count a failure or finish a success, and
   ``is_locked`` is checked again under the lock (an attempt that raced past the
@@ -137,6 +140,22 @@ def _user_agent(request: Request) -> str | None:
 def _lock_for_update(db: Session, user: User) -> User:
     """Lock and refresh the user row for the rest of this transaction."""
     return lock_user_row(db, user)
+
+
+def _end_read_transaction(db: Session) -> None:
+    """
+    Commit the request's read-only transaction before a slow Argon2 call, so no
+    pooled connection sits idle in a transaction while it runs. Loaded objects
+    keep their values (they are not expired, so touching them does not start a
+    new transaction); everything that matters is re-read under the row lock
+    afterwards.
+    """
+    expire = db.expire_on_commit
+    db.expire_on_commit = False
+    try:
+        db.commit()
+    finally:
+        db.expire_on_commit = expire
 
 
 def _session_id(auth: AuthSession) -> str:
@@ -338,6 +357,7 @@ def login_submit(
 
     # The hash this attempt is judged against; re-checked under the lock below.
     verified_hash = user.password_hash if user is not None else None
+    _end_read_transaction(db)
     reason: str | None = None
     if user is not None and is_locked(user, now):
         verify_password(password, None)  # same cost as a real attempt; never counted
@@ -639,6 +659,7 @@ def password_submit(
     # count a failure, re-checking the lockout under the lock.
     verified_hash = user.password_hash
     locked = is_locked(user, now)
+    _end_read_transaction(db)
     if locked or not verify_password(current_password, verified_hash):
         # A stolen session must not get unthrottled guesses at the password.
         user = _lock_for_update(db, user)
