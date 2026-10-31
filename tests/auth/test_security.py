@@ -193,9 +193,8 @@ def test_policy_rejects_short_long_and_common(spy_hasher):
     for common in ("unbelievable", "UNBELIEVABLE", "UnBelievable"):
         with pytest.raises(PasswordPolicyError):
             validate_password_policy(common)
-    if "password12345" in security.COMMON_PASSWORDS:
-        with pytest.raises(PasswordPolicyError):
-            validate_password_policy("Password12345")
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy("Password12345")  # >= 12 chars and on the list
 
 
 def test_policy_accepts_bounds():
@@ -214,6 +213,37 @@ def test_common_password_list_is_vendored_10k():
     assert len(security.COMMON_PASSWORDS) >= 10_000
     assert "password" in security.COMMON_PASSWORDS
     assert all(p == p.lower() for p in security.COMMON_PASSWORDS)
+
+
+@pytest.mark.parametrize(
+    "common", ["1qaz2wsx3edc", "QWERTY123456", "123qweasdzxc", "qazwsxedcrfv", "Password12345"]
+)
+def test_long_common_passwords_are_rejected(common):
+    """The list must matter at the 12-character minimum (SEC2), not just below it."""
+    with pytest.raises(PasswordPolicyError, match="too common"):
+        validate_password_policy(common)
+
+
+def test_common_password_list_covers_long_passwords():
+    long_entries = [p for p in security.COMMON_PASSWORDS if len(p) >= security.MIN_PASSWORD_LENGTH]
+    assert len(long_entries) >= 25_000
+    assert "" not in security.COMMON_PASSWORDS
+    # Under the pre-commit large-file limit (500 KB).
+    assert security._COMMON_PASSWORDS_FILE.stat().st_size <= 450_000
+
+
+def test_common_password_list_loads_quickly():
+    start = time.perf_counter()
+    loaded = security._load_common_passwords()
+    assert time.perf_counter() - start < 1.0
+    assert loaded == security.COMMON_PASSWORDS
+
+
+def test_common_password_loader_skips_blank_lines_and_normalizes(tmp_path, monkeypatch):
+    path = tmp_path / "list.txt"
+    path.write_text("\n  \nAbc\n\uff21\uff22\uff23def\n\n", encoding="utf-8")
+    monkeypatch.setattr(security, "_COMMON_PASSWORDS_FILE", path)
+    assert security._load_common_passwords() == frozenset({"abc", "abcdef"})
 
 
 # ---------------------------------------------------------------------------

@@ -56,8 +56,11 @@ class PasswordPolicyError(ValueError):
 
 
 def _load_common_passwords() -> frozenset[str]:
+    """Non-empty lines of the vendored list, NFKC-normalized and lowercased like input."""
     with _COMMON_PASSWORDS_FILE.open(encoding="utf-8") as fh:
-        return frozenset(line.strip().lower() for line in fh if line.strip())
+        return frozenset(
+            unicodedata.normalize("NFKC", line.strip()).lower() for line in fh if line.strip()
+        )
 
 
 COMMON_PASSWORDS: frozenset[str] = _load_common_passwords()
