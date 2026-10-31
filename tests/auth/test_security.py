@@ -403,3 +403,85 @@ def test_recovery_code_is_scoped_to_its_user(session):
 
     assert consume_recovery_code(session, other.id, owner_codes[0]) is False
     assert consume_recovery_code(session, owner.id, owner_codes[0]) is True
+
+
+# ---------------------------------------------------------------------------
+# Bounded Argon2 concurrency (final review I-2)
+# ---------------------------------------------------------------------------
+
+
+class _ConcurrencyHasher:
+    """Fake hasher that sleeps and records the peak number of concurrent calls."""
+
+    def __init__(self, fail: bool = False):
+        import threading
+
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak = 0
+        self.calls = 0
+        self.fail = fail
+
+    def _run(self):
+        with self._lock:
+            self.active += 1
+            self.calls += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(0.02)
+            if self.fail:
+                raise RuntimeError("hasher exploded")
+        finally:
+            with self._lock:
+                self.active -= 1
+
+    def hash(self, password):
+        self._run()
+        return "$argon2id$fake"
+
+    def verify(self, password_hash, password):
+        self._run()
+        return True
+
+
+def test_hash_slots_sized_from_settings():
+    from payroll import app_settings
+
+    assert app_settings.max_concurrent_password_hashes == 4
+    assert security._hash_slots._initial_value == app_settings.max_concurrent_password_hashes
+
+
+@pytest.mark.parametrize("cap", [1, 3])
+def test_concurrent_hashes_never_exceed_the_cap(monkeypatch, cap):
+    import threading
+
+    fake = _ConcurrencyHasher()
+    monkeypatch.setattr(security, "_hasher", fake)
+    monkeypatch.setattr(security, "_hash_slots", threading.BoundedSemaphore(cap))
+    calls = [
+        (lambda: hash_password(GOOD_PASSWORD)),
+        (lambda: verify_password(GOOD_PASSWORD, "$argon2id$x")),
+        (lambda: verify_password(GOOD_PASSWORD, None)),  # dummy verify counts too
+    ]
+    threads = [threading.Thread(target=calls[i % 3]) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert fake.calls == 12
+    assert fake.peak == cap
+
+
+def test_failing_hash_releases_its_slot(monkeypatch):
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(security, "_hash_slots", slots)
+    monkeypatch.setattr(security, "_hasher", _ConcurrencyHasher(fail=True))
+    for _ in range(3):  # would block forever on the second call if the slot leaked
+        with pytest.raises(RuntimeError, match="hasher exploded"):
+            hash_password(GOOD_PASSWORD)
+        with pytest.raises(RuntimeError, match="hasher exploded"):
+            verify_password(GOOD_PASSWORD, "$argon2id$x")
+    assert slots.acquire(blocking=False)
+    slots.release()

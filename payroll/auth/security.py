@@ -2,7 +2,8 @@
 Password, TOTP and recovery-code primitives (SPEC SEC2/SEC3, DESIGN §8).
 
 - Passwords: Unicode NFKC-normalized, then hashed with Argon2id (argon2-cffi
-  defaults). Over-long input is refused before it can reach the hasher.
+  defaults). Over-long input is refused before it can reach the hasher. At most
+  ``max_concurrent_password_hashes`` Argon2 calls run at once per process.
 - TOTP: RFC 6238 via pyotp, 30 s step, ±1 step tolerance, replay-protected by
   ``User.totp_last_step``.
 - Recovery codes: ``xxxxx-xxxxx`` from :mod:`secrets`, stored as a per-user
@@ -13,6 +14,7 @@ Password, TOTP and recovery-code primitives (SPEC SEC2/SEC3, DESIGN §8).
 import hashlib
 import hmac
 import secrets
+import threading
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +63,10 @@ def _load_common_passwords() -> frozenset[str]:
 COMMON_PASSWORDS: frozenset[str] = _load_common_passwords()
 
 _hasher = PasswordHasher()  # Argon2id with the library's recommended parameters
+# Process-wide cap on concurrent Argon2 calls (each allocates ~64 MiB): a login
+# flood queues here instead of exhausting memory. Waiters block without a
+# timeout; ``with`` always gives the slot back, even when the hasher raises.
+_hash_slots = threading.BoundedSemaphore(app_settings.max_concurrent_password_hashes)
 # Hash used to keep "unknown user" as slow as "wrong password" (timing equalization).
 _DUMMY_HASH: str = _hasher.hash(secrets.token_urlsafe(32))
 _DUMMY_PASSWORD = "dummy-password-for-timing"
@@ -117,7 +123,9 @@ def hash_password(password: str) -> str:
     reason = _unusable_reason(password)
     if reason is not None:
         raise PasswordPolicyError(reason)
-    return _hasher.hash(_normalize_password(password))
+    normalized = _normalize_password(password)
+    with _hash_slots:
+        return _hasher.hash(normalized)
 
 
 def verify_password(password: str, password_hash: str | None) -> bool:
@@ -132,8 +140,10 @@ def verify_password(password: str, password_hash: str | None) -> bool:
     if password_hash is None or _unusable_reason(password) is not None:
         _dummy_verify()
         return False
+    normalized = _normalize_password(password)
     try:
-        return _hasher.verify(password_hash, _normalize_password(password))
+        with _hash_slots:
+            return _hasher.verify(password_hash, normalized)
     except VerificationError, InvalidHashError, ValueError:
         return False
 
@@ -145,7 +155,8 @@ def password_needs_rehash(password_hash: str) -> bool:
 
 def _dummy_verify() -> None:
     try:
-        _hasher.verify(_DUMMY_HASH, _DUMMY_PASSWORD)
+        with _hash_slots:
+            _hasher.verify(_DUMMY_HASH, _DUMMY_PASSWORD)
     except VerificationError, InvalidHashError:
         pass
 
