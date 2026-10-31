@@ -35,18 +35,21 @@ Watchtower stopped a plain `up -d` would reuse a stale local `:latest`):
       OR ytd_fica_before::numeric <> round(ytd_fica_before::numeric,2);
    ```
    Run it with `docker compose -f compose.synology.yml exec db psql -U payroll payroll`.
-   It checks only these four `payroll_run` input columns because they drive every other
-   figure. Any rows returned are saved runs whose inputs had fractions of a cent; their
+   It checks only these four `payroll_run` input columns because they are the inputs from which the other
+   figures were calculated. Any rows returned are saved runs whose inputs had fractions of a cent; their
    rebuilt journal could differ by a cent from what you posted. Review those runs against
    QBO after the upgrade. No hits means nothing to do.
 4. Set `ENCRYPTION_KEY` in `.env` (next section), replace the compose file with the new one
    (the `frontend` service is gone), then pull and start, removing the orphan:
    ```bash
    docker compose -f compose.synology.yml pull
-   docker compose -f compose.synology.yml up -d --remove-orphans
+   docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
    ```
-5. **Verify:** `docker compose -f compose.synology.yml logs api` shows the migration running
-   to the current head, and `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
+5. **Verify:** the schema is at the release's migration head:
+   `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+   must print `7c1f3a5e8b92` for v2.0.0 (the expected revision changes in future releases;
+   see `_HEAD_REVISION` in `payroll/migrations/alembic_runner.py`), and
+   `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
 6. Create the owner (see First run), then **re-enable Watchtower:**
    `docker compose -f compose.synology.yml start watchtower`
 
@@ -104,7 +107,7 @@ so scan the one currently displayed and save the recovery codes.
 
 - `audit_log` is append-only, enforced by database triggers. In a hardened setup the
   database role the app connects as should **not own** the table (owners can drop triggers).
-- `/payroll/api/v1/docs`, `/redoc` and `/openapi.json` are disabled unless `DEBUG_MODE=true`.
+- `/payroll/api/v1/docs`, `/payroll/api/v1/redoc` and `/payroll/api/v1/openapi.json` are disabled unless `DEBUG_MODE=true`.
 - Request bodies larger than `MAX_REQUEST_BODY_BYTES` (default 1 MiB) get HTTP 413.
 - Postgres credentials in the compose files are `payroll`/`payroll` and the DB is internal
   only. On Synology, still change them: edit `POSTGRES_PASSWORD` and the password in

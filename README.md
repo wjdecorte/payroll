@@ -22,7 +22,7 @@ Every page and API route needs a signed-in user; only `/login`, the MFA pages,
   Repeated failed logins lock the account temporarily.
 - Roles: `owner` (can change data and manage users), `accountant` and `viewer`
   (read only).
-- The interactive API docs (`/payroll/api/v1/docs`, `/redoc`, `/openapi.json`) are
+- The interactive API docs (`/payroll/api/v1/docs`, `/payroll/api/v1/redoc`, `/payroll/api/v1/openapi.json`) are
   disabled unless `DEBUG_MODE=true`, and then only for a signed-in user.
 - API money values are JSON strings (e.g. `"12345.67"`), not numbers.
 
@@ -32,7 +32,7 @@ You need Python 3.14, [uv](https://docs.astral.sh/uv/), Docker, and a Postgres d
 
 ```bash
 uv sync
-cp .env.example .env     # then set ENCRYPTION_KEY (see Configuration) and SESSION_COOKIE_SECURE=false for plain http
+cp .env.example .env     # then set ENCRYPTION_KEY (see Configuration); SESSION_COOKIE_SECURE=true (the default in this file) breaks login over plain http, so set it to false locally
 # Throwaway Postgres on host port 5433 (tmpfs, NOT for real data):
 docker compose -f compose.test.yml up -d db
 export DATABASE_URL=postgresql://payroll:payroll@localhost:5433/payroll_test
@@ -66,6 +66,9 @@ re-enrolled at the next login.
 export ENCRYPTION_KEY=$(python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())")
 docker compose up --build        # app on http://localhost:9000 (plain http; cookie not Secure by default)
 ```
+
+> If you copied `.env.example` to `.env`, it sets `SESSION_COOKIE_SECURE=true`, which overrides the
+> dev default and breaks login over plain http. Set `SESSION_COOKIE_SECURE=false` in `.env` for local http.
 
 `compose.yml` is the local stack; `compose.synology.yml` is the NAS deployment
 (pulls the GHCR image, published on host port 8070, with Watchtower). Postgres is
