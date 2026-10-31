@@ -1,49 +1,53 @@
 """
 Pytest configuration and shared fixtures.
 
-Uses an in-memory SQLite database so tests run fast with no external dependencies.
-The FastAPI dependency ``get_session`` is overridden to use the test database.
+Tests run against a real PostgreSQL database (``TEST_DATABASE_URL``; start one with
+``docker compose -f compose.test.yml up -d db``). The schema is built by running the
+Alembic migrations, and each test runs inside a rolled-back transaction.
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlmodel import Session, SQLModel
+import os
 
-# Import all models so SQLModel registers their metadata before creating tables
-import payroll.payroll_run.config_models  # noqa: F401
-import payroll.payroll_run.models  # noqa: F401
-from payroll.app import app
-from payroll.common.dependencies import get_session
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL", "postgresql://payroll:payroll@localhost:5433/payroll_test"
+)
+# Point the application (and the Alembic runner) at the test database before any
+# payroll module reads its settings, so tests can never touch a dev/prod database.
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
-# ---------------------------------------------------------------------------
-# In-memory test database
-# ---------------------------------------------------------------------------
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlmodel import Session, SQLModel  # noqa: E402
 
-TEST_DATABASE_URL = "sqlite://"  # Pure in-memory; destroyed after each session
+from payroll.app import app  # noqa: E402
+from payroll.common.dependencies import get_session  # noqa: E402
+from payroll.migrations import alembic_runner  # noqa: E402
 
 
 @pytest.fixture(name="engine", scope="session")
 def engine_fixture():
-    """Create an in-memory SQLite engine for the entire test session."""
-    test_engine = create_engine(
-        TEST_DATABASE_URL,
-        connect_args={"check_same_thread": False},
-    )
-    SQLModel.metadata.create_all(test_engine)
-    yield test_engine
+    """Postgres engine with the schema built by running the Alembic migrations."""
+    test_engine = create_engine(TEST_DATABASE_URL)
+    # Start from a clean schema so stale runs cannot leak in.
     SQLModel.metadata.drop_all(test_engine)
+    with test_engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
+    alembic_runner.upgrade()
+    yield test_engine
+    test_engine.dispose()
 
 
 @pytest.fixture(name="session")
 def session_fixture(engine):
     """
-    Provide a database session per test, rolling back after each test
-    to ensure test isolation.
+    Per-test session bound to an outer transaction that is always rolled back.
+    ``create_savepoint`` makes ``session.commit()`` release a savepoint only, so
+    code under test that commits is still undone at the end of the test.
     """
     connection = engine.connect()
     transaction = connection.begin()
-    session = Session(bind=connection)
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
 
     yield session
 
@@ -54,10 +58,7 @@ def session_fixture(engine):
 
 @pytest.fixture(name="client")
 def client_fixture(session):
-    """
-    FastAPI TestClient with the database session overridden to use the
-    test in-memory database.
-    """
+    """FastAPI TestClient with ``get_session`` overridden to the test session."""
 
     def override_get_session():
         yield session

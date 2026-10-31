@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     base_url_prefix: str = "/payroll/api/v1"
     debug_mode: bool = False
 
-    # Database — defaults to local SQLite; override with PostgreSQL URL in production
-    database_url: str = "sqlite:///./payroll.db"
+    # Database — PostgreSQL only; the default targets the local dev database (compose.yml)
+    database_url: str = "postgresql://payroll:payroll@localhost:5432/payroll"
 
     # Logging — "standard" for human-readable, "json" for structured/production
     api_log_type: str = "standard"
