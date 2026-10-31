@@ -1,5 +1,8 @@
+import base64
+import binascii
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +27,19 @@ class Settings(BaseSettings):
     # Database — PostgreSQL only; the default targets the local dev database (compose.yml)
     database_url: str = "postgresql://payroll:payroll@localhost:5432/payroll"
 
+    # Secrets at rest — base64-encoded 32 random bytes (AES-256-GCM); required, no default.
+    # Generate: python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+    encryption_key: str
+
+    # Sessions / login hardening
+    session_cookie_name: str = "dci_session"
+    session_cookie_secure: bool = True
+    session_idle_minutes: int = 30
+    session_absolute_hours: int = 12
+    max_failed_logins: int = 5
+    lockout_minutes: int = 15
+    totp_issuer: str = "DCI Books"
+
     # Logging — "standard" for human-readable, "json" for structured/production
     api_log_type: str = "standard"
 
@@ -41,6 +57,17 @@ class Settings(BaseSettings):
     acct_health_ins_payable: str = "Payroll Liabilities:S-Corp Health Insurance"
     acct_hsa_payable: str = "Payroll Liabilities:Co. HSA"
     acct_checking: str = "Business Checking"
+
+    @field_validator("encryption_key")
+    @classmethod
+    def _validate_encryption_key(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("ENCRYPTION_KEY must be valid base64 encoding of 32 bytes") from exc
+        if len(decoded) != 32:
+            raise ValueError(f"ENCRYPTION_KEY must decode to exactly 32 bytes (got {len(decoded)})")
+        return value
 
     @property
     def accounts(self) -> dict[str, str]:

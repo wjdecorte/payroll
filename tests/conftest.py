@@ -14,6 +14,9 @@ TEST_DATABASE_URL = os.environ.get(
 # Point the application (and the Alembic runner) at the test database before any
 # payroll module reads its settings, so tests can never touch a dev/prod database.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+# Deterministic, test-only AES-256 key (base64 of bytes 0..31); never used outside tests.
+TEST_ENCRYPTION_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+os.environ["ENCRYPTION_KEY"] = TEST_ENCRYPTION_KEY
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
