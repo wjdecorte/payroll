@@ -6,7 +6,9 @@ with a real (Postgres, rolled-back) database session. All money is Decimal.
 from decimal import Decimal
 
 import pytest
+from sqlmodel import select
 
+from payroll.audit.models import AuditLog
 from payroll.payroll_run.config_schemas import PayrollConfigUpdate
 from payroll.payroll_run.exceptions import (
     InvalidPayPeriodError,
@@ -411,3 +413,34 @@ class TestUsePreviousYtdFica:
         )
         # ytd_fica_after = previous ytd_fica_after (8000) + current gross (8000)
         assert result.tax_detail.ytd_fica_after == D("16000.00")
+
+
+class TestAuditTrail:
+    def test_save_records_one_audit_row(self, service, base_input, session):
+        created = service.calculate(base_input)
+        rows = session.exec(select(AuditLog).where(AuditLog.action == "payroll_run.save")).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.entity == "payroll_run"
+        assert row.entity_id == str(created.id)
+        assert row.before is None
+        assert row.after["pay_period"] == "2026-03"
+        assert row.after["gross_salary"] == "8000.00"
+        assert row.after["net_pay"] == str(created.tax_detail.net_pay)
+
+    def test_unsaved_calculation_records_nothing(self, service, base_input, session):
+        base_input.save_run = False
+        service.calculate(base_input)
+        assert session.exec(select(AuditLog)).all() == []
+
+    def test_delete_records_one_audit_row(self, service, base_input, session):
+        created = service.calculate(base_input)
+        service.delete_run(created.id)
+        rows = session.exec(select(AuditLog).where(AuditLog.action == "payroll_run.delete")).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.entity == "payroll_run"
+        assert row.entity_id == str(created.id)
+        assert row.after is None
+        assert row.before["pay_period"] == "2026-03"
+        assert row.before["gross_salary"] == "8000.00"

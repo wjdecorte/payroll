@@ -207,6 +207,7 @@ def test_models_match_migrated_schema(scratch_engine):
     from alembic.migration import MigrationContext
     from sqlmodel import SQLModel
 
+    import payroll.audit.models  # noqa: F401
     import payroll.auth.models  # noqa: F401
     import payroll.payroll_run.config_models  # noqa: F401
     import payroll.payroll_run.models  # noqa: F401

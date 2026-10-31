@@ -23,6 +23,7 @@ from decimal import Decimal
 from sqlmodel import Session, select
 
 from payroll import app_settings
+from payroll.audit.services import record as record_audit
 from payroll.tax import constants as tax
 from payroll.tax.engine import calc_payroll
 from payroll.tax.schemas import PayrollCalculation, TaxConstantsSchema
@@ -132,6 +133,15 @@ class PayrollRunService:
     def delete_run(self, run_id: int) -> None:
         """Delete a payroll run by ID."""
         run = self._get_or_raise(run_id)
+        # Audited in the same transaction as the delete (committed together below).
+        record_audit(
+            self.session,
+            action="payroll_run.delete",
+            user_id=None,  # TODO(Task 10): pass actor user id
+            entity="payroll_run",
+            entity_id=str(run.id),
+            before=self._audit_snapshot(run),
+        )
         self.session.delete(run)
         self.session.commit()
         logger.info("Deleted payroll run id=%d", run_id)
@@ -205,9 +215,28 @@ class PayrollRunService:
             ytd_fica_after=calc.ytd_fica_after,
         )
         self.session.add(run)
+        self.session.flush()  # assign run.id for the audit row
+        # Audited in the same transaction as the save (committed together below).
+        record_audit(
+            self.session,
+            action="payroll_run.save",
+            user_id=None,  # TODO(Task 10): pass actor user id
+            entity="payroll_run",
+            entity_id=str(run.id),
+            after=self._audit_snapshot(run),
+        )
         self.session.commit()
         self.session.refresh(run)
         return run
+
+    @staticmethod
+    def _audit_snapshot(run: PayrollRun) -> dict[str, object]:
+        """The key fields of a run recorded in the audit log."""
+        return {
+            "pay_period": run.pay_period,
+            "gross_salary": run.gross_salary,
+            "net_pay": run.net_pay,
+        }
 
     @staticmethod
     def _tax_detail_from_calc(calc: PayrollCalculation, ytd_fica_before: Decimal) -> TaxDetail:
