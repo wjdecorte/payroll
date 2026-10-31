@@ -24,7 +24,8 @@ _ALEMBIC_INI = Path(__file__).parent / "alembic.ini"
 
 # Revision IDs — update _HEAD_REVISION whenever a new migration is added.
 _INITIAL_REVISION = "c3a8d2f19b40"  # baseline tables, no next_journal_no
-_HEAD_REVISION = "4a7f8b2c9d1e"  # adds next_journal_no to payroll_config
+_JOURNAL_NO_REVISION = "4a7f8b2c9d1e"  # adds next_journal_no to payroll_config
+_HEAD_REVISION = "9d4e6b1f2a37"  # money columns float -> NUMERIC(14,2)
 
 
 def _get_alembic_config() -> Config:
@@ -45,11 +46,12 @@ def _get_legacy_stamp_revision() -> str | None:
     managed by Alembic (has alembic_version).
 
     Stamping logic:
-    - DB has next_journal_no → already at head, stamp at _HEAD_REVISION
-    - DB lacks next_journal_no → stamp at _INITIAL_REVISION so the add-column
-      migration runs
+    - DB lacks next_journal_no → stamp at _INITIAL_REVISION so every migration runs
+    - DB has next_journal_no but float money → stamp at _JOURNAL_NO_REVISION so
+      the money-to-numeric migration runs
+    - DB has next_journal_no and numeric money → already at head, stamp there
     """
-    from sqlalchemy import create_engine, inspect
+    from sqlalchemy import Float, create_engine, inspect
 
     engine = create_engine(app_settings.database_url)
     try:
@@ -69,12 +71,24 @@ def _get_legacy_stamp_revision() -> str | None:
             else:
                 has_next_journal_no = False
 
-            if has_next_journal_no:
-                # Column already present — DB is at head; stamp there so upgrade is a no-op
-                return _HEAD_REVISION
-            else:
+            if not has_next_journal_no:
                 # Column missing — stamp at initial so the add-column migration runs
                 return _INITIAL_REVISION
+
+            money_types = [
+                c["type"]
+                for table, col in (
+                    ("payroll_run", "gross_salary"),
+                    ("payroll_config", "default_gross_salary"),
+                )
+                if table in table_names
+                for c in inspector.get_columns(table)
+                if c["name"] == col
+            ]
+            if any(isinstance(t, Float) for t in money_types):
+                # Money still stored as float — let the money-to-numeric migration run
+                return _JOURNAL_NO_REVISION
+            return _HEAD_REVISION
     finally:
         engine.dispose()
 

@@ -3,8 +3,9 @@
 from decimal import Decimal
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
-from payroll.common.money import round_money
+from payroll.common.money import Money, round_money
 
 
 def test_rounds_half_up():
@@ -31,3 +32,23 @@ def test_result_has_two_decimal_places():
 def test_rejects_float():
     with pytest.raises(TypeError):
         round_money(1.5)
+
+
+class _Amount(BaseModel):
+    value: Money
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(8000, "8000.00"), (8000.1, "8000.10"), ("1234.5", "1234.50"), ("0", "0.00")],
+)
+def test_money_field_normalizes_to_cents_and_serializes_as_string(raw, expected):
+    amount = _Amount(value=raw)
+    assert amount.value == Decimal(expected)
+    assert amount.model_dump(mode="json") == {"value": expected}
+    assert amount.model_dump_json() == f'{{"value":"{expected}"}}'
+
+
+def test_money_field_rejects_sub_cent_values():
+    with pytest.raises(ValidationError):
+        _Amount(value="12.345")

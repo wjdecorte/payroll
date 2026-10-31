@@ -20,6 +20,7 @@ templates keep consuming the same camelCase dict shape the HTTP API returned.
 
 import datetime
 import logging
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -30,6 +31,7 @@ from sqlmodel import Session
 
 from payroll import app_settings
 from payroll.common.dependencies import get_session
+from payroll.common.money import round_money
 from payroll.exceptions import AppBaseError
 from payroll.payroll_run.config_schemas import PayrollConfigUpdate
 from payroll.payroll_run.config_services import PayrollConfigService
@@ -41,9 +43,43 @@ logger = logging.getLogger("payroll.frontend")
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
-# Register a currency formatter so templates can write {{ value | currency }}
-templates.env.filters["currency"] = lambda v: f"${v:,.2f}" if v is not None else "$0.00"
-templates.env.filters["abs"] = abs
+
+# Money reaches the templates as JSON strings ("8000.00"), but also as Decimal,
+# int or float (e.g. the raw admin form payload on a validation error). These
+# filters accept all of them; never test a money string for truthiness in a
+# template ("0.00" is truthy) — use ``| nonzero``.
+
+
+def _to_decimal(value: object) -> Decimal:
+    return Decimal(str(value if value is not None else 0))
+
+
+def _currency(value: object) -> str:
+    """``{{ v | currency }}`` -> ``$1,234.50``."""
+    return f"${round_money(_to_decimal(value)):,.2f}"
+
+
+def _amount(value: object) -> str:
+    """``{{ v | amount }}`` -> ``1234.50`` (for ``<input type=number>`` values)."""
+    try:
+        return str(round_money(_to_decimal(value)))
+    except InvalidOperation:
+        return str(value)  # re-render whatever the user typed
+
+
+def _nonzero(value: object) -> bool:
+    """``{% if v | nonzero %}`` — true for a non-zero amount."""
+    return _to_decimal(value) != 0
+
+
+def _abs(value: object) -> Decimal | int:
+    return abs(value) if isinstance(value, int) else abs(_to_decimal(value))
+
+
+templates.env.filters["currency"] = _currency
+templates.env.filters["amount"] = _amount
+templates.env.filters["nonzero"] = _nonzero
+templates.env.filters["abs"] = _abs
 templates.env.globals["app_name"] = app_settings.app_name
 templates.env.globals["app_version"] = app_settings.app_version
 templates.env.globals["build_number"] = app_settings.build_number
@@ -81,7 +117,7 @@ async def index(request: Request, session: Session = Depends(get_session)) -> HT
     """Render the main page with an empty results panel."""
     latest_run = None
     config = None
-    ytd_fica_default = 0.0
+    ytd_fica_default: str | Decimal = Decimal("0.00")
     history: list[dict] = []
 
     try:
@@ -94,7 +130,7 @@ async def index(request: Request, session: Session = Depends(get_session)) -> HT
             # Only pre-fill YTD FICA if the previous run is in the same year as now
             current_year = str(datetime.datetime.now().year)
             if latest_run.get("payPeriod", "").startswith(current_year):
-                ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", 0.0)
+                ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", "0.00")
 
     except Exception:
         logger.exception("Could not load index data")
@@ -131,8 +167,9 @@ async def admin_save(request: Request, session: Session = Depends(get_session)) 
     """Save payroll configuration and render the admin page."""
     form = await request.form()
 
-    def money(name: str) -> float:
-        return float(form.get(name) or 0)
+    def money(name: str) -> str:
+        # Passed through as text; PayrollConfigUpdate validates it as exact Money.
+        return form.get(name) or "0"
 
     def checked(name: str) -> bool:
         return form.get(name) == "true"
@@ -206,12 +243,12 @@ def _next_journal_no(session: Session) -> int:
 async def htmx_calculate(
     request: Request,
     pay_period: str = Form(...),
-    gross_salary: float = Form(...),
-    health_insurance: float = Form(0.0),
-    hsa_contribution: float = Form(0.0),
+    gross_salary: Decimal = Form(...),
+    health_insurance: Decimal = Form(Decimal("0.00")),
+    hsa_contribution: Decimal = Form(Decimal("0.00")),
     health_in_income_tax: bool = Form(False),
     hsa_in_income_tax: bool = Form(False),
-    ytd_fica_wages: float = Form(0.0),
+    ytd_fica_wages: Decimal = Form(Decimal("0.00")),
     use_previous_ytd_fica: bool = Form(False),
     notes: str = Form(""),
     session: Session = Depends(get_session),
@@ -268,12 +305,12 @@ async def htmx_calculate(
 async def htmx_save_run(
     request: Request,
     pay_period: str = Form(...),
-    gross_salary: float = Form(...),
-    health_insurance: float = Form(0.0),
-    hsa_contribution: float = Form(0.0),
+    gross_salary: Decimal = Form(...),
+    health_insurance: Decimal = Form(Decimal("0.00")),
+    hsa_contribution: Decimal = Form(Decimal("0.00")),
     health_in_income_tax: bool = Form(False),
     hsa_in_income_tax: bool = Form(False),
-    ytd_fica_wages: float = Form(0.0),
+    ytd_fica_wages: Decimal = Form(Decimal("0.00")),
     notes: str = Form(""),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:

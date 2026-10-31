@@ -8,11 +8,20 @@ whole cents. See docs/DESIGN.md §3.
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import AfterValidator, Field
 
 CENT = Decimal("0.01")
 
-Money = Annotated[Decimal, Field(max_digits=14, decimal_places=2)]
+
+def _to_cents(value: Decimal) -> Decimal:
+    # Exact: the field constraints already reject more than two decimal places,
+    # so this only pads (``8000`` -> ``8000.00``) and never rounds.
+    return value.quantize(CENT)
+
+
+# A money amount for Pydantic schemas: at most 2 decimal places, normalized to
+# exactly cents, serialized to JSON as a string (``"8000.00"``).
+Money = Annotated[Decimal, Field(max_digits=14, decimal_places=2), AfterValidator(_to_cents)]
 
 
 def round_money(value: Decimal | int | str) -> Decimal:

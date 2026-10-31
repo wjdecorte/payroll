@@ -28,7 +28,7 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="default_gross_salary"
-                       min="0" step="0.01" value="{{ '%.2f' % config.defaultGrossSalary }}" required>
+                       min="0" step="0.01" value="{{ config.defaultGrossSalary | amount }}" required>
               </div>
             </div>
           </div>
@@ -40,7 +40,7 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="default_health_insurance"
-                       min="0" step="0.01" value="{{ '%.2f' % config.defaultHealthInsurance }}" required>
+                       min="0" step="0.01" value="{{ config.defaultHealthInsurance | amount }}" required>
               </div>
             </div>
             <div class="col-6">
@@ -48,7 +48,7 @@
               <div class="input-group">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" name="default_hsa_contribution"
-                       min="0" step="0.01" value="{{ '%.2f' % config.defaultHsaContribution }}" required>
+                       min="0" step="0.01" value="{{ config.defaultHsaContribution | amount }}" required>
               </div>
             </div>
           </div>

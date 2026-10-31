@@ -78,15 +78,15 @@ PREFIX = "/payroll/api/v1"
 
 @pytest.fixture
 def payroll_input() -> dict:
-    """Standard payroll input for a monthly payroll run."""
+    """Standard payroll input for a monthly payroll run (money as JSON strings)."""
     return {
         "payPeriod": "2026-01",
-        "grossSalary": 8000.00,
-        "healthInsurance": 500.00,
-        "hsaContribution": 300.00,
+        "grossSalary": "8000.00",
+        "healthInsurance": "500.00",
+        "hsaContribution": "300.00",
         "healthInIncomeTax": True,
         "hsaInIncomeTax": False,
-        "ytdFicaWages": 0.00,
+        "ytdFicaWages": "0.00",
         "saveRun": True,
         "notes": "January payroll",
     }
@@ -97,11 +97,11 @@ def payroll_input_no_benefits() -> dict:
     """Minimal payroll input with no health insurance or HSA."""
     return {
         "payPeriod": "2026-02",
-        "grossSalary": 6000.00,
-        "healthInsurance": 0.0,
-        "hsaContribution": 0.0,
+        "grossSalary": "6000.00",
+        "healthInsurance": "0.00",
+        "hsaContribution": "0.00",
         "healthInIncomeTax": True,
         "hsaInIncomeTax": False,
-        "ytdFicaWages": 8000.00,
+        "ytdFicaWages": "8000.00",
         "saveRun": True,
     }

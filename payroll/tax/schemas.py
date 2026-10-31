@@ -53,17 +53,16 @@ class PayrollCalculation:
 class TaxConstantsSchema(AppBaseSchema):
     """Read-only view of the current tax year constants."""
 
-    # TODO(Task 4): remove float bridge — constants are Decimal; the API still emits floats.
-
+    # Rates and amounts are exact Decimals and serialize to JSON as strings.
     tax_year: int = tax.TAX_YEAR
-    ss_wage_base: float = float(tax.SS_WAGE_BASE)
-    ss_ee_rate: float = float(tax.SS_EE_RATE)
-    ss_er_rate: float = float(tax.SS_ER_RATE)
-    medicare_ee_rate: float = float(tax.MEDICARE_EE_RATE)
-    medicare_er_rate: float = float(tax.MEDICARE_ER_RATE)
-    additional_medicare_rate: float = float(tax.ADD_MEDICARE_RATE)
-    additional_medicare_threshold: float = float(tax.ADD_MEDICARE_THRESH)
-    ga_flat_rate: float = float(tax.GA_RATE)
-    ga_standard_deduction: float = float(tax.GA_STD_DEDUCTION)
+    ss_wage_base: Decimal = tax.SS_WAGE_BASE
+    ss_ee_rate: Decimal = tax.SS_EE_RATE
+    ss_er_rate: Decimal = tax.SS_ER_RATE
+    medicare_ee_rate: Decimal = tax.MEDICARE_EE_RATE
+    medicare_er_rate: Decimal = tax.MEDICARE_ER_RATE
+    additional_medicare_rate: Decimal = tax.ADD_MEDICARE_RATE
+    additional_medicare_threshold: Decimal = tax.ADD_MEDICARE_THRESH
+    ga_flat_rate: Decimal = tax.GA_RATE
+    ga_standard_deduction: Decimal = tax.GA_STD_DEDUCTION
     ga_state: str = tax.GA_STATE
     pay_periods_per_year: int = tax.PAY_PERIODS_PER_YEAR

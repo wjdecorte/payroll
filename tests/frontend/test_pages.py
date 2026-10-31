@@ -1,3 +1,10 @@
+import re
+from decimal import Decimal
+
+import pytest
+
+from payroll.frontend.routers import templates
+
 PREFIX = "/payroll/api/v1"
 
 FORM = {
@@ -54,7 +61,9 @@ def test_calculate_returns_results_partial(client):
     expected = _calculate_json(client, save=False)
     response = client.post("/htmx/calculate", data=FORM)
     assert response.status_code == 200
-    assert f"{expected['taxDetail']['netPay']:,.2f}" in response.text
+    net_pay = expected["taxDetail"]["netPay"]
+    assert isinstance(net_pay, str)  # money is a JSON string
+    assert f"${Decimal(net_pay):,.2f}" in response.text
 
 
 def test_calculate_invalid_period_renders_error_partial(client):
@@ -111,10 +120,103 @@ def test_admin_save_roundtrip(client):
             form[snake] = value
     response = client.post("/admin", data=form)
     assert response.status_code == 200
-    assert client.get(f"{PREFIX}/payroll/config").json()["defaultGrossSalary"] == 9000
+    assert client.get(f"{PREFIX}/payroll/config").json()["defaultGrossSalary"] == "9000.00"
     assert client.get(f"{PREFIX}/payroll/config").json()["nextJournalNo"] == 300
 
 
 def test_admin_save_missing_fields_renders_error(client):
     response = client.post("/admin", data={"default_gross_salary": "1"})
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Money rendering: services are dumped with mode="json", so money arrives in the
+# templates as strings ("8000.00"); filters and conditions must handle that.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("5123.45", "$5,123.45"),
+        (Decimal("1234567.8"), "$1,234,567.80"),
+        (8000, "$8,000.00"),
+        (0.1, "$0.10"),
+        ("0.00", "$0.00"),
+        (None, "$0.00"),
+        ("-12.50", "$-12.50"),
+    ],
+)
+def test_currency_filter_accepts_str_decimal_int_float(value, expected):
+    assert templates.env.filters["currency"](value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("-12.50", Decimal("12.50")),
+        (Decimal("-3"), Decimal("3")),
+        (-2, 2),
+        ("4.00", Decimal("4.00")),
+    ],
+)
+def test_abs_filter_accepts_money_strings(value, expected):
+    assert templates.env.filters["abs"](value) == expected
+
+
+def test_money_template_conditions_use_amount_not_string_truthiness():
+    tmpl = templates.env.from_string(
+        "{% if v | nonzero %}yes{% else %}no{% endif %} {{ v | amount }}"
+    )
+    assert tmpl.render(v="0.00") == "no 0.00"
+    assert tmpl.render(v="12.5") == "yes 12.50"
+    assert tmpl.render(v=None) == "no 0.00"
+
+
+def test_results_partial_hides_zero_benefits_and_splits_debits_credits(client):
+    form = {**FORM, "health_insurance": "0", "hsa_contribution": "0"}
+    expected = client.post(
+        f"{PREFIX}/payroll/runs/calculate",
+        json={
+            "payPeriod": "2026-01",
+            "grossSalary": "8000",
+            "healthInsurance": "0",
+            "hsaContribution": "0",
+            "healthInIncomeTax": True,
+            "ytdFicaWages": "0",
+            "saveRun": False,
+        },
+    ).json()
+    response = client.post("/htmx/calculate", data=form)
+    assert response.status_code == 200
+    html = response.text
+
+    assert "Medical Insurance Premium" not in html
+    assert "HSA Contribution" not in html
+    assert "Additional Medicare" not in html
+
+    lines = [ln for je in expected["journalEntries"] for ln in je["lines"]]
+    debits = [ln for ln in lines if Decimal(ln["debit"])]
+    credits = [ln for ln in lines if Decimal(ln["credit"])]
+    assert html.count('class="dr-row"') == len(debits)
+    assert html.count('class="cr-row"') == len(credits)
+    assert "Unbalanced" not in html and "not balanced" not in html.lower()
+
+
+def test_index_prefills_money_inputs_from_saved_data(client):
+    config = client.get(f"{PREFIX}/payroll/config").json()
+    config["defaultGrossSalary"] = "8123.4"
+    config["defaultHealthInsurance"] = "725.5"
+    assert client.put(f"{PREFIX}/payroll/config", json=config).status_code == 200
+    _calculate_json(client)
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert re.search(r'name="gross_salary"[^>]*value="8123\.40"', response.text, re.S)
+    assert 'value="725.50"' in response.text
+
+
+def test_admin_save_invalid_money_rerenders_form_with_input(client):
+    response = client.post("/admin", data={"default_gross_salary": "abc"})
+    assert response.status_code == 422
+    assert 'value="abc"' in response.text

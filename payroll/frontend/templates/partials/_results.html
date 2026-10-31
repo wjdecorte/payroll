@@ -47,13 +47,13 @@
           <span>Gross Salary</span>
           <span>{{ r.grossSalary | currency }}</span>
         </div>
-        {% if r.healthInsurance %}
+        {% if r.healthInsurance | nonzero %}
         <div class="s-row">
           <span>Medical Insurance Premium</span>
           <span class="amount-neg">{{ r.healthInsurance | currency }}</span>
         </div>
         {% endif %}
-        {% if r.hsaContribution %}
+        {% if r.hsaContribution | nonzero %}
         <div class="s-row">
           <span>HSA Contribution</span>
           <span class="amount-neg">{{ r.hsaContribution | currency }}</span>
@@ -75,7 +75,7 @@
           <span>Medicare (EE 1.45%)</span>
           <span class="amount-neg">{{ td.medicareEe | currency }}</span>
         </div>
-        {% if td.additionalMedicare and td.additionalMedicare > 0 %}
+        {% if td.additionalMedicare | nonzero %}
         <div class="s-row">
           <span>Additional Medicare (0.9%)</span>
           <span class="amount-neg">{{ td.additionalMedicare | currency }}</span>
@@ -94,13 +94,13 @@
           <span>Gross Salary</span>
           <span>{{ r.grossSalary | currency }}</span>
         </div>
-        {% if r.healthInsurance %}
+        {% if r.healthInsurance | nonzero %}
         <div class="s-row">
           <span>Medical Insurance (ER paid)</span>
           <span>{{ r.healthInsurance | currency }}</span>
         </div>
         {% endif %}
-        {% if r.hsaContribution %}
+        {% if r.hsaContribution | nonzero %}
         <div class="s-row">
           <span>HSA (ER paid)</span>
           <span>{{ r.hsaContribution | currency }}</span>
@@ -234,7 +234,7 @@
         </thead>
         <tbody>
           {% for line in je.lines %}
-          {% if line.debit %}
+          {% if line.debit | nonzero %}
           <tr class="dr-row">
             <td><span class="badge-dr">DR</span></td>
             <td class="account">{{ line.account }}</td>
@@ -278,6 +278,7 @@
 <script>
 function downloadQboCsv() {
   const d = JSON.parse(document.getElementById('qbo-payroll-data').textContent);
+  // Money arrives as decimal strings ("0.00" is truthy, so test with Number()).
   const fmt = v => Number(v).toFixed(2);
 
   // Journal date = last day of pay period (YYYY-MM → MM/DD/YYYY)
@@ -305,8 +306,8 @@ function downloadQboCsv() {
         je,
         first ? jDate : '',
         ln.account.replace(/:\s+/g, ':'),
-        ln.debit  ? fmt(ln.debit)  : '',
-        ln.credit ? fmt(ln.credit) : '',
+        Number(ln.debit)  ? fmt(ln.debit)  : '',
+        Number(ln.credit) ? fmt(ln.credit) : '',
         ln.memo ? desc + ' - ' + ln.memo : desc,
         '',
         first ? 'USD' : '',
