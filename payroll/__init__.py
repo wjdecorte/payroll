@@ -2,7 +2,7 @@ import base64
 import binascii
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     # Application
@@ -29,7 +30,7 @@ class Settings(BaseSettings):
 
     # Secrets at rest — base64-encoded 32 random bytes (AES-256-GCM); required, no default.
     # Generate: python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
-    encryption_key: str
+    encryption_key: str = Field(repr=False)
 
     # Sessions / login hardening
     session_cookie_name: str = "dci_session"

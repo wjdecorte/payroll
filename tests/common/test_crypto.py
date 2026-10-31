@@ -55,3 +55,27 @@ def test_settings_auth_defaults():
     assert (s.session_idle_minutes, s.session_absolute_hours) == (30, 12)
     assert (s.max_failed_logins, s.lockout_minutes) == (5, 15)
     assert s.totp_issuer == "DCI Books"
+
+
+@pytest.mark.parametrize("bad", ["Zm9vYmFyYmF6cXV4LW5lYXItdmFsaWQta2V5", "not-base64-SECRETVALUE!"])
+def test_settings_error_does_not_echo_key(bad):
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(encryption_key=bad)
+    for text in (str(exc_info.value), repr(exc_info.value)):
+        assert bad not in text
+    assert "ENCRYPTION_KEY must" in str(exc_info.value)
+
+
+def test_settings_repr_hides_key():
+    key = base64.b64encode(os.urandom(32)).decode()
+    s = Settings(encryption_key=key)
+    assert key not in repr(s)
+    assert key not in str(s)
+
+
+@pytest.mark.parametrize("bad_key", [b"", b"short", os.urandom(16), os.urandom(33)])
+def test_key_override_must_be_32_bytes(bad_key):
+    with pytest.raises(ValueError):
+        encrypt_secret("abc", key=bad_key)
+    with pytest.raises(ValueError):
+        decrypt_secret(encrypt_secret("abc"), key=bad_key)

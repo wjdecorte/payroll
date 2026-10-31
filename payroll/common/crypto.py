@@ -14,7 +14,10 @@ _TAG_BYTES = 16
 
 
 def _resolve_key(key: bytes | None) -> bytes:
-    return key if key is not None else base64.b64decode(app_settings.encryption_key)
+    resolved = key if key is not None else base64.b64decode(app_settings.encryption_key)
+    if len(resolved) != 32:
+        raise ValueError("encryption key must be exactly 32 bytes")
+    return resolved
 
 
 def encrypt_secret(plaintext: str, key: bytes | None = None) -> str:
