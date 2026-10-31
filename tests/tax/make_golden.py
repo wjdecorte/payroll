@@ -7,6 +7,8 @@ The snapshot captures every PayrollCalculation field for a grid of inputs so
 that later refactors (e.g. float -> Decimal) can be compared against it.
 Floats are serialized with ``repr`` precision (json default) and booleans stay
 booleans.
+Integers stay integers in the JSON (e.g. gross_salary 0, 1, 5000); Task 3 must
+convert inputs with Decimal(str(v)), never Decimal(float).
 """
 
 import itertools
