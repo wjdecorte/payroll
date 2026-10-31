@@ -25,7 +25,8 @@ _ALEMBIC_INI = Path(__file__).parent / "alembic.ini"
 # Revision IDs — update _HEAD_REVISION whenever a new migration is added.
 _INITIAL_REVISION = "c3a8d2f19b40"  # baseline tables, no next_journal_no
 _JOURNAL_NO_REVISION = "4a7f8b2c9d1e"  # adds next_journal_no to payroll_config
-_HEAD_REVISION = "9d4e6b1f2a37"  # money columns float -> NUMERIC(14,2)
+_MONEY_REVISION = "9d4e6b1f2a37"  # money columns float -> NUMERIC(14,2)
+_HEAD_REVISION = "5b2e7c9a4f18"  # auth tables (app_user, recovery_code, auth_session)
 
 # Postgres advisory-lock key serializing migrations across processes (e.g. two
 # gunicorn workers booting at once). Arbitrary constant, unique to this app.
@@ -53,7 +54,9 @@ def _get_legacy_stamp_revision() -> str | None:
     - DB lacks next_journal_no → stamp at _INITIAL_REVISION so every migration runs
     - DB has next_journal_no but float money → stamp at _JOURNAL_NO_REVISION so
       the money-to-numeric migration runs
-    - DB has next_journal_no and numeric money → already at head, stamp there
+    - DB has next_journal_no and numeric money → stamp at _MONEY_REVISION (the last
+      schema create_all could have produced); later migrations, e.g. the auth
+      tables, still run
     """
     from sqlalchemy import Float, create_engine, inspect
 
@@ -92,7 +95,7 @@ def _get_legacy_stamp_revision() -> str | None:
             if any(isinstance(t, Float) for t in money_types):
                 # Money still stored as float — let the money-to-numeric migration run
                 return _JOURNAL_NO_REVISION
-            return _HEAD_REVISION
+            return _MONEY_REVISION
     finally:
         engine.dispose()
 

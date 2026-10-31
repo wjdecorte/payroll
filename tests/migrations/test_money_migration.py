@@ -11,13 +11,9 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.engine import make_url
 
 from payroll import app_settings
 from payroll.migrations import alembic_runner
-from tests.conftest import TEST_DATABASE_URL
-
-SCRATCH_DB = "payroll_money_migration_test"
 
 INITIAL_REVISION = "c3a8d2f19b40"
 PRE_MONEY_REVISION = "4a7f8b2c9d1e"  # head before the money migration
@@ -62,25 +58,6 @@ CONFIG_FLOATS = {
     "default_health_insurance": 725.5,
     "default_hsa_contribution": 350.333,
 }
-
-
-@pytest.fixture
-def scratch_engine(monkeypatch):
-    """An empty scratch database; the Alembic runner is pointed at it."""
-    url = make_url(TEST_DATABASE_URL).set(database=SCRATCH_DB)
-    admin = sa.create_engine(make_url(TEST_DATABASE_URL), isolation_level="AUTOCOMMIT")
-    with admin.connect() as conn:
-        conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}" WITH (FORCE)')
-        conn.exec_driver_sql(f'CREATE DATABASE "{SCRATCH_DB}"')
-
-    monkeypatch.setattr(app_settings, "database_url", url.render_as_string(hide_password=False))
-    engine = sa.create_engine(url)
-    yield engine
-
-    engine.dispose()
-    with admin.connect() as conn:
-        conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}" WITH (FORCE)')
-    admin.dispose()
 
 
 def _insert_rows(engine, run_values: dict, config_values: dict) -> None:
@@ -230,6 +207,7 @@ def test_models_match_migrated_schema(scratch_engine):
     from alembic.migration import MigrationContext
     from sqlmodel import SQLModel
 
+    import payroll.auth.models  # noqa: F401
     import payroll.payroll_run.config_models  # noqa: F401
     import payroll.payroll_run.models  # noqa: F401
 
