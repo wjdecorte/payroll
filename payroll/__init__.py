@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     max_failed_logins: int = 5
     lockout_minutes: int = 15
     totp_issuer: str = "DCI Books"
+    # Largest request body accepted (bytes); bigger requests get 413 before parsing.
+    max_request_body_bytes: int = 1_048_576
 
     # Logging — "standard" for human-readable, "json" for structured/production
     api_log_type: str = "standard"

@@ -79,6 +79,97 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
+class _BodyTooLargeError(Exception):
+    pass
+
+
+class BodySizeLimitMiddleware:
+    """
+    Refuses request bodies larger than ``app_settings.max_request_body_bytes``
+    with 413, before FastAPI parses them (FastAPI reads a route's declared form
+    or JSON body before running dependencies such as the CSRF check, so the
+    limit has to sit in front of routing).
+
+    - A ``Content-Length`` over the limit is refused without reading the body
+      (an unparsable one gets 400).
+    - A streamed body (no ``Content-Length``, or one that understates the size)
+      is counted as it is received and cut off once it passes the limit. If the
+      app turned that error into its own response (FastAPI makes body read
+      errors a 400), that response is replaced by the 413.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = app_settings.max_request_body_bytes
+        declared = None
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                declared = value
+                break
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                await _plain_response(send, 400, b"Invalid Content-Length")
+                return
+            if length > limit:
+                await _plain_response(send, 413, b"Request body too large")
+                return
+
+        received = 0
+        exceeded = False
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received, exceeded
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    exceeded = True
+                    raise _BodyTooLargeError
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            nonlocal response_started
+            if exceeded:
+                # Replace whatever the app made of the aborted read with one 413.
+                if not response_started:
+                    response_started = True
+                    await _plain_response(send, 413, b"Request body too large")
+                return
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except _BodyTooLargeError:
+            if not response_started:
+                response_started = True
+                await _plain_response(send, 413, b"Request body too large")
+
+
+async def _plain_response(send: Send, status: int, body: bytes) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode()),
+                (b"connection", b"close"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
 def presession_cookie_header(token: str) -> str:
     """The ``Set-Cookie`` value for a pre-session CSRF token (browser-session lifetime)."""
     name = csrf_cookie_name()  # __Host- prefixed when Secure: Path=/ and no Domain

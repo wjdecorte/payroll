@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from payroll import app_settings
 from payroll.auth.dependencies import CSRFError, verify_csrf
 from payroll.auth.middleware import (
+    BodySizeLimitMiddleware,
     CSRFCookieMiddleware,
     SecurityHeadersMiddleware,
     security_headers,
@@ -61,6 +62,9 @@ def create_app() -> FastAPI:
     # Security headers on every response (incl. errors and /static); the CSRF cookie
     # middleware sets the pre-session double-submit cookie when a page minted one.
     docs_paths = frozenset({application.docs_url, application.redoc_url})
+    # Innermost user middleware (added first), so its 413s still get the security
+    # headers; it runs before routing, i.e. before FastAPI parses any body.
+    application.add_middleware(BodySizeLimitMiddleware)
     application.add_middleware(CSRFCookieMiddleware)
     application.add_middleware(SecurityHeadersMiddleware, docs_paths=docs_paths)
 
