@@ -124,3 +124,20 @@ uv run python -m payroll.migrations.alembic_runner upgrade
 
 > ⚠️ Tax tables are based on IRS Pub 15-T 2025 and Georgia DOR 2026 rates.
 > Verify annually. This is not tax advice — consult your CPA.
+
+## First run: create the owner
+
+There are no default credentials. After the database is reachable, create the owner
+(the password is prompted for twice and never taken from argv or the environment):
+
+```bash
+uv run python -m payroll.auth.cli create-owner --email you@example.com --name "Your Name"
+# In Docker: docker compose exec api python -m payroll.auth.cli create-owner --email ...
+uv run python -m payroll.auth.cli create-user --email a@example.com --role accountant
+uv run python -m payroll.auth.cli reset-owner --email you@example.com  # lost password/MFA
+```
+
+The CLI applies pending migrations first. `create-owner` refuses if any user exists
+unless `--force-additional`. `reset-owner` (works for any user) sets a new password,
+clears MFA and recovery codes, unlocks/reactivates the account and signs out all
+sessions; MFA is re-enrolled at the next login.
