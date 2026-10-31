@@ -1,6 +1,9 @@
 default_language_version:
   python: python3.14
 default_stages: [pre-commit]
+# Vendored third-party assets are kept byte-identical to upstream (checksums in
+# payroll/frontend/static/vendor/README.md); whitespace fixers must not touch them.
+exclude: ^payroll/frontend/static/vendor/
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
