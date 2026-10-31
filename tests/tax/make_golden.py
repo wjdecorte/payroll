@@ -1,7 +1,7 @@
 """
 Regenerate tests/tax/golden_cases.json from the current ``calc_payroll``.
 
-Run: ``uv run python tests/tax/make_golden.py``
+Run: ``uv run python tests/tax/make_golden.py --force``
 
 The snapshot captures every PayrollCalculation field for a grid of inputs so
 that later refactors (e.g. float -> Decimal) can be compared against it.
@@ -12,11 +12,13 @@ convert inputs with Decimal(str(v)), never Decimal(float).
 
 The committed snapshot is the float engine's output and is the baseline the
 Decimal engine is compared against. Regenerating it now would replace that
-baseline with Decimal output (serialized as floats), so only do so deliberately.
+baseline with Decimal output (serialized as floats), so the script refuses to
+write unless ``--force`` is passed.
 """
 
 import itertools
 import json
+import sys
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
@@ -65,6 +67,11 @@ def build_cases() -> list[dict]:
 
 
 if __name__ == "__main__":
+    if "--force" not in sys.argv[1:]:
+        sys.exit(
+            f"refusing to overwrite {OUT.name}: it is the float-engine baseline the "
+            "Decimal engine is compared against. Re-run with --force to regenerate it."
+        )
     cases = build_cases()
     # One compact case per line keeps the file small (pre-commit size limit).
     body = ",\n".join(json.dumps(c, separators=(",", ":")) for c in cases)

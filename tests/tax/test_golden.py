@@ -81,3 +81,20 @@ def test_golden_file_has_full_grid():
         return json.dumps(inputs, sort_keys=True)
 
     assert {key(c["inputs"]) for c in GOLDEN} == {key(i) for i in build_inputs()}
+
+
+def test_make_golden_refuses_to_overwrite_without_force():
+    import subprocess
+    import sys
+
+    golden = Path(__file__).parent / "golden_cases.json"
+    before = golden.read_bytes()
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / "make_golden.py")],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parents[2],
+    )
+    assert proc.returncode != 0
+    assert "--force" in proc.stderr
+    assert golden.read_bytes() == before
