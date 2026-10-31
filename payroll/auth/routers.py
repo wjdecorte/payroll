@@ -15,6 +15,18 @@ Rules that matter for security:
 - Lockout: ``is_locked`` is checked before the credential, and attempts made
   while locked are never counted (no compounding). Password, MFA and enrollment
   failures all count; counters reset only once the second factor succeeds.
+- The Argon2 password verify runs WITHOUT the user row locked: the row is
+  locked only afterwards, to count a failure or finish a success, and
+  ``is_locked`` is checked again under the lock (an attempt that raced past the
+  threshold is refused and not counted). Holding the lock across the hash would
+  queue parallel attempts for a real email (a timing oracle) and let a burst of
+  anonymous POSTs pin the connection pool.
+- After taking the user row lock, MFA/enroll/password-change re-load their own
+  session row (``FOR UPDATE``); if it was revoked meanwhile, the request is
+  treated as signed out instead of rotating a deleted session.
+- Every ``GET /enroll`` issues a NEW pending secret (audited as
+  ``auth.mfa.enroll_started``), so two pending sessions never share one: the
+  later one silently invalidates the earlier one's QR code.
 - TOTP is checked with the user row locked ``FOR UPDATE`` and committed, so the
   replay guard (``totp_last_step``) holds under concurrent submissions.
 - The session id changes at every privilege step: a new session after the
@@ -37,6 +49,7 @@ from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import inspect as sa_inspect
 from sqlmodel import Session, select
 
 from payroll import app_settings
@@ -85,6 +98,7 @@ EXPIRED_NOTICE = "Your page expired, please try again."
 AUDIT_EMAIL_MAX = 320
 # POSTs whose CSRF failure is shown as an "expired" form rather than a 403.
 EXPIRED_FORM_PATHS = frozenset({"/login", "/login/mfa", "/enroll"})
+LOGOUT_PATH = "/logout"
 
 _HERE = Path(__file__).parent
 # Auth pages extend the frontend's base.html, so both directories are searched.
@@ -123,6 +137,30 @@ def _user_agent(request: Request) -> str | None:
 def _lock_for_update(db: Session, user: User) -> User:
     """Lock and refresh the user row for the rest of this transaction."""
     return lock_user_row(db, user)
+
+
+def _session_id(auth: AuthSession) -> str:
+    """The session's primary key without touching the database (the row may be gone)."""
+    return sa_inspect(auth).identity[0]
+
+
+def _live_session(db: Session, session_id: str) -> AuthSession | None:
+    """
+    Re-load the session row ``FOR UPDATE`` (after the user row: same lock order
+    everywhere), or None if it was revoked since the request started.
+    """
+    return db.exec(
+        select(AuthSession)
+        .where(AuthSession.id == session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+
+
+def _signed_out(db: Session) -> RedirectResponse:
+    """The request's session disappeared mid-request: release locks, go to /login."""
+    db.commit()
+    return _redirect("/login")
 
 
 def _with_next(path: str, next_path: str, **extra: str) -> str:
@@ -283,12 +321,8 @@ def login_submit(
     next_path = _next_from(next_, request)
     normalized = email.strip().lower()
 
-    user = db.exec(
-        select(User)
-        .where(User.email == normalized)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).first()
+    # No row lock yet: the Argon2 verify below must not run while holding it.
+    user = db.exec(select(User).where(User.email == normalized)).first()
 
     reason: str | None = None
     if user is not None and is_locked(user, now):
@@ -298,6 +332,16 @@ def login_submit(
         reason = "unknown_email" if user is None else "bad_password"
     elif not user.is_active:
         reason = "inactive"
+
+    if reason in (None, "bad_password"):
+        # Lock (and refresh) the row only now, to count the failure or finish the
+        # login, and re-check: a parallel attempt may have locked the account
+        # while this one was hashing. Such an attempt is refused and not counted.
+        user = _lock_for_update(db, user)
+        if is_locked(user, now):
+            reason = "locked"
+        elif reason is None and not user.is_active:
+            reason = "inactive"
 
     if reason is not None:
         if reason == "bad_password":
@@ -364,7 +408,11 @@ def mfa_submit(
         return _redirect(_with_next("/enroll", next_path))
     now = _now()
     ip = _client_ip(request)
+    session_id = _session_id(auth)
     user = _lock_for_update(db, user)
+    auth = _live_session(db, session_id)
+    if auth is None:
+        return _signed_out(db)
 
     method: str | None = None
     locked = is_locked(user, now)
@@ -403,25 +451,35 @@ def mfa_submit(
 # ---------------------------------------------------------------------------
 
 
-def _enrollment_secret(db: Session, user: User) -> str:
+def _issue_enrollment_secret(db: Session, user: User, ip: str | None) -> str | None:
     """
-    The pending TOTP secret, generated and stored (encrypted) on first view and
-    reused on reloads, so a QR code already scanned stays valid.
+    Store a NEW pending TOTP secret (encrypted; ``totp_enabled`` stays False) and
+    return it, or None if the user enrolled meanwhile (checked under the row
+    lock: an enabled secret is never overwritten). Each call invalidates any
+    QR code shown earlier, so a second pending session cannot silently share
+    the first one's secret.
     """
     user = _lock_for_update(db, user)
-    secret: str | None = None
-    if user.totp_secret_enc is not None:
-        try:
-            secret = decrypt_secret(user.totp_secret_enc)
-        except ValueError:
-            logger.warning("Unreadable pending TOTP secret for user %s; issuing a new one", user.id)
-    if secret is None:
-        secret = new_totp_secret()
-        user.totp_secret_enc = encrypt_secret(secret)
-        user.totp_last_step = None
-        db.add(user)
+    if user.totp_enabled:
+        db.commit()
+        return None
+    secret = new_totp_secret()
+    user.totp_secret_enc = encrypt_secret(secret)
+    user.totp_last_step = None
+    db.add(user)
+    record(db, action="auth.mfa.enroll_started", user_id=user.id, ip=ip)
     db.commit()
     return secret
+
+
+def _pending_secret(db: Session, user: User, ip: str | None) -> str | None:
+    """The stored pending secret (to re-show after a wrong code), else a new one."""
+    if user.totp_secret_enc is not None:
+        try:
+            return decrypt_secret(user.totp_secret_enc)
+        except ValueError:
+            logger.warning("Unreadable pending TOTP secret for user %s; issuing a new one", user.id)
+    return _issue_enrollment_secret(db, user, ip)
 
 
 @router.get("/enroll", response_class=HTMLResponse)
@@ -433,9 +491,9 @@ def enroll_page(
     db: Session = Depends(get_session),
 ) -> Response:
     next_path = safe_next_path(next_)
-    if user.totp_enabled:
+    secret = None if user.totp_enabled else _issue_enrollment_secret(db, user, _client_ip(request))
+    if secret is None:
         return _redirect(_with_next("/login/mfa", next_path))
-    secret = _enrollment_secret(db, user)
     return _render_enroll(request, user, secret, next_path, expired=expired)
 
 
@@ -451,7 +509,11 @@ def enroll_submit(
     next_path = _next_from(next_, request)
     now = _now()
     ip = _client_ip(request)
+    session_id = _session_id(auth)
     user = _lock_for_update(db, user)
+    auth = _live_session(db, session_id)
+    if auth is None:
+        return _signed_out(db)
     # Never let a password-only session replace an existing second factor.
     if user.totp_enabled:
         db.commit()
@@ -472,7 +534,9 @@ def enroll_submit(
             ip=ip,
         )
         db.commit()
-        secret = _enrollment_secret(db, user)
+        secret = _pending_secret(db, user, ip)
+        if secret is None:
+            return _redirect(_with_next("/login/mfa", next_path))
         return _render_enroll(request, user, secret, next_path, error=MFA_ERROR)
 
     user.totp_enabled = True
@@ -544,17 +608,19 @@ def password_submit(
 ) -> Response:
     now = _now()
     ip = _client_ip(request)
-    user = _lock_for_update(db, user)
+    session_id = _session_id(auth)
 
+    # As on /login: verify first (no row lock held during Argon2), then lock to
+    # count a failure, re-checking the lockout under the lock.
     locked = is_locked(user, now)
     if locked or not verify_password(current_password, user.password_hash):
         # A stolen session must not get unthrottled guesses at the password.
-        if not locked:
+        user = _lock_for_update(db, user)
+        if not locked and not is_locked(user, now):
             _count_failure(db, user, now, ip)
         record(db, action="auth.password.change_failed", user_id=user.id, ip=ip)
         db.commit()
         return _render_password(request, error="Current password is incorrect.")
-    db.commit()  # release the row lock before the slow checks below
 
     if new_password != confirm_password:
         return _render_password(request, error="The new passwords do not match.")
@@ -563,8 +629,15 @@ def password_submit(
     except PasswordPolicyError as exc:
         return _render_password(request, error=exc.message)
 
+    new_hash = hash_password(new_password)  # outside the lock, like the verify
     user = _lock_for_update(db, user)
-    user.password_hash = hash_password(new_password)
+    auth = _live_session(db, session_id)
+    if auth is None:
+        return _signed_out(db)
+    if is_locked(user, now):
+        db.commit()
+        return _render_password(request, error="Current password is incorrect.")
+    user.password_hash = new_hash
     db.add(user)
     raw, new = rotate_session(db, auth, ip=ip, user_agent=_user_agent(request))
     db.flush()
@@ -595,10 +668,14 @@ async def csrf_error_handler(request: Request, exc: CSRFError) -> Response:
     A POST to one of the login forms with a stale/missing CSRF token (typically
     a page opened before logging in elsewhere) is sent back to the form with an
     "expired" notice; the GET renders a fresh token. Every other CSRF failure
-    stays a plain 403. The body is not read here: ``next`` comes from the query
+    stays a plain 403, except ``POST /logout``, which goes to /login. The body is not read here: ``next`` comes from the query
     string, which the forms include in their ``action``.
     """
     path = request.url.path
+    if request.method == "POST" and path == LOGOUT_PATH:
+        # Nothing to re-render: go to /login without ending the session (the
+        # request may be forged). A live session's GET /login moves on to "/".
+        return _redirect("/login")
     if request.method == "POST" and path in EXPIRED_FORM_PATHS:
         next_path = safe_next_path(request.query_params.get("next"))
         return _redirect(_with_next(path, next_path, expired="1"))

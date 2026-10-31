@@ -12,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 from payroll import app_settings
@@ -337,10 +339,13 @@ def test_first_login_enrolls_then_reaches_app(web, session):
     assert user.totp_secret_enc is not None and user.totp_enabled is False
     secret = decrypt_secret(user.totp_secret_enc)
     assert secret in page.text.replace(" ", "")
-    # Reloading reuses the same secret.
-    assert secret in web.get("/enroll").text.replace(" ", "")
+    assert "Reloading this page creates a new QR code" in page.text
+    # Reloading issues a new secret (the pending secret is never shared).
+    page = web.get("/enroll")
     session.refresh(user)
-    assert decrypt_secret(user.totp_secret_enc) == secret
+    assert decrypt_secret(user.totp_secret_enc) != secret
+    assert decrypt_secret(user.totp_secret_enc) in page.text.replace(" ", "")
+    assert len(audit_rows(session, "auth.mfa.enroll_started")) == 2
 
     done = web.post(
         "/enroll",
@@ -514,8 +519,12 @@ def test_logout_invalidates_cookie(web, session):
 def test_logout_requires_csrf(web, session):
     user = enrolled_user(session)
     assert full_login(web, user).status_code == 303
-    assert web.post("/logout", follow_redirects=False).status_code == 403
+    response = web.post("/logout", follow_redirects=False)
+    # A stale/missing token sends the browser to /login without logging out.
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
     assert is_authenticated(web)
+    assert not audit_rows(session, "auth.logout")
 
 
 # ---------------------------------------------------------------------------
@@ -613,7 +622,6 @@ def test_csrf_403_elsewhere_stays_json(web, session):
     response = web.post("/account/password", data={"csrf_token": "stale"})
     assert response.status_code == 403
     assert response.headers["content-type"].startswith("application/json")
-    assert web.post("/logout", data={"csrf_token": "stale"}).status_code == 403
 
 
 def test_login_without_any_csrf_cookie_gets_fresh_form(session, monkeypatch):
@@ -699,6 +707,10 @@ def test_change_password_revokes_other_sessions_and_rotates(web, session):
     response = _change_password(web, PASSWORD, NEW_PASSWORD)
     assert response.status_code == 200
     assert "password changed" in response.text.lower()
+    # The page rendered after the change carries the rotated session's CSRF token.
+    [only] = session.exec(select(AuthSession).where(AuthSession.user_id == user.id)).all()
+    assert csrf_of(response) == only.csrf_token
+    assert only.id == auth_sessions.hash_token(web.cookies.get(session_cookie_name()))
     after = web.cookies.get(session_cookie_name())
     assert after != before
     assert is_authenticated(web)
@@ -710,9 +722,6 @@ def test_change_password_revokes_other_sessions_and_rotates(web, session):
     assert logout(web).status_code == 303
     assert post_password(web, user.email, PASSWORD).status_code == 401
     assert post_password(web, user.email, NEW_PASSWORD).status_code == 303
-    # The page rendered after the change carries the rotated session's CSRF token.
-    new_auth = session.exec(select(AuthSession).where(AuthSession.user_id == user.id)).first()
-    assert new_auth is not None
 
 
 # ---------------------------------------------------------------------------
@@ -729,14 +738,22 @@ def test_audit_rows_for_every_event(web, session, clock):
     page = web.get("/enroll")
     web.post("/enroll", data={"code": "000000", "csrf_token": csrf_of(page)})
     session.refresh(user)
-    web.post("/enroll", data={"code": totp_code(user, T0), "csrf_token": csrf_of(page)})
+    used_codes = ["000000", totp_code(user, T0)]
+    done = web.post("/enroll", data={"code": used_codes[1], "csrf_token": csrf_of(page)})
+    recovery = re.findall(r"<li>([a-z0-9]{5}-[a-z0-9]{5})</li>", done.text)
+    assert len(recovery) == 10
     _change_password(web, PASSWORD, NEW_PASSWORD)
     logout(web)
     # Second login: password ok, MFA success.
     session.refresh(user)
     assert post_password(web, user.email, NEW_PASSWORD).status_code == 303
     clock["now"] = T0 + timedelta(minutes=1)
-    assert post_mfa(web, totp_code(user, clock["now"])).status_code == 303
+    used_codes.append(totp_code(user, clock["now"]))
+    assert post_mfa(web, used_codes[-1]).status_code == 303
+    assert logout(web).status_code == 303
+    # Third login with a recovery code.
+    assert post_password(web, user.email, NEW_PASSWORD).status_code == 303
+    assert post_mfa(web, recovery[0]).status_code == 303
     # Lockout.
     assert logout(web).status_code == 303
     for _ in range(app_settings.max_failed_logins):
@@ -761,10 +778,265 @@ def test_audit_rows_for_every_event(web, session, clock):
         assert all(r.ip == "testclient" for r in rows), action
     wrong = [r for r in audit_rows(session, "auth.login.failure") if r.user_id == user.id]
     assert len(wrong) == app_settings.max_failed_logins
-    # No passwords or codes are ever written to the audit log.
+    # No passwords, TOTP codes or recovery codes are ever written to the audit log.
+    secrets_used = [PASSWORD, NEW_PASSWORD, *used_codes]
+    secrets_used += [c for code in recovery for c in (code, code.replace("-", ""))]
     for row in session.exec(select(AuditLog)).all():
-        blob = f"{row.before}{row.after}"
-        assert PASSWORD not in blob and NEW_PASSWORD not in blob
+        blob = f"{row.action}{row.entity}{row.entity_id}{row.before}{row.after}"
+        for secret in secrets_used:
+            assert secret not in blob, (row.action, secret)
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: lock ordering, pending-secret isolation, deleted sessions
+# ---------------------------------------------------------------------------
+
+
+def _lock_user_externally(session, user_id):
+    """What a parallel request's 5th failure does to the row while we hash."""
+    session.execute(
+        text(
+            "UPDATE app_user SET failed_logins = 0, lock_count = 1, locked_until = :t "
+            "WHERE id = :id"
+        ),
+        {"t": T0 + timedelta(minutes=15), "id": user_id},
+    )
+
+
+@pytest.mark.parametrize("password", ["wrong-password-123", PASSWORD])
+def test_attempt_racing_past_lockout_is_not_counted(web, session, monkeypatch, password):
+    user = enrolled_user(session, failed_logins=4)
+    real = auth_routers.verify_password
+
+    def racing(candidate, password_hash):
+        result = real(candidate, password_hash)
+        _lock_user_externally(session, user.id)
+        return result
+
+    monkeypatch.setattr(auth_routers, "verify_password", racing)
+    response = post_password(web, user.email, password)
+    assert response.status_code == 401
+    assert GENERIC_LOGIN_ERROR in response.text
+    assert session_cookie_name() not in response.headers.get("set-cookie", "")
+    session.refresh(user)
+    assert (user.failed_logins, user.lock_count) == (0, 1)
+    assert user.locked_until == T0 + timedelta(minutes=15)
+    assert not session.exec(select(AuthSession).where(AuthSession.user_id == user.id)).all()
+
+
+def test_password_change_racing_past_lockout_is_not_counted(web, session, monkeypatch):
+    user = enrolled_user(session)
+    assert full_login(web, user).status_code == 303
+    session.refresh(user)
+    user.failed_logins = 4
+    session.add(user)
+    session.flush()
+    real = auth_routers.verify_password
+
+    def racing(candidate, password_hash):
+        result = real(candidate, password_hash)
+        _lock_user_externally(session, user.id)
+        return result
+
+    monkeypatch.setattr(auth_routers, "verify_password", racing)
+    response = _change_password(web, "not-my-password", NEW_PASSWORD)
+    assert response.status_code == 400
+    session.refresh(user)
+    assert (user.failed_logins, user.lock_count) == (0, 1)
+
+
+def test_password_verify_runs_without_the_user_row_lock(engine, monkeypatch):
+    """
+    The Argon2 verify on POST /login and POST /account/password must run without
+    the user row locked; otherwise parallel attempts for a real email queue on the
+    lock (a timing oracle, and a way to pin the connection pool). While the spy
+    "hashes", a second connection tries ``FOR UPDATE NOWAIT`` on the row.
+    Uses committed rows (the real ``get_session``); audit writes are stubbed.
+    """
+    monkeypatch.setattr(app_settings, "session_cookie_secure", True)
+    monkeypatch.setattr(auth_routers, "record", lambda *a, **k: None)
+    monkeypatch.setattr(auth_routers, "_now", lambda: T0)
+    app.dependency_overrides.clear()
+    with Session(engine) as db:
+        user = enrolled_user(db, email="nolock@example.com")
+        raw, auth = auth_sessions.create_session(db, user, ip=None, user_agent=None)
+        auth.mfa_verified = True
+        db.commit()
+        user_id, csrf = user.id, auth.csrf_token
+
+    observed: list[str] = []
+    real = auth_routers.verify_password
+
+    def spy(candidate, password_hash):
+        with engine.connect() as conn:
+            try:
+                conn.execute(
+                    text("SELECT id FROM app_user WHERE id = :id FOR UPDATE NOWAIT"),
+                    {"id": user_id},
+                )
+                observed.append("free")
+            except OperationalError:
+                observed.append("locked")
+            conn.rollback()
+        return real(candidate, password_hash)
+
+    monkeypatch.setattr(auth_routers, "verify_password", spy)
+    try:
+        anon = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+        token = csrf_of(anon.get("/login"))
+        for password in ("wrong-password-123", PASSWORD):
+            anon.post(
+                "/login",
+                data={"email": "nolock@example.com", "password": password, "csrf_token": token},
+                follow_redirects=False,
+            )
+        signed_in = client_with_session(raw)
+        signed_in.post(
+            "/account/password",
+            data={
+                "current_password": "nope-nope-nope",
+                "new_password": NEW_PASSWORD,
+                "confirm_password": NEW_PASSWORD,
+            },
+            headers={CSRF_HEADER: csrf},
+        )
+        assert observed == ["free", "free", "free"]
+    finally:
+        with Session(engine) as db:
+            db.delete(db.get(User, user_id))
+            db.commit()
+
+
+def test_second_pending_session_invalidates_first_enrollment(web, session):
+    user = new_user(session)
+    assert post_password(web, user.email, PASSWORD).status_code == 303
+    first_page = web.get("/enroll")
+    session.refresh(user)
+    first_secret_user = User(**user.model_dump())  # snapshot of the first secret
+
+    other = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    assert post_password(other, user.email, PASSWORD).status_code == 303
+    assert other.get("/enroll").status_code == 200
+
+    response = web.post(
+        "/enroll",
+        data={"code": totp_code(first_secret_user, T0), "csrf_token": csrf_of(first_page)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+    session.refresh(user)
+    assert user.totp_enabled is False
+    rows = audit_rows(session, "auth.mfa.enroll_started")
+    assert len(rows) == 2
+    assert all(r.user_id == user.id and r.ip == "testclient" for r in rows)
+
+
+def test_failed_enroll_confirm_keeps_the_pending_secret(web, session):
+    user = new_user(session)
+    assert post_password(web, user.email, PASSWORD).status_code == 303
+    page = web.get("/enroll")
+    session.refresh(user)
+    before = user.totp_secret_enc
+    response = web.post(
+        "/enroll", data={"code": "000000", "csrf_token": csrf_of(page)}, follow_redirects=False
+    )
+    assert response.status_code == 401
+    session.refresh(user)
+    assert user.totp_secret_enc == before
+    assert decrypt_secret(before) in response.text.replace(" ", "")
+
+
+def test_enroll_wrong_code_with_unreadable_secret_issues_new_one(web, session):
+    user = new_user(session)
+    assert post_password(web, user.email, PASSWORD).status_code == 303
+    page = web.get("/enroll")
+    session.execute(
+        text("UPDATE app_user SET totp_secret_enc = 'garbage' WHERE id = :id"), {"id": user.id}
+    )
+    response = web.post(
+        "/enroll", data={"code": "123456", "csrf_token": csrf_of(page)}, follow_redirects=False
+    )
+    assert response.status_code == 401
+    session.refresh(user)
+    assert decrypt_secret(user.totp_secret_enc).replace(" ", "") in response.text.replace(" ", "")
+
+
+def test_enroll_page_never_overwrites_a_secret_enabled_meanwhile(web, session, monkeypatch):
+    user = new_user(session)
+    assert post_password(web, user.email, PASSWORD).status_code == 303
+    enabled_secret = encrypt_secret(new_totp_secret())
+    real = auth_routers._lock_for_update
+
+    def enrolled_in_parallel(db, u):
+        session.execute(
+            text("UPDATE app_user SET totp_enabled = true, totp_secret_enc = :s WHERE id = :id"),
+            {"s": enabled_secret, "id": user.id},
+        )
+        return real(db, u)
+
+    monkeypatch.setattr(auth_routers, "_lock_for_update", enrolled_in_parallel)
+    response = web.get("/enroll", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/login/mfa")
+    session.refresh(user)
+    assert user.totp_secret_enc == enabled_secret
+
+
+def _delete_session_rows_on_lock(monkeypatch, session, user_id):
+    """Simulate a logout/revocation landing just before the route takes the row lock."""
+    real = auth_routers._lock_for_update
+
+    def lock_after_revocation(db, user):
+        session.execute(text("DELETE FROM auth_session WHERE user_id = :id"), {"id": user_id})
+        return real(db, user)
+
+    monkeypatch.setattr(auth_routers, "_lock_for_update", lock_after_revocation)
+
+
+def _no_sessions(session, user_id):
+    return not session.exec(select(AuthSession).where(AuthSession.user_id == user_id)).all()
+
+
+def test_mfa_submit_with_revoked_session_goes_to_login(web, session, monkeypatch):
+    user = enrolled_user(session)
+    assert post_password(web, user.email, PASSWORD).status_code == 303
+    _delete_session_rows_on_lock(monkeypatch, session, user.id)
+    response = post_mfa(web, totp_code(user, T0))
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    assert _no_sessions(session, user.id)
+    assert not audit_rows(session, "auth.login.success")
+
+
+def test_enroll_submit_with_revoked_session_goes_to_login(web, session, monkeypatch):
+    user = new_user(session)
+    assert post_password(web, user.email, PASSWORD).status_code == 303
+    page = web.get("/enroll")
+    session.refresh(user)
+    _delete_session_rows_on_lock(monkeypatch, session, user.id)
+    response = web.post(
+        "/enroll",
+        data={"code": totp_code(user, T0), "csrf_token": csrf_of(page)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    assert _no_sessions(session, user.id)
+    session.refresh(user)
+    assert user.totp_enabled is False
+
+
+def test_password_submit_with_revoked_session_goes_to_login(web, session, monkeypatch):
+    user = enrolled_user(session)
+    assert full_login(web, user).status_code == 303
+    old_hash = user.password_hash
+    _delete_session_rows_on_lock(monkeypatch, session, user.id)
+    response = _change_password(web, PASSWORD, NEW_PASSWORD)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    assert _no_sessions(session, user.id)
+    session.refresh(user)
+    assert user.password_hash == old_hash
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +1076,7 @@ def test_concurrent_same_totp_exactly_one_succeeds(engine, monkeypatch):
         return real_lock(db, user)
 
     monkeypatch.setattr(auth_routers, "_lock_for_update", lock_after_barrier)
-    results: list[int] = []
+    results: list[tuple[int, str | None]] = []
 
     def submit():
         client = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
@@ -815,7 +1087,7 @@ def test_concurrent_same_totp_exactly_one_succeeds(engine, monkeypatch):
             headers={CSRF_HEADER: csrf},
             follow_redirects=False,
         )
-        results.append(response.status_code)
+        results.append((response.status_code, response.headers.get("location")))
 
     try:
         threads = [threading.Thread(target=submit) for _ in range(2)]
@@ -823,7 +1095,12 @@ def test_concurrent_same_totp_exactly_one_succeeds(engine, monkeypatch):
             t.start()
         for t in threads:
             t.join(timeout=30)
-        assert sorted(results) == [303, 401]
+        # Exactly one is signed in (303 to "/"). The other either fails the replay
+        # check (401) or finds its session already rotated away (303 to /login).
+        successes = [r for r in results if r == (303, "/")]
+        others = [r for r in results if r != (303, "/")]
+        assert len(successes) == 1, results
+        assert others in ([(401, None)], [(303, "/login")]), results
     finally:
         with Session(engine) as db:
             db.delete(db.get(User, user_id))

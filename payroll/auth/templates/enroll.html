@@ -11,6 +11,7 @@
       <div class="qr mb-3">{{ qr_svg | safe }}</div>
       <p class="small mb-1">Can't scan it? Enter this key instead:</p>
       <p class="secret mb-3">{{ secret }}</p>
+      <p class="small text-muted mb-3">Reloading this page creates a new QR code — scan the latest one.</p>
       <form method="post" action="/enroll?next={{ next_path | urlencode }}" autocomplete="off">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="next" value="{{ next_path }}">
