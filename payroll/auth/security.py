@@ -38,6 +38,8 @@ RECOVERY_CODE_COUNT = 10
 # Lowercase letters and digits minus the look-alikes 0/o, 1/l/i.
 RECOVERY_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 RECOVERY_CODE_KEY_LABEL = "payroll/recovery-code/v1"  # derive_subkey label for code hashes
+AUDIT_EMAIL_KEY_LABEL = "payroll/audit-email/v1"  # derive_subkey label for email fingerprints
+AUDIT_EMAIL_FP_HEX = 16
 _RECOVERY_GROUP = 5
 
 _COMMON_PASSWORDS_FILE = Path(__file__).with_name("common_passwords.txt")
@@ -146,6 +148,19 @@ def _dummy_verify() -> None:
         _hasher.verify(_DUMMY_HASH, _DUMMY_PASSWORD)
     except VerificationError, InvalidHashError:
         pass
+
+
+def audit_email_fingerprint(normalized_email: str) -> str:
+    """
+    Short keyed fingerprint of an attempted login email that matched no user:
+    the first 16 hex chars of ``HMAC-SHA256(K, email)`` with ``K`` derived from
+    the encryption key. Repeated probes of one address share a fingerprint, but
+    the text itself (which may be a password typed into the wrong field) is never
+    stored and cannot be recovered without the key.
+    """
+    key = derive_subkey(AUDIT_EMAIL_KEY_LABEL)
+    digest = hmac.new(key, normalized_email.encode("utf-8", "replace"), hashlib.sha256)
+    return digest.hexdigest()[:AUDIT_EMAIL_FP_HEX]
 
 
 # ---------------------------------------------------------------------------

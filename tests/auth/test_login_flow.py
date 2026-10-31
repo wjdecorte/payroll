@@ -24,6 +24,7 @@ from payroll.auth import sessions as auth_sessions
 from payroll.auth.dependencies import CSRF_HEADER, csrf_cookie_name, session_cookie_name
 from payroll.auth.models import AuthSession, RecoveryCode, User
 from payroll.auth.security import (
+    audit_email_fingerprint,
     hash_password,
     issue_recovery_codes,
     new_totp_secret,
@@ -768,7 +769,8 @@ def test_audit_rows_for_every_event(web, session, clock):
         post_password(web, user.email, "wrong-password-123")
 
     [unknown] = [r for r in audit_rows(session, "auth.login.failure") if r.user_id is None]
-    assert unknown.after["email"] == "nobody@example.com"
+    assert "email" not in unknown.after  # never the attempted text, only a fingerprint
+    assert unknown.after["reason"] == "unknown_email"
     assert unknown.ip == "testclient"
 
     for action in (
@@ -1190,3 +1192,70 @@ def test_concurrent_same_totp_exactly_one_succeeds(engine, monkeypatch):
         with Session(engine) as db:
             db.delete(db.get(User, user_id))
             db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Final review I-3: attempted emails that match no user are never stored
+# ---------------------------------------------------------------------------
+
+
+def _all_audit_ids(session) -> set[int]:
+    return set(session.exec(select(AuditLog.id)).all())
+
+
+def _audit_blob(session, before_all) -> str:
+    """Every audit row written since ``before_all``, every column, as one string."""
+    rows = session.exec(select(AuditLog).where(AuditLog.id.not_in(before_all or {-1}))).all()
+    assert rows
+    return "\n".join(repr(row.model_dump()) for row in rows)
+
+
+def _new_failure_rows(session, before_ids):
+    return [r for r in audit_rows(session, "auth.login.failure") if r.id not in before_ids]
+
+
+def test_unknown_email_failure_stores_only_a_stable_fingerprint(web, session):
+    before = {r.id for r in audit_rows(session, "auth.login.failure")}
+    before_all = _all_audit_ids(session)
+    attempted = "Probe.Target@Example.com"
+    post_password(web, attempted, PASSWORD)
+    post_password(web, "  probe.target@example.COM ", PASSWORD)  # same after normalizing
+    first, second = _new_failure_rows(session, before)
+    for row in (first, second):
+        assert row.user_id is None
+        assert "email" not in row.after
+        assert row.after["reason"] == "unknown_email"
+        assert len(row.after["email_fp"]) == 16
+        int(row.after["email_fp"], 16)  # hex
+    assert first.after["email_fp"] == second.after["email_fp"]
+    assert first.after["email_fp"] == audit_email_fingerprint("probe.target@example.com")
+    assert audit_email_fingerprint("other@example.com") != first.after["email_fp"]
+    blob = _audit_blob(session, before_all).lower()
+    for fragment in ("probe.target", "probe", "example.com"):
+        assert fragment not in blob, fragment
+
+
+def test_known_email_failure_records_user_and_email(web, session):
+    user = enrolled_user(session)
+    before = {r.id for r in audit_rows(session, "auth.login.failure")}
+    post_password(web, user.email.upper(), "wrong-password-123")
+    [row] = _new_failure_rows(session, before)
+    assert row.user_id == user.id
+    assert row.after == {"email": user.email, "reason": "bad_password"}
+
+
+def test_password_typed_into_email_field_leaves_no_trace(web, session):
+    import secrets as _secrets
+
+    typed = _secrets.token_urlsafe(15)[:20].replace("@", "x")  # 20 chars, no '@'
+    assert len(typed) == 20 and "@" not in typed
+    before = {r.id for r in audit_rows(session, "auth.login.failure")}
+    before_all = _all_audit_ids(session)
+    post_password(web, typed, PASSWORD)
+    [row] = _new_failure_rows(session, before)
+    assert "email" not in row.after
+    blob = _audit_blob(session, before_all)
+    assert typed not in blob
+    assert typed.lower() not in blob.lower()
+    # Not even a meaningful piece of it.
+    assert all(typed.lower()[i : i + 8] not in blob.lower() for i in range(13))

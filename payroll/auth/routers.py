@@ -67,6 +67,7 @@ from payroll.auth.dependencies import (
 from payroll.auth.models import AuthSession, User, utcnow
 from payroll.auth.security import (
     PasswordPolicyError,
+    audit_email_fingerprint,
     consume_recovery_code,
     hash_password,
     issue_recovery_codes,
@@ -95,7 +96,6 @@ logger = logging.getLogger(f"{app_settings.logger_name}.auth")
 LOGIN_ERROR = "Invalid email or password."
 MFA_ERROR = "Invalid code."
 EXPIRED_NOTICE = "Your page expired, please try again."
-AUDIT_EMAIL_MAX = 320
 # POSTs whose CSRF failure is shown as an "expired" form rather than a 403.
 EXPIRED_FORM_PATHS = frozenset({"/login", "/login/mfa", "/enroll"})
 LOGOUT_PATH = "/logout"
@@ -215,6 +215,18 @@ def _count_failure(db: Session, user: User, now: datetime, ip: str | None) -> No
             after={"locked_until": user.locked_until, "lock_count": user.lock_count},
             ip=ip,
         )
+
+
+def _login_failure_details(user: User | None, normalized_email: str, reason: str) -> dict:
+    """
+    ``after`` for an ``auth.login.failure`` row. The email is recorded only when it
+    matched a user (whose id is on the row anyway). Unmatched text may be a
+    password typed into the wrong field and the audit log is append-only, so it
+    is never stored: only a short keyed fingerprint, enough to see repeated probes.
+    """
+    if user is not None:
+        return {"email": user.email, "reason": reason}
+    return {"reason": reason, "email_fp": audit_email_fingerprint(normalized_email)}
 
 
 def _next_from(form_value: str | None, request: Request) -> str:
@@ -362,7 +374,7 @@ def login_submit(
             db,
             action="auth.login.failure",
             user_id=user.id if user is not None else None,
-            after={"email": normalized[:AUDIT_EMAIL_MAX], "reason": reason},
+            after=_login_failure_details(user, normalized, reason),
             ip=ip,
         )
         db.commit()
