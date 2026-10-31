@@ -324,22 +324,34 @@ def login_submit(
     # No row lock yet: the Argon2 verify below must not run while holding it.
     user = db.exec(select(User).where(User.email == normalized)).first()
 
+    # The hash this attempt is judged against; re-checked under the lock below.
+    verified_hash = user.password_hash if user is not None else None
     reason: str | None = None
     if user is not None and is_locked(user, now):
         verify_password(password, None)  # same cost as a real attempt; never counted
         reason = "locked"
-    elif not verify_password(password, user.password_hash if user is not None else None):
+    elif not verify_password(password, verified_hash):
         reason = "unknown_email" if user is None else "bad_password"
     elif not user.is_active:
         reason = "inactive"
 
+    # An upgraded hash is computed now, outside the lock (Argon2 is slow).
+    upgraded_hash = None
+    if reason is None and password_needs_rehash(verified_hash):
+        upgraded_hash = hash_password(password)
+
     if reason in (None, "bad_password"):
         # Lock (and refresh) the row only now, to count the failure or finish the
-        # login, and re-check: a parallel attempt may have locked the account
-        # while this one was hashing. Such an attempt is refused and not counted.
+        # login, and re-check what may have changed while this one was hashing:
+        # - locked by a parallel attempt: refused and not counted;
+        # - password changed (its revoke_all already ran): the old password no
+        #   longer counts, so it is an ordinary wrong-password failure;
+        # - deactivated.
         user = _lock_for_update(db, user)
         if is_locked(user, now):
             reason = "locked"
+        elif reason is None and user.password_hash != verified_hash:
+            reason = "bad_password"
         elif reason is None and not user.is_active:
             reason = "inactive"
 
@@ -356,8 +368,9 @@ def login_submit(
         db.commit()
         return _render_login(request, next_path, error=LOGIN_ERROR)
 
-    if password_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(password)
+    if upgraded_hash is not None:
+        # Safe: under the lock the stored hash is still the one that was verified.
+        user.password_hash = upgraded_hash
         db.add(user)
     if auth is not None:
         revoke_session(db, auth.id)  # never carry a pre-login session forward
@@ -612,8 +625,9 @@ def password_submit(
 
     # As on /login: verify first (no row lock held during Argon2), then lock to
     # count a failure, re-checking the lockout under the lock.
+    verified_hash = user.password_hash
     locked = is_locked(user, now)
-    if locked or not verify_password(current_password, user.password_hash):
+    if locked or not verify_password(current_password, verified_hash):
         # A stolen session must not get unthrottled guesses at the password.
         user = _lock_for_update(db, user)
         if not locked and not is_locked(user, now):
@@ -632,9 +646,11 @@ def password_submit(
     new_hash = hash_password(new_password)  # outside the lock, like the verify
     user = _lock_for_update(db, user)
     auth = _live_session(db, session_id)
-    if auth is None:
+    if auth is None or not user.is_active:
         return _signed_out(db)
-    if is_locked(user, now):
+    if is_locked(user, now) or user.password_hash != verified_hash:
+        # Locked meanwhile, or the password changed elsewhere since it was checked:
+        # the current password that was verified no longer applies. Not counted.
         db.commit()
         return _render_password(request, error="Current password is incorrect.")
     user.password_hash = new_hash

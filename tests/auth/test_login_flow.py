@@ -23,7 +23,12 @@ from payroll.auth import routers as auth_routers
 from payroll.auth import sessions as auth_sessions
 from payroll.auth.dependencies import CSRF_HEADER, csrf_cookie_name, session_cookie_name
 from payroll.auth.models import AuthSession, RecoveryCode, User
-from payroll.auth.security import hash_password, issue_recovery_codes, new_totp_secret
+from payroll.auth.security import (
+    hash_password,
+    issue_recovery_codes,
+    new_totp_secret,
+    verify_password,
+)
 from payroll.common.crypto import decrypt_secret, encrypt_secret
 from payroll.common.dependencies import get_session
 from tests.auth.test_security import spy_hasher  # noqa: F401  (fixture)
@@ -251,6 +256,8 @@ def test_password_rehashed_when_parameters_are_weak(web, session, monkeypatch):
     session.refresh(user)
     assert user.password_hash != old_hash
     assert user.password_hash.startswith("$argon2id$")
+    # The upgraded hash still verifies the same password.
+    assert verify_password(PASSWORD, user.password_hash)
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +829,83 @@ def test_attempt_racing_past_lockout_is_not_counted(web, session, monkeypatch, p
     assert (user.failed_logins, user.lock_count) == (0, 1)
     assert user.locked_until == T0 + timedelta(minutes=15)
     assert not session.exec(select(AuthSession).where(AuthSession.user_id == user.id)).all()
+
+
+def _change_hash_while_verifying(monkeypatch, session, user_id, new_hash):
+    """A password change commits while this request is still hashing."""
+    real = auth_routers.verify_password
+
+    def racing(candidate, password_hash):
+        result = real(candidate, password_hash)
+        session.execute(
+            text("UPDATE app_user SET password_hash = :h WHERE id = :id"),
+            {"h": new_hash, "id": user_id},
+        )
+        return result
+
+    monkeypatch.setattr(auth_routers, "verify_password", racing)
+
+
+def test_login_racing_a_password_change_fails(web, session, monkeypatch):
+    user = enrolled_user(session)
+    wrong_body = post_password(web, "nobody@example.com", PASSWORD).text
+    new_hash = hash_password(NEW_PASSWORD)
+    _change_hash_while_verifying(monkeypatch, session, user.id, new_hash)
+    response = post_password(web, user.email, PASSWORD)  # the OLD password
+    assert response.status_code == 401
+    assert response.text == wrong_body
+    assert session_cookie_name() not in response.headers.get("set-cookie", "")
+    assert _no_sessions(session, user.id)
+    session.refresh(user)
+    assert user.password_hash == new_hash
+    assert user.failed_logins == 1  # counted like a wrong password
+    [row] = [r for r in audit_rows(session, "auth.login.failure") if r.user_id == user.id]
+    assert row.after["reason"] == "bad_password"
+
+
+def test_rehash_never_overwrites_a_concurrently_changed_password(web, session, monkeypatch):
+    user = enrolled_user(session)
+    monkeypatch.setattr(auth_routers, "password_needs_rehash", lambda h: True)
+    new_hash = hash_password(NEW_PASSWORD)
+    _change_hash_while_verifying(monkeypatch, session, user.id, new_hash)
+    assert post_password(web, user.email, PASSWORD).status_code == 401
+    session.refresh(user)
+    assert user.password_hash == new_hash
+    assert verify_password(NEW_PASSWORD, user.password_hash)
+
+
+def test_password_change_racing_another_change_fails(web, session, monkeypatch):
+    user = enrolled_user(session)
+    assert full_login(web, user).status_code == 303
+    other_hash = hash_password("a-third-passphrase-77")
+    _change_hash_while_verifying(monkeypatch, session, user.id, other_hash)
+    response = _change_password(web, PASSWORD, NEW_PASSWORD)
+    assert response.status_code == 400
+    assert "current password is incorrect" in response.text.lower()
+    session.refresh(user)
+    assert user.password_hash == other_hash
+    assert not audit_rows(session, "auth.password.changed")
+
+
+def test_password_change_by_user_deactivated_meanwhile_signs_out(web, session, monkeypatch):
+    user = enrolled_user(session)
+    assert full_login(web, user).status_code == 303
+    old_hash = user.password_hash
+    real = auth_routers.verify_password
+
+    def deactivate(candidate, password_hash):
+        result = real(candidate, password_hash)
+        session.execute(
+            text("UPDATE app_user SET is_active = false WHERE id = :id"), {"id": user.id}
+        )
+        return result
+
+    monkeypatch.setattr(auth_routers, "verify_password", deactivate)
+    response = _change_password(web, PASSWORD, NEW_PASSWORD)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    session.refresh(user)
+    assert user.password_hash == old_hash
 
 
 def test_password_change_racing_past_lockout_is_not_counted(web, session, monkeypatch):
