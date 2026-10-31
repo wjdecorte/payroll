@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from sqlmodel import Session
 
 from payroll import app_settings
+from payroll.auth.dependencies import csrf_context
 from payroll.common.dependencies import get_session
 from payroll.common.money import round_money
 from payroll.exceptions import AppBaseError
@@ -41,7 +42,8 @@ from payroll.payroll_run.services import PayrollRunService
 logger = logging.getLogger("payroll.frontend")
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+# csrf_context exposes ``csrf_token`` (session or pre-session token) to every template.
+templates = Jinja2Templates(directory=str(_TEMPLATES_DIR), context_processors=[csrf_context])
 
 
 # Money reaches the templates as JSON strings ("8000.00"), but also as Decimal,

@@ -153,18 +153,3 @@
 
 </div><!-- end layout -->
 {% endblock %}
-
-{% block scripts %}
-<script>
-  // Set default pay period to current month
-  (function () {
-    const input = document.querySelector('input[name="pay_period"]');
-    if (input && !input.value) {
-      const now = new Date();
-      const yyyy = now.getFullYear();
-      const mm   = String(now.getMonth() + 1).padStart(2, '0');
-      input.value = `${yyyy}-${mm}`;
-    }
-  })();
-</script>
-{% endblock %}

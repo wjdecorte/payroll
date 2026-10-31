@@ -7,12 +7,10 @@
   <link rel="icon" type="image/png" href="/static/favicon-32.png">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 
-  <!-- Bootstrap 5 -->
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Bootstrap Icons -->
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-  <!-- HTMX -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
+  <!-- Vendored assets (no CDN: the CSP only allows 'self'); see static/vendor/README.md -->
+  <link href="/static/vendor/bootstrap-5.3.3/css/bootstrap.min.css" rel="stylesheet">
+  <link href="/static/vendor/bootstrap-icons-1.11.3/bootstrap-icons.min.css" rel="stylesheet">
+  <script src="/static/vendor/htmx-2.0.3/htmx.min.js"></script>
 
   <style>
     :root {
@@ -150,7 +148,8 @@
   </style>
   {% block head %}{% endblock %}
 </head>
-<body>
+{# Every HTMX request inherits this header, so all of them carry the CSRF token. #}
+<body hx-headers='{{ {"X-CSRF-Token": csrf_token} | tojson }}'>
 
 <div class="topbar no-print">
   <div>
@@ -166,8 +165,10 @@
 
 {% block content %}{% endblock %}
 
-<!-- Bootstrap JS -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="/static/vendor/bootstrap-5.3.3/js/bootstrap.bundle.min.js"></script>
+{# No inline JS (CSP script-src 'self'): behaviour lives in static/js and binds by data-* attributes. #}
+<script src="/static/js/app.js"></script>
+<script src="/static/js/qbo.js"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

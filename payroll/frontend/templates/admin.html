@@ -22,6 +22,7 @@
         {% endif %}
 
         <form id="admin-form" method="post" action="/admin">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="row g-2 mb-2">
             <div class="col-12">
               <label class="form-label">Default Gross Salary</label>

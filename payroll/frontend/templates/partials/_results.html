@@ -31,7 +31,7 @@
           </button>
         </form>
       {% endif %}
-      <button class="btn btn-sm btn-outline-light py-0 px-2" onclick="window.print()">
+      <button type="button" class="btn btn-sm btn-outline-light py-0 px-2" data-action="print">
         <i class="bi bi-printer me-1"></i>Print
       </button>
     </div>
@@ -209,7 +209,7 @@
     <span><i class="bi bi-journal-text me-2"></i>QuickBooks Journal Entries</span>
     <div class="d-flex align-items-center gap-2 no-print">
       <span id="je-no-badge" class="badge bg-secondary">Next JE #: {{ next_journal_no | default(202) }}</span>
-      <button class="btn btn-sm btn-light py-0 px-2" onclick="downloadQboCsv()">
+      <button type="button" class="btn btn-sm btn-light py-0 px-2" data-action="download-qbo-csv">
         <i class="bi bi-download me-1"></i>Download QBO CSV
       </button>
     </div>
@@ -273,77 +273,6 @@
   </div>
 </div>
 {% endif %}
-
-<!-- QBO CSV export function -->
-<script>
-function downloadQboCsv() {
-  const d = JSON.parse(document.getElementById('qbo-payroll-data').textContent);
-  // Money arrives as decimal strings ("0.00" is truthy, so test with Number()).
-  const fmt = v => Number(v).toFixed(2);
-
-  // Journal date = last day of pay period (YYYY-MM → MM/DD/YYYY)
-  const [yr, mo] = d.payPeriod.split('-').map(Number);
-  const lastDay = new Date(yr, mo, 0).getDate();
-  const jDate = `${String(mo).padStart(2,'0')}/${String(lastDay).padStart(2,'0')}/${yr}`;
-
-  const desc = d.payPeriod + ' Payroll';
-
-  // Column order per QBO import format:
-  // *JournalNo, *JournalDate, *AccountName, *Debits, *Credits, Description, Name, Currency, Location, Class
-  const rows = [
-    ['*JournalNo', '*JournalDate', '*AccountName', '*Debits', '*Credits', 'Description', 'Name', 'Currency', 'Location', 'Class'],
-  ];
-
-  let je = JSON.parse(document.getElementById('qbo-journal-no').textContent);
-  let jeCount = 0;
-
-  // Export exactly the entries shown on screen (server-built) so the two never diverge.
-  // QBO requires "Parent:Child" account names with no space after the colon.
-  for (const entry of d.journalEntries) {
-    entry.lines.forEach((ln, i) => {
-      const first = i === 0;
-      rows.push([
-        je,
-        first ? jDate : '',
-        ln.account.replace(/:\s+/g, ':'),
-        Number(ln.debit)  ? fmt(ln.debit)  : '',
-        Number(ln.credit) ? fmt(ln.credit) : '',
-        ln.memo ? desc + ' - ' + ln.memo : desc,
-        '',
-        first ? 'USD' : '',
-        '',
-        '',
-      ]);
-    });
-    je++; jeCount++;
-  }
-
-  // Build CSV string
-  const csv = rows.map(r =>
-    r.map(cell => {
-      const s = String(cell);
-      return (s.includes(',') || s.includes('"') || s.includes('\n'))
-        ? '"' + s.replace(/"/g, '""') + '"'
-        : s;
-    }).join(',')
-  ).join('\r\n');
-
-  // Trigger download
-  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url;
-  a.download = 'qbo_journal_' + d.payPeriod + '.csv';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-
-  // Increment journal number, update badge
-  htmx.ajax('POST', `/htmx/increment-journal-no?count=${jeCount}`,
-            {target: '#je-no-badge', swap: 'outerHTML'});
-}
-</script>
 
 <!-- If save_run, also swap in the updated history panel via OOB swap -->
 {% if save_run and history %}
