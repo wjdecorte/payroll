@@ -1,5 +1,9 @@
 # Throwaway Postgres for the test suite (host port 5433).
 #   docker compose -f compose.test.yml up -d db
+# Uses its own compose project name (payroll-test) so it never replaces or shares
+# volumes with the dev stack in compose.yml; data lives only in tmpfs (no volume).
+name: payroll-test
+
 services:
   db:
     image: postgres:17
