@@ -24,16 +24,28 @@ import getpass
 import sys
 from collections.abc import Sequence
 
+from alembic.util.exc import CommandError
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, func, select
 
+from payroll import app_settings
 from payroll.audit.services import record
 from payroll.auth import sessions
 from payroll.auth.models import RecoveryCode, User, UserRole
 from payroll.auth.security import PasswordPolicyError, hash_password, validate_password_policy
 
+# Serializes concurrent create-owner runs (arbitrary constant, unique to this app).
+_BOOTSTRAP_LOCK_KEY = 7_322_918_604_150_422
+
 
 class CliError(Exception):
     """A user-facing error: shown on stderr, exit code 1."""
+
+
+def _lock_bootstrap(db: Session) -> None:
+    """Transaction-scoped advisory lock: held until the caller commits or rolls back."""
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
 
 
 def _find_user(db: Session, email: str) -> User | None:
@@ -137,6 +149,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run(args: argparse.Namespace, db: Session) -> str:
     if args.command == "create-owner":
+        if not args.force_additional:
+            # Lock BEFORE counting so two simultaneous runs cannot both see zero users.
+            _lock_bootstrap(db)
         existing = db.exec(select(func.count()).select_from(User)).one()
         if existing and not args.force_additional:
             raise CliError("Users already exist; pass --force-additional to add another owner.")
@@ -161,16 +176,36 @@ def main(argv: Sequence[str] | None = None, db: Session | None = None) -> int:
             message = _run(args, db)
             db.commit()
         else:
-            from payroll.common.dependencies import engine
             from payroll.migrations import alembic_runner
 
             alembic_runner.upgrade()
-            with Session(engine) as session:
-                message = _run(args, session)
-                session.commit()
+            engine = create_engine(app_settings.database_url)
+            try:
+                with Session(engine) as session:
+                    message = _run(args, session)
+                    session.commit()
+            finally:
+                engine.dispose()
     except (CliError, PasswordPolicyError) as exc:
         # An injected ``db`` is the caller's transaction; our own session rolls back on close.
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except IntegrityError as exc:
+        # Never print str(exc): it includes the bound parameters (the password hash).
+        if db is not None:
+            db.rollback()
+        if "app_user_email" in str(exc.orig) or "email" in str(exc.orig):
+            print("error: A user with that email already exists.", file=sys.stderr)
+        else:
+            print(
+                f"error: Database error: {type(exc).__name__}; nothing was changed.",
+                file=sys.stderr,
+            )
+        return 1
+    except (SQLAlchemyError, CommandError) as exc:
+        if db is not None:
+            db.rollback()
+        print(f"error: Database error: {type(exc).__name__}; nothing was changed.", file=sys.stderr)
         return 1
     print(message)
     return 0

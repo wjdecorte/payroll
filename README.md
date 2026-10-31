@@ -137,7 +137,7 @@ uv run python -m payroll.auth.cli create-user --email a@example.com --role accou
 uv run python -m payroll.auth.cli reset-owner --email you@example.com  # lost password/MFA
 ```
 
-The CLI applies pending migrations first. `create-owner` refuses if any user exists
+The CLI needs an interactive terminal (`docker compose exec api ...`, not `-T`). It applies pending migrations first. `create-owner` refuses if any user exists
 unless `--force-additional`. `reset-owner` (works for any user) sets a new password,
 clears MFA and recovery codes, unlocks/reactivates the account and signs out all
 sessions; MFA is re-enrolled at the next login.

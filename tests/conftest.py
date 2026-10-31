@@ -22,8 +22,10 @@ os.environ["ENCRYPTION_KEY"] = TEST_ENCRYPTION_KEY
 os.environ["DEBUG_MODE"] = "false"
 
 import pytest  # noqa: E402
+import sqlalchemy as sa  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.engine import make_url  # noqa: E402
 from sqlmodel import Session, SQLModel  # noqa: E402
 
 from payroll import app_settings  # noqa: E402
@@ -269,3 +271,25 @@ def payroll_input_no_benefits() -> dict:
         "ytdFicaWages": "8000.00",
         "saveRun": True,
     }
+
+
+SCRATCH_DB = "payroll_money_migration_test"
+
+
+@pytest.fixture
+def scratch_engine(monkeypatch):
+    """An empty scratch database; the Alembic runner is pointed at it."""
+    url = make_url(TEST_DATABASE_URL).set(database=SCRATCH_DB)
+    admin = sa.create_engine(make_url(TEST_DATABASE_URL), isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}" WITH (FORCE)')
+        conn.exec_driver_sql(f'CREATE DATABASE "{SCRATCH_DB}"')
+
+    monkeypatch.setattr(app_settings, "database_url", url.render_as_string(hide_password=False))
+    engine = sa.create_engine(url)
+    yield engine
+
+    engine.dispose()
+    with admin.connect() as conn:
+        conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}" WITH (FORCE)')
+    admin.dispose()

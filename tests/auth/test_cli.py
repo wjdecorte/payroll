@@ -1,15 +1,18 @@
 """Tests for the bootstrap/recovery CLI (payroll.auth.cli)."""
 
 import getpass
+import threading
 
 import pytest
 from sqlalchemy import delete, func
-from sqlmodel import select
+from sqlalchemy.exc import OperationalError
+from sqlmodel import Session, select
 
 from payroll.audit.models import AuditLog
 from payroll.auth import cli, sessions
 from payroll.auth.models import AuthSession, RecoveryCode, User
 from payroll.auth.security import PasswordPolicyError, verify_password
+from payroll.migrations import alembic_runner
 
 GOOD = "correct horse battery staple 42"
 NEW = "another long passphrase 99 ok"
@@ -18,7 +21,6 @@ NEW = "another long passphrase 99 ok"
 @pytest.fixture(autouse=True)
 def empty_users(session):
     """Each test starts with no users (rolled back afterwards)."""
-    session.exec(delete(AuditLog))
     session.exec(delete(User))
     session.flush()
 
@@ -140,7 +142,7 @@ def test_weak_password_exits_1_without_echo(session, monkeypatch, capsys):
     _prompts(monkeypatch, "short", "short")
     assert cli.main(["create-owner", "--email", "o@example.com"], db=session) == 1
     out = capsys.readouterr()
-    assert out.err and "short" not in out.out
+    assert out.err and "short" not in out.out + out.err
     assert _count(session) == 0
 
 
@@ -148,7 +150,7 @@ def test_create_user_command_refuses_owner_role(session, monkeypatch, capsys):
     _prompts(monkeypatch, GOOD, GOOD)
     with pytest.raises(SystemExit) as exc:
         cli.main(["create-user", "--email", "v@example.com", "--role", "owner"], db=session)
-    assert exc.value.code == 2 or exc.value.code == 1
+    assert exc.value.code == 2
     assert _count(session) == 0
 
 
@@ -174,3 +176,87 @@ def test_reset_owner_command_unknown_email(session, monkeypatch, capsys):
     _prompts(monkeypatch, NEW, NEW)
     assert cli.main(["reset-owner", "--email", "x@example.com"], db=session) == 1
     assert "No user" in capsys.readouterr().err
+
+
+def test_integrity_error_on_duplicate_email_is_clean(session, monkeypatch, capsys):
+    cli.create_user(session, "a@example.com", GOOD, "owner", None)
+    monkeypatch.setattr(cli, "_find_user", lambda db, email: None)  # force the DB constraint
+    _prompts(monkeypatch, GOOD, GOOD)
+    assert (
+        cli.main(["create-user", "--email", "a@example.com", "--role", "viewer"], db=session) == 1
+    )
+    out = capsys.readouterr()
+    assert "already exists" in out.err
+    text = out.out + out.err
+    assert "$argon2" not in text and GOOD not in text and "parameters" not in text
+
+
+def test_operational_error_prints_generic_message(session, monkeypatch, capsys):
+    secret_hash = "$argon2id$v=19$SECRETHASH"
+
+    def boom(*args, **kwargs):
+        raise OperationalError("INSERT ...", {"password_hash": secret_hash}, Exception("down"))
+
+    monkeypatch.setattr(cli, "create_user", boom)
+    _prompts(monkeypatch, GOOD, GOOD)
+    assert (
+        cli.main(["create-user", "--email", "a@example.com", "--role", "viewer"], db=session) == 1
+    )
+    out = capsys.readouterr()
+    assert "OperationalError" in out.err and "nothing was changed" in out.err
+    text = out.out + out.err
+    assert secret_hash not in text and GOOD not in text and "INSERT" not in text
+
+
+def test_concurrent_create_owner_only_one_wins(scratch_engine, monkeypatch, capsys):
+    # Own scratch DB: committed audit rows are append-only and cannot be cleaned up.
+    alembic_runner.upgrade()
+    engine = scratch_engine
+    barrier = threading.Barrier(2, timeout=10)
+    real_lock = cli._lock_bootstrap
+
+    def synced_lock(db):
+        barrier.wait()  # both runs are about to check; without the lock both would pass
+        real_lock(db)
+
+    monkeypatch.setattr(cli, "_lock_bootstrap", synced_lock)
+    _prompts_forever(monkeypatch)
+    results = {}
+
+    def run(email):
+        with Session(engine) as s:
+            results[email] = cli.main(["create-owner", "--email", email], db=s)
+
+    threads = [
+        threading.Thread(target=run, args=(e,)) for e in ("x1@example.com", "x2@example.com")
+    ]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=30)
+    assert sorted(results.values()) == [0, 1]
+    assert "already exist" in capsys.readouterr().err
+    with Session(engine) as s:
+        assert s.exec(select(func.count()).select_from(User)).one() == 1
+
+
+def _prompts_forever(monkeypatch):
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": GOOD)
+
+
+def test_real_path_runs_migrations_commits_and_resets(scratch_engine, monkeypatch, capsys):
+    """main(argv) without an injected db: upgrade, create-owner (committed), reset-owner."""
+    _prompts_forever(monkeypatch)
+    assert cli.main(["create-owner", "--email", "Real@Example.com"]) == 0
+    with scratch_engine.connect() as conn:  # a separate connection sees only committed data
+        rows = conn.exec_driver_sql("SELECT email, role FROM app_user").all()
+        assert [tuple(r) for r in rows] == [("real@example.com", "owner")]
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": NEW)
+    assert cli.main(["reset-owner", "--email", "real@example.com"]) == 0
+    with scratch_engine.connect() as conn:
+        actions = conn.exec_driver_sql("SELECT action FROM audit_log ORDER BY id").scalars().all()
+        assert actions == ["auth.user.created", "auth.user.reset"]
+        h = conn.exec_driver_sql("SELECT password_hash FROM app_user").scalar()
+    assert verify_password(NEW, h)
+    out = capsys.readouterr()
+    assert GOOD not in out.out + out.err and NEW not in out.out + out.err
