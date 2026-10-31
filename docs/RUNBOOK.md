@@ -79,7 +79,11 @@ Treat rotation as a deliberate reset of all MFA.
 ## Ports, TLS and the reverse proxy
 
 - The app listens on 9000 in the container. `compose.synology.yml` publishes it as host
-  port **8070** (the old UI port); `compose.yml` (dev) publishes 9000.
+  port **8070** (the old UI port) **on 127.0.0.1 only** (`127.0.0.1:8070:9000`);
+  `compose.yml` (dev) publishes 9000.
+- The DSM reverse proxy must target `http://localhost:8070`. Plain-http access from the
+  LAN to `http://<nas>:8070` is intentionally not possible (it would bypass HTTPS and
+  the `Secure` cookie); always use the HTTPS hostname.
 - The database is not published on the host in either file; only `api` can reach it.
 - The session cookie is `Secure`, so the site must be served over HTTPS. In DSM:
   Control Panel > Login Portal > Advanced > Reverse Proxy: source HTTPS on your hostname
@@ -99,6 +103,10 @@ docker compose -f compose.synology.yml exec api python -m payroll.auth.cli reset
 `reset-owner` (any user) is the recovery path for a lost password or authenticator: it sets
 a new password, clears MFA and recovery codes, unlocks the account and signs out all sessions.
 
+**Log in and enrol TOTP immediately after `create-owner` / `create-user` / `reset-owner`.**
+Until the first login completes enrolment, the account has only a password: anyone who
+knows (or guesses) it can enrol *their own* authenticator and lock you out of MFA.
+
 MFA enrolment: the first login with the password shows a QR code for the authenticator
 app. Reloading the enrolment page issues a **new** QR code (the old one stops working),
 so scan the one currently displayed and save the recovery codes.
@@ -109,11 +117,35 @@ so scan the one currently displayed and save the recovery codes.
   database role the app connects as should **not own** the table (owners can drop triggers).
 - `/payroll/api/v1/docs`, `/payroll/api/v1/redoc` and `/payroll/api/v1/openapi.json` are disabled unless `DEBUG_MODE=true`.
 - Request bodies larger than `MAX_REQUEST_BODY_BYTES` (default 1 MiB) get HTTP 413.
+- **Never enable `DEBUG_MODE=true` in production.** Besides the API docs, it turns on
+  SQLAlchemy SQL echo, which logs every statement **with its bound parameters**: password
+  hashes, encrypted TOTP secrets, session token hashes and audit data end up in the logs.
+- At most `MAX_CONCURRENT_PASSWORD_HASHES` (default 4) Argon2 hashes/verifies run at once
+  per worker process (~64 MiB each); further login attempts wait for a slot. No database
+  transaction is held open while a password is hashed.
+- Failed logins are audited as `auth.login.failure`. The attempted email is recorded only
+  when it matches a user; for an unknown email only `reason: unknown_email` and `email_fp`
+  (a 16-hex-char keyed HMAC fingerprint, the same for repeated probes of one address) are
+  stored, so a password typed into the email field never lands in the append-only log.
 - Postgres credentials in the compose files are `payroll`/`payroll` and the DB is internal
   only. On Synology, still change them: edit `POSTGRES_PASSWORD` and the password in
   `DATABASE_URL`, and set the new password in the existing database
   (`ALTER USER payroll PASSWORD '...';`) before restarting, since the data directory
   keeps the old password.
+
+## Known gaps
+
+- **SEC6 (login rate limiting) is partial.** Per-account lockout exists
+  (`MAX_FAILED_LOGINS` / `LOCKOUT_MINUTES`, doubling on repeat lockouts), but there is
+  **no per-IP rate limit**. Behind the DSM reverse proxy the client address the app sees
+  is the proxy / Docker gateway, so the IPs in `audit_log` and `auth_session` rows are the
+  proxy's, not the real client's.
+- Anyone who knows an account's email can keep that account locked by repeatedly
+  failing its password. Recovery: wait out the lockout, or run `reset-owner` for the
+  account (it unlocks it and signs out every session).
+- Unknown-email probes are audited (`auth.login.failure`, `reason: unknown_email`, with a
+  keyed fingerprint instead of the text); they cannot lock anything, but each still costs
+  one Argon2 verify (capped per process, see Security notes).
 
 ## Backups
 

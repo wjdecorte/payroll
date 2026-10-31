@@ -1,5 +1,6 @@
 # Synology deployment. The database is NOT published on the host (internal network only).
 # Reverse-proxy HTTPS (DSM Login Portal > Advanced > Reverse Proxy) to http://localhost:8070.
+# The app port is bound to 127.0.0.1 only: plain-http LAN access to :8070 is intentionally impossible.
 # ENCRYPTION_KEY is required (see docs/RUNBOOK.md); put it in a .env file next to this file.
 services:
   db:
@@ -29,7 +30,8 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
     ports:
       # Host 8070 is the port the old UI was published on; the app listens on 9000 in the container.
-      - "8070:9000"
+      # Loopback only: reachable by the DSM reverse proxy (localhost:8070), not from the LAN.
+      - "127.0.0.1:8070:9000"
     environment:
       DATABASE_URL: postgresql://payroll:payroll@db:5432/payroll
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env (see docs/RUNBOOK.md)}

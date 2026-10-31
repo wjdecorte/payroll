@@ -58,7 +58,8 @@ The CLI needs an interactive terminal (`docker compose exec api ...`, not `-T`) 
 applies pending migrations first. `create-owner` refuses if any user exists unless
 `--force-additional`. `reset-owner` (works for any user) sets a new password, clears
 MFA and recovery codes, unlocks the account and signs out all sessions; MFA is
-re-enrolled at the next login.
+re-enrolled at the next login. **Sign in and enrol TOTP right after `create-owner` /
+`reset-owner`:** until then anyone with the password can enrol their own authenticator.
 
 ## Docker
 
@@ -71,7 +72,9 @@ docker compose up --build        # app on http://localhost:9000 (plain http; coo
 > dev default and breaks login over plain http. Set `SESSION_COOKIE_SECURE=false` in `.env` for local http.
 
 `compose.yml` is the local stack; `compose.synology.yml` is the NAS deployment
-(pulls the GHCR image, published on host port 8070, with Watchtower). Postgres is
+(pulls the GHCR image, published on `127.0.0.1:8070` only, with Watchtower; the DSM
+reverse proxy must target `http://localhost:8070`, and plain-http LAN access to `:8070`
+is intentionally not possible). Postgres is
 never published on the host. Compose refuses to start if `ENCRYPTION_KEY` is unset.
 See [docs/RUNBOOK.md](docs/RUNBOOK.md) for deployment, backups and recovery.
 
@@ -89,7 +92,8 @@ All settings come from environment variables or `.env` (see `.env.example`):
 | `MAX_FAILED_LOGINS` / `LOCKOUT_MINUTES` | `5` / `15` | Login lockout |
 | `TOTP_ISSUER` | `DCI Books` | Name shown in the authenticator app |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Larger request bodies get HTTP 413 |
-| `DEBUG_MODE` | `false` | Enables debug logging and the API docs routes |
+| `MAX_CONCURRENT_PASSWORD_HASHES` | `4` | Argon2 hashes/verifies at once per worker (~64 MiB each); extra logins queue |
+| `DEBUG_MODE` | `false` | Enables debug logging, the API docs routes and SQL echo **with bound parameters** (hashes, tokens): never in production |
 | `API_LOG_TYPE` | `standard` | `standard` or `json` |
 | `WORKERS` | `2` | Gunicorn workers |
 | `ACCT_*` | See `.env.example` | QuickBooks account names |
@@ -152,11 +156,15 @@ GHCR when they pass.
 
 ## Schema migrations (Alembic)
 
-Migrations are applied on app startup (startup aborts if one fails). To work on them:
+Migrations are applied on app startup (startup aborts if one fails). They are written
+by hand as files under `payroll/migrations/versions/` (the `sqlalchemy.url` is set only
+by the runner, so the plain `alembic` command line is not configured for this repo).
+After adding one, update `_HEAD_REVISION` in `payroll/migrations/alembic_runner.py`.
+To apply or roll back manually:
 
 ```bash
-uv run python -m payroll.migrations.alembic_runner generate "add column foo"
-uv run python -m payroll.migrations.alembic_runner upgrade
+uv run python -m payroll.migrations.alembic_runner upgrade            # to head
+uv run python -m payroll.migrations.alembic_runner downgrade <revision>
 ```
 
 ## Updating tax constants
