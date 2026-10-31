@@ -1,0 +1,382 @@
+# DCI Books — Technical Design
+
+| | |
+|---|---|
+| **Status** | Draft v0.2 (updated for owner decisions, 2026-10-31) |
+| **Date** | 2026-10-30 |
+| **Implements** | [SPEC.md](SPEC.md) |
+
+Conventions follow `AGENTS.md`: Python 3.14, `uv`, `ruff`, `pytest`, FastAPI +
+SQLModel + Alembic, and the existing package layout (`models.py`, `schemas.py`,
+`services.py`, `routers.py` per domain).
+
+## 1. Approach and alternatives
+
+| Option | Verdict |
+|---|---|
+| **A. Extend the existing app with a ledger core (recommended)** | Reuses the tax engine, Docker/Synology setup and UI; payroll posts straight into the ledger; full control over payroll-tax returns, which no off-the-shelf tool does for Georgia. |
+| B. Adopt open source (GnuCash, Beancount/Fava, Akaunting, ERPNext) | Fine for books, but none do S-Corp owner payroll + GA/federal returns, and the owner wants one app. Not chosen; GnuCash remains a fallback for the books alone. |
+| C. Keep QBO's cheaper tier and stop here | Doesn't meet the goal (cancel the subscription). |
+
+**Decision:** Option A, as a *modular monolith*: one deployable, strict module
+boundaries, a single posting gateway into the ledger.
+
+## 2. Architecture
+
+```
+Browser (LAN/VPN) ──TLS──▶ Synology reverse proxy / Tailscale serve
+                               │
+                        ┌──────▼───────────────────────────────┐
+                        │ app container (FastAPI, gunicorn)    │
+                        │  web UI  (Jinja2 + HTMX)  /          │
+                        │  JSON API                /api/v1     │
+                        │   ── auth middleware, CSRF, audit ── │
+                        │  modules: ledger · accounts ·        │
+                        │   receivables · expenses · payroll · │
+                        │   payroll_tax · reports · imports    │
+                        └──────┬───────────────────────────────┘
+                               │ (internal network only)
+                        ┌──────▼──────┐        ┌──────────────┐
+                        │ Postgres 17 │◀─ nightly encrypted ──▶ │ backup volume
+                        └─────────────┘   pg_dump               │ + off-site copy
+```
+
+### 2.1 Merge the frontend into the app
+
+Today a separate `frontend` container renders HTML and calls the API over HTTP
+(`payroll/frontend/client.py`). With login that would mean authenticating twice
+and forwarding sessions between services. **Proposal:** serve the HTML from the
+same FastAPI app, calling services in-process, and keep the JSON API behind the
+same session auth for scripting. One container, one auth layer, no internal
+HTTP hop. This is a restructure the owner should approve explicitly (§12).
+
+### 2.2 Module layout
+
+```
+payroll/                       (package name kept to avoid churn; can rename later)
+├── auth/          users, sessions, MFA, roles, rate limit, deps (require_role)
+├── audit/         append-only audit log writer + viewer
+├── ledger/        accounts, journal entries, lines, posting service, period lock
+├── receivables/   customers, items, invoices, payments, deposits
+├── expenses/      expenses, owner-paid flow, attachments
+├── payroll_run/   existing; adds employee, posting, Decimal money
+├── tax/           existing pure engine; constants versioned per year
+├── payroll_tax/   liabilities by agency, tax payments, returns (941/GA-7M/DOL-4N/940/W-2)
+├── reports/       report queries, period presets, CSV/PDF export
+├── imports/       QBO CSV importers (chart, customers, items, GL by date range,
+│                  payroll history), opening balances, historical backfill
+├── frontend/      templates + routers (in-process service calls)
+└── common/        base model, money type, errors, middleware
+```
+
+**Dependency rule:** domain modules (`receivables`, `expenses`, `payroll_run`,
+`payroll_tax`) depend on `ledger`; `ledger` depends on nothing but `common`.
+`reports` reads the ledger only. No module writes ledger tables except through
+`ledger.posting`.
+
+## 3. Money and database
+
+- **Postgres only** in production *and* tests (tests use a throwaway schema or
+  `testcontainers`/a compose test DB). SQLite cannot hold exact decimals
+  reliably and its `Numeric` coerces to float, which is not acceptable for a
+  ledger. The existing `payroll.db`/`test_*.db` SQLite files go away.
+- `Money = Numeric(14, 2)` / Python `Decimal`; rates `Numeric(9, 6)`.
+  Pydantic fields use `Decimal`; JSON serializes as strings.
+- Rounding: one helper, `round_money()` (half-up to cents), applied at defined
+  points in the tax engine (per IRS/agency rule per line), never ad hoc.
+- **Float→Decimal migration of the existing `payroll_run` and `payroll_config`
+  tables** (columns are `Float` today) is an Alembic migration with a data
+  conversion step (`round(x, 2)`); the engine constants become `Decimal`.
+  A golden-file test (all existing 73 tests' expected values) guards behavior.
+  This is a schema change on production data → needs explicit approval and a
+  `pg_dump` taken first (§12).
+
+## 4. Data model
+
+All tables have `id` (UUID or bigint), `created_at`, `updated_at`; business
+tables also have `created_by`. Ledger tables are append-only (void/reverse,
+never UPDATE/DELETE on posted rows).
+
+### 4.1 Ledger core
+
+```
+account
+  id, number (unique), name, full_name (path), parent_id,
+  type  (asset|liability|equity|income|cogs|expense|other_income|other_expense),
+  detail_type, normal_balance (debit|credit), is_active, system_role (nullable, unique)
+
+journal_entry
+  id, entry_no (gap-free per company), entry_date, memo,
+  source_type (manual|invoice|payment|deposit|expense|reimbursement|
+               payroll_run|tax_payment|opening_balance|year_end_close),
+  source_id, status (posted|void), reverses_entry_id (nullable),
+  posted_at, posted_by
+
+journal_line
+  id, entry_id → journal_entry, line_no, account_id,
+  debit  Numeric(14,2) default 0,  credit Numeric(14,2) default 0,
+  memo, customer_id (nullable), payee (nullable), cleared_in_reconciliation_id (nullable)
+  CHECK ((debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0))
+
+period_lock           (single row)  lock_date, set_by, set_at
+audit_log             (append-only) ts, user_id, action, entity, entity_id, before JSONB, after JSONB, ip
+```
+
+**Balance enforcement (defense in depth):**
+1. `posting.post(entry)` validates ≥ 2 lines, per-line CHECK, Σdebit = Σcredit, lock date, account active.
+2. A Postgres **deferred constraint trigger** on `journal_line` rejects a commit
+   if any touched entry is unbalanced, so even a buggy script cannot corrupt
+   the ledger.
+3. A trigger blocks `UPDATE`/`DELETE` on lines of a `posted` entry.
+
+**Edit semantic for documents:** editing an invoice/expense re-posts inside one
+transaction: the prior entry is voided with a reversal and a new entry is
+posted; the audit log keeps both. (Simpler and safer than in-place mutation.)
+
+### 4.2 Receivables
+
+```
+customer       id, name, email, billing_address, terms_days, is_active
+item           id, name, description, unit_price, income_account_id
+invoice        id, number, customer_id, invoice_date, due_date, terms_days,
+               status (draft|open|void), memo, subtotal, total, entry_id
+invoice_line   id, invoice_id, item_id, description, qty, unit_price, amount
+payment        id, customer_id, received_date, method, reference, amount,
+               deposit_to_account_id (bank | undeposited_funds), entry_id, status
+payment_application   id, payment_id, invoice_id, amount
+deposit        id, deposit_date, bank_account_id, total, entry_id
+deposit_payment  deposit_id, payment_id
+```
+
+Derived at query time (not stored): invoice `paid_amount` = Σ applications,
+`balance`, display status (`partial`, `paid`, `overdue`). Unapplied credit =
+payment amount − Σ applications.
+
+### 4.3 Expenses
+
+```
+expense        id, date, payee, payment_source (account|owner_personal), paid_from_account_id,
+               memo, total, entry_id, reimbursement_id (nullable), status
+expense_line   id, expense_id, account_id, description, amount
+attachment     id, owner_type, owner_id, filename, content_type, sha256, stored_path, size
+reimbursement  id, date, paid_from_account_id, total, entry_id
+```
+
+### 4.4 Payroll
+
+```
+employee        id, name, address, ssn_enc, filing_status, w4_* fields, pay_frequency,
+                is_owner, hire_date, active
+payroll_run     (existing columns, Money→Numeric) + employee_id, status
+                (draft|approved|void), entry_id, approved_at
+payroll_config  (existing) — account name strings replaced by account_id FKs / system roles
+tax_constants   year, key, value / or versioned Python module per year (see 6.2)
+```
+
+### 4.5 Payroll tax
+
+```
+tax_agency        id, name (IRS | GA DOR | GA DOL), kind
+tax_liability     derived view over payroll_run by agency & component
+tax_payment       id, agency_id, period, paid_date, bank_account_id, amount,
+                  entry_id, components JSONB
+return_snapshot   id, form (941|GA-7M|DOL-4N|940|W2), period, generated_at,
+                  data JSONB, source_run_ids   -- frozen copy of what was filed
+```
+
+### 4.6 Auth
+
+```
+user         id, email (unique), display_name, password_hash (argon2id), role,
+             totp_secret_enc, totp_enabled, failed_logins, locked_until, is_active
+recovery_code  id, user_id, code_hash, used_at
+session      id (random 256-bit, stored hashed), user_id, created_at, last_seen_at,
+             expires_at, ip, user_agent
+```
+
+## 5. Posting rules
+
+One `PostingService` per source type builds a `JournalEntryDraft` and calls
+`ledger.post()`. System roles resolve to accounts at posting time.
+
+| Source | Debit | Credit |
+|---|---|---|
+| Invoice | Accounts Receivable | Income (per line item's account) |
+| Payment received → Undeposited Funds | Undeposited Funds | Accounts Receivable |
+| Payment received → Bank direct | Bank | Accounts Receivable |
+| Bank deposit (group of payments) | Bank | Undeposited Funds |
+| Expense paid from bank/card | Expense account(s) | Bank / Credit card |
+| Expense paid personally by owner | Expense account(s) | Due to Owner |
+| Reimburse owner | Due to Owner | Bank |
+| Payroll run (approved) | Wages (gross); Employer SS, Medicare, FUTA, SUTA expense; Health insurance expense | Federal W/H payable; FICA payable (EE+ER); Medicare payable; GA W/H payable; FUTA/SUTA payable; health premium/HSA payable; Net pay → Bank or Due to Owner |
+| Payroll tax payment | Tax liability account(s) | Bank |
+| Opening balances | Each balance-sheet account | Each balance-sheet account; difference to Opening Balance Equity |
+| Year-end close | Income accounts; Retained Earnings | Expense accounts; Retained Earnings |
+
+The payroll row is derived from the existing `calc_payroll()` outputs and the
+journal lines that `payroll_run/services.py` already builds as QBO text lines;
+that builder is rewritten to emit `account_id`-based lines instead of name
+strings (zero-amount lines still omitted).
+
+## 6. Payroll and returns
+
+### 6.1 Calculation
+`tax/engine.py` stays a pure function (no I/O) — converted to `Decimal`.
+YTD figures (SS wage base tracking) come from approved runs for the employee
+instead of the manually typed `ytd_fica_before`, removing a manual-entry error.
+
+### 6.2 Versioned tax constants
+`tax/constants_2026.py`, `constants_2027.py`, … selected by the run's tax year,
+so old runs recompute identically. Each January: add a new file from the
+Pub 15-T / SSA / Georgia DOR figures, run the golden tests.
+
+### 6.3 Returns
+`payroll_tax/returns/<form>.py` each expose
+`build(period) -> ReturnWorksheet` (typed lines: label, box/line id, value,
+formula text, contributing run IDs). Calculation reads approved payroll runs
+and tax payments only. A "finalize" step stores a `return_snapshot` so a filed
+figure never changes silently when data is later edited (edits after a
+snapshot raise a warning on that period). Form definitions are kept as data
+beside each builder, with the agency instruction year recorded for the yearly
+verification checklist (SPEC §6).
+
+## 7. Reports
+
+A single `ReportEngine` runs SQL aggregates over `journal_line` joined to
+`account`:
+
+- **Period resolver:** maps presets (`this_month`, `last_quarter`, `ytd`,
+  `trailing_12`, …) and `custom(from, to)` to `(start, end)` using the company
+  fiscal year (calendar year).
+- **P&L:** Σ(credit − debit) for income types minus expense types over the
+  period; **Balance Sheet:** Σ up to the as-of date for asset/liability/equity,
+  plus *current-year earnings* synthesized into equity so it balances before
+  year-end close.
+- **Cash basis (default):** recognizes income/expense when the linked payment (for
+  invoices) or payment date (for expenses) occurs; implemented by
+  attributing each invoice/expense line to payment dates in proportion to
+  applications. **Cash is the default view** (owner's decision); accrual is the
+  toggle and is the plain ledger sum. Both are built and tested in M1.
+- **Comparison columns** run the same query twice and diff.
+- **Drill-down:** report rows carry `(account_id, start, end)` links to the
+  account register, whose rows link to `source_type/source_id` documents.
+- **Export:** CSV via `csv`; PDF via print-optimized HTML + WeasyPrint (adds
+  system libs to the Dockerfile; chosen over headless Chrome for size).
+- Report totals are covered by invariant tests: A = L + E, TB balanced, and
+  P&L net income = change in retained earnings after close.
+
+### 7.1 Importers and split-quarter returns
+
+- The QBO general-ledger importer accepts any date range and is idempotent
+  (each imported row keeps a source key; re-running skips duplicates), so
+  prior years can be added later without disturbing locked periods.
+- Imported payroll runs are stored in `payroll_run` with `status=approved`,
+  `origin=imported`, taking amounts straight from the QBO payroll reports, and
+  linked to imported journal entries. Return builders read approved runs
+  regardless of origin, so split-quarter 941/DOL-4N and the year's 940/W-2 need
+  no special case. The worksheet flags imported runs for tie-out to QBO.
+- The cutover opening balance is an entry dated the day before cutover, offset
+  to Opening Balance Equity, replaced by real history when earlier years load.
+
+## 8. Authentication and security design
+
+### 8.1 Why build it in rather than use an external IdP
+
+For one or two users on a LAN/VPN, a self-hosted identity provider
+(Authelia/Authentik/Keycloak) adds two more services to run and secure for
+little gain. Built-in auth with the pieces below is small, well understood, and
+fully testable. Revisit if more users or SSO are ever needed; the `auth` module
+isolates this behind `require_user()` / `require_role()` dependencies, so
+swapping to OIDC forward-auth later changes one module.
+
+### 8.2 Flow
+1. `POST /login` (email + password). Constant-time verify (Argon2id via
+   `argon2-cffi`); on failure increment counter, lock after 5 (15 min, doubling).
+2. If TOTP is enabled (mandatory after first login), challenge for the 6-digit
+   code (`pyotp`, 30 s window ±1) or a recovery code. First login forces TOTP
+   enrollment with QR and 10 recovery codes (shown once, stored hashed).
+3. On success: create a `session` row; set an opaque, random, `HttpOnly`,
+   `Secure`, `SameSite=Lax` cookie. Only a hash of the ID is stored. Rotate the
+   ID on login and privilege changes.
+4. Every request: middleware loads the session, enforces idle (30 min) and
+   absolute (12 h) expiry, updates `last_seen_at`, attaches `request.state.user`.
+5. State-changing requests require a CSRF token (double-submit/synchronizer
+   token validated in middleware; HTMX sends it via a header).
+6. `POST /logout` deletes the session. Password change/MFA reset revokes all sessions.
+
+### 8.3 Other controls
+- **Authorization:** `require_role()` dependency on every router; service
+  methods take an `actor` and check permissions too.
+- **Headers:** CSP (self only), `X-Frame-Options: DENY`, `Referrer-Policy`,
+  HSTS (behind the TLS proxy), `Cache-Control: no-store` on reports.
+- **Field encryption:** SSN and bank numbers via AES-256-GCM
+  (`cryptography`), key from `ENCRYPTION_KEY` (Docker secret); masked output,
+  reveal action audited.
+- **Audit:** login success/failure, MFA changes, report exports, SSN reveals,
+  every ledger mutation.
+- **Network:** DB on an internal Docker network only; app bound to the proxy.
+  First-run bootstrap: `uv run python -m payroll.auth.create_owner` creates
+  the initial owner (no default credentials, no open sign-up).
+- **Later:** passkeys via `py_webauthn`, replacing password + TOTP.
+
+## 9. Frontend
+
+Server-rendered Jinja2 + HTMX (already in use), with a consistent layout:
+sidebar (Dashboard, Sales, Expenses, Payroll, Reports, Accounting, Settings).
+Forms: invoice editor with line items, payment application grid,
+expense form with receipt upload, journal entry editor with live
+debit/credit totals, report pages with period picker and drill-down.
+Mobile width must work. Visual design reuses the existing DCI branding;
+a dedicated design pass can use the `impeccable` skill at implementation time.
+
+## 10. Deployment, backup, operations
+
+- **Compose:** `app` + `db` services, on an internal network; DB port
+  unpublished; `/data/attachments` volume for receipts; secrets mounted.
+  `compose.synology.yml` updated similarly.
+- **Migrations:** Alembic, run at start (existing `alembic_runner.py`).
+- **Backups:** a `backup` sidecar runs nightly `pg_dump`, encrypts it
+  (`age`) with a public key (private key kept offline), keeps 30 dailies + 12
+  monthlies, and copies to off-site storage (e.g. Hyper Backup target /
+  cloud bucket). Attachments are included. A `restore.sh` and a documented
+  quarterly drill.
+- **Observability:** existing structured logging; healthcheck; audit log viewer.
+- **Versioning:** the existing `/info` version display continues; semantic
+  version bumps per milestone (v2.0.0 at M0 given the breaking structure).
+
+## 11. Testing strategy
+
+- **Unit:** tax engine (existing), posting builders (given a document, assert
+  exact lines), period resolver, rounding.
+- **Property tests (Hypothesis):** any sequence of valid operations leaves
+  the TB balanced and Assets = Liabilities + Equity; voiding then re-posting
+  nets to the expected balance.
+- **Integration (real Postgres):** each router through the HTTP client with a
+  logged-in test user; deferred balance trigger rejects an unbalanced insert;
+  immutable-line trigger rejects UPDATE.
+- **Auth:** parametrized test that every route in the OpenAPI schema except
+  the allow-list returns 401 unauthenticated; lockout, MFA, CSRF, session expiry.
+- **Golden / reconciliation:** 2026 monthly payroll runs equal the QBO figures;
+  imported QBO TB equals app TB at the cutover date.
+- **Restore test:** CI-able script restores a dump into a fresh DB and compares
+  report totals.
+
+## 12. Decisions needing owner approval (per `AGENTS.md`)
+
+1. **Restructure** into a single app container (merge frontend, §2.1).
+2. **Schema migration of production data** (including an `origin` column on payroll runs for imports): float→Decimal on `payroll_run` /
+   `payroll_config`, and dropping SQLite (§3). A `pg_dump` precedes it.
+3. **Package/product rename** from `payroll` to something like `dci_books` (optional; deferred).
+4. New dependencies: `argon2-cffi`, `pyotp`, `cryptography`, `weasyprint`,
+   `hypothesis` (dev), `qrcode`.
+
+## 13. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Payroll or return figures wrong → penalties | Parallel run vs. QBO, CPA review of year-end, versioned snapshots, annual verification checklist |
+| Ledger corruption | DB-level balance and immutability triggers; property tests; nightly backups |
+| Losing QBO history on cancel | Mandatory export archive before cancelling (SPEC §7) |
+| Lock-in on auth mistakes / lockout | Recovery codes + documented offline `reset_owner` CLI |
+| Scope creep (A/P, bank feeds, etc.) | "Could have/Out of scope" lists in the spec; milestones M0–M7 ordered by value |
+| Cash-basis report complexity | Cash is the default, so it is built and tested from M1; a test proves cash and accrual agree on cumulative cash movement |
