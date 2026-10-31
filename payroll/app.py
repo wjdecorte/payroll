@@ -2,10 +2,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from payroll import app_settings
+from payroll.auth.dependencies import verify_csrf
+from payroll.auth.middleware import CSRFCookieMiddleware, SecurityHeadersMiddleware
 from payroll.exceptions import AppBaseError
 from payroll.logger_conf import configure_logging
 
@@ -43,6 +45,16 @@ def create_app() -> FastAPI:
         redoc_url=f"{app_settings.base_url_prefix}/redoc",
         openapi_url=f"{app_settings.base_url_prefix}/openapi.json",
         lifespan=lifespan,
+        # CSRF check on every POST/PUT/PATCH/DELETE route (safe methods pass through).
+        dependencies=[Depends(verify_csrf)],
+    )
+
+    # Security headers on every response (incl. errors and /static); the CSRF cookie
+    # middleware sets the pre-session double-submit cookie when a page minted one.
+    application.add_middleware(CSRFCookieMiddleware)
+    application.add_middleware(
+        SecurityHeadersMiddleware,
+        docs_paths=frozenset({application.docs_url, application.redoc_url}),
     )
 
     # ------------------------------------------------------------------ #

@@ -23,7 +23,15 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlmodel import Session, SQLModel  # noqa: E402
 
+from payroll import app_settings  # noqa: E402
 from payroll.app import app  # noqa: E402
+from payroll.auth import sessions as auth_sessions  # noqa: E402
+from payroll.auth.dependencies import (  # noqa: E402
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER,
+    new_presession_csrf_token,
+)
+from payroll.auth.models import User  # noqa: E402
 from payroll.common.dependencies import get_session  # noqa: E402
 from payroll.migrations import alembic_runner  # noqa: E402
 
@@ -59,17 +67,78 @@ def session_fixture(engine):
     connection.close()
 
 
+def add_presession_csrf(client: TestClient) -> str:
+    """
+    Give ``client`` a valid pre-session CSRF double-submit pair: the signed cookie
+    plus a default ``X-CSRF-Token`` header carrying the same value. Every unsafe
+    request the client sends then passes ``verify_csrf`` while no session exists.
+    """
+    token = new_presession_csrf_token()
+    client.cookies.set(CSRF_COOKIE_NAME, token)
+    client.headers[CSRF_HEADER] = token
+    return token
+
+
 @pytest.fixture(name="client")
 def client_fixture(session):
-    """FastAPI TestClient with ``get_session`` overridden to the test session."""
+    """
+    FastAPI TestClient with ``get_session`` overridden to the test session.
+
+    CSRF protection is on app-wide, so the client carries a pre-session CSRF
+    cookie and the matching ``X-CSRF-Token`` default header; ``login_as`` swaps the
+    header for the session's token. Tests that exercise CSRF failures should build
+    their own bare ``TestClient``.
+    """
 
     def override_get_session():
         yield session
 
     app.dependency_overrides[get_session] = override_get_session
     with TestClient(app, raise_server_exceptions=False) as c:
+        add_presession_csrf(c)
         yield c
     app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+
+def make_user(
+    session: Session,
+    *,
+    role: str = "owner",
+    email: str = "owner@example.com",
+    password_hash: str = "$argon2id$placeholder",
+    **overrides,
+) -> User:
+    """Insert (flush, not commit) a user. The default hash matches no password."""
+    user = User(
+        email=email,
+        display_name=overrides.pop("display_name", email.split("@")[0].title()),
+        password_hash=password_hash,
+        role=role,
+        **overrides,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+def login_as(client: TestClient, user: User, *, mfa_verified: bool = True) -> str:
+    """
+    Create a session for ``user`` (fully authenticated unless ``mfa_verified`` is
+    False), put its cookie on ``client`` and make ``client`` send its CSRF token by
+    default. Returns the CSRF token. ``user`` must belong to the test session.
+    """
+    db = Session.object_session(user)
+    raw, auth = auth_sessions.create_session(db, user, ip="testclient", user_agent="pytest")
+    auth.mfa_verified = mfa_verified
+    db.flush()
+    client.cookies.set(app_settings.session_cookie_name, raw)
+    client.headers[CSRF_HEADER] = auth.csrf_token
+    return auth.csrf_token
 
 
 # ---------------------------------------------------------------------------
