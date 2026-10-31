@@ -16,12 +16,13 @@ from payroll import app_settings
 from payroll.app import create_app
 from payroll.auth import dependencies as deps
 from payroll.auth.dependencies import (
-    CSRF_COOKIE_NAME,
     CSRF_HEADER,
+    csrf_cookie_name,
     current_user,
     new_presession_csrf_token,
     pending_session_user,
     safe_next_path,
+    session_cookie_name,
 )
 from payroll.auth.models import AuthSession, User
 from payroll.common.dependencies import get_session
@@ -119,7 +120,7 @@ def test_authenticated_session_reaches_route(tclient, session):
 
 
 def test_unknown_cookie_is_unauthenticated(tclient):
-    tclient.cookies.set(app_settings.session_cookie_name, "garbage")
+    tclient.cookies.set(session_cookie_name(), "garbage")
     assert tclient.get(f"{PREFIX}/_t/me").status_code == 401
 
 
@@ -259,13 +260,13 @@ def test_session_token_required_even_with_valid_presession_cookie(tclient, sessi
     user = make_user(session)
     login_as(tclient, user)
     pre = new_presession_csrf_token()
-    tclient.cookies.set(CSRF_COOKIE_NAME, pre)
+    tclient.cookies.set(csrf_cookie_name(), pre)
     assert tclient.post("/_t/echo", headers={CSRF_HEADER: pre}).status_code == 403
 
 
 def test_presession_double_submit(tclient):
     token = new_presession_csrf_token()
-    tclient.cookies.set(CSRF_COOKIE_NAME, token)
+    tclient.cookies.set(csrf_cookie_name(), token)
     assert tclient.post("/_t/echo", headers={CSRF_HEADER: token}).status_code == 200
     assert tclient.post("/_t/echo", data={"csrf_token": token}).status_code == 200
     # Header must match the cookie.
@@ -278,10 +279,10 @@ def test_presession_double_submit(tclient):
 
 def test_presession_cookie_must_be_signed(tclient):
     forged = "attacker-chosen.0000"
-    tclient.cookies.set(CSRF_COOKIE_NAME, forged)
+    tclient.cookies.set(csrf_cookie_name(), forged)
     assert tclient.post("/_t/echo", headers={CSRF_HEADER: forged}).status_code == 403
     unsigned = "plainvalue"
-    tclient.cookies.set(CSRF_COOKIE_NAME, unsigned)
+    tclient.cookies.set(csrf_cookie_name(), unsigned)
     assert tclient.post("/_t/echo", headers={CSRF_HEADER: unsigned}).status_code == 403
 
 
@@ -292,7 +293,7 @@ def test_page_without_session_issues_presession_cookie(tapp, monkeypatch):
     token = response.text.removeprefix("<p>").removesuffix("</p>")
     assert token
     set_cookie = response.headers["set-cookie"]
-    assert set_cookie.startswith(f"{CSRF_COOKIE_NAME}=")
+    assert set_cookie.startswith(f"{csrf_cookie_name()}=")
     assert "httponly" in set_cookie.lower()
     assert "samesite=lax" in set_cookie.lower()
     # The browser now has the cookie; the rendered token passes the double-submit.

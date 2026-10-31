@@ -33,6 +33,14 @@ cookie nor plant a value of their choosing (the signature is checked), so they
 cannot produce a matching pair. Once a session exists the cookie is no longer
 an alternative: only the session token is accepted.
 
+Cookie names
+------------
+When ``session_cookie_secure`` is on, both the session cookie and the
+pre-session CSRF cookie carry the ``__Host-`` prefix (always with ``Path=/``,
+``Secure`` and no ``Domain``), so a sibling subdomain or a plain-http response
+cannot set or shadow them. Use :func:`session_cookie_name` /
+:func:`csrf_cookie_name`, never the bare setting.
+
 Templates get the token through :func:`csrf_context`. When a page is rendered
 with no session and no valid pre-session cookie, :func:`csrf_token_for` mints
 one and leaves it in ``request.state`` for
@@ -61,9 +69,31 @@ UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # request.state key read by CSRFCookieMiddleware: a freshly minted pre-session token.
 PENDING_CSRF_COOKIE_STATE = "csrf_cookie_pending"
 
+HOST_COOKIE_PREFIX = "__Host-"
+
 _MAX_NEXT_LENGTH = 2048
 _MAX_TOKEN_LENGTH = 256
 _FORM_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
+
+
+class CSRFError(HTTPException):
+    """403 for a missing or wrong CSRF token (the auth forms render it as a page)."""
+
+    def __init__(self) -> None:
+        super().__init__(403, "CSRF token missing or invalid")
+
+
+def session_cookie_name() -> str:
+    """The session cookie's name: ``__Host-`` prefixed when cookies are Secure."""
+    base = app_settings.session_cookie_name
+    return HOST_COOKIE_PREFIX + base if app_settings.session_cookie_secure else base
+
+
+def csrf_cookie_name() -> str:
+    """The pre-session CSRF cookie's name: ``__Host-`` prefixed when cookies are Secure."""
+    if app_settings.session_cookie_secure:
+        return HOST_COOKIE_PREFIX + CSRF_COOKIE_NAME
+    return CSRF_COOKIE_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +104,11 @@ _FORM_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
 def safe_next_path(next: str | None, default: str = "/") -> str:
     """
     ``next`` if it is a same-site relative path, else ``default``. Accepted values
-    start with a single ``/`` and contain no backslash, control character, scheme
+    are printable ASCII only (0x20-0x7E; anything else must arrive
+    percent-encoded), start with a single ``/`` and contain no backslash, scheme
     or network location, so they can never redirect off-site (``//host``,
-    ``/\\host``, ``https://...``, ``javascript:...``).
+    ``/\\host``, ``https://...``, ``javascript:...``, or Unicode look-alike
+    slashes and line separators that a browser or proxy might reinterpret).
     """
     if not isinstance(next, str) or not next or len(next) > _MAX_NEXT_LENGTH:
         return default
@@ -84,7 +116,7 @@ def safe_next_path(next: str | None, default: str = "/") -> str:
         return default
     if "\\" in next:
         return default
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in next):
+    if any(not 0x20 <= ord(ch) <= 0x7E for ch in next):
         return default
     parts = urlsplit(next)
     if parts.scheme or parts.netloc:
@@ -125,13 +157,15 @@ def csrf_token_for(request: Request) -> str:
     (which CSRFCookieMiddleware then sets as a cookie on the response).
     """
     state = request.state
-    auth = getattr(state, "auth_session", None)
-    if auth is not None:
-        return auth.csrf_token
+    # current_session copies the session's token here, so a page rendered after
+    # the route committed never lazy-loads the (possibly rotated away) session row.
     token = getattr(state, "csrf_token", None)
     if token:
         return token
-    cookie = request.cookies.get(CSRF_COOKIE_NAME)
+    auth = getattr(state, "auth_session", None)
+    if auth is not None:
+        return auth.csrf_token
+    cookie = request.cookies.get(csrf_cookie_name())
     if presession_token_valid(cookie):
         token = cookie
     else:
@@ -141,9 +175,15 @@ def csrf_token_for(request: Request) -> str:
     return token
 
 
-def csrf_context(request: Request) -> dict[str, str]:
-    """Jinja2 context processor: exposes ``csrf_token`` to every template."""
-    return {"csrf_token": csrf_token_for(request)}
+def csrf_context(request: Request) -> dict[str, object]:
+    """
+    Jinja2 context processor: exposes ``csrf_token`` to every template, and
+    ``current_user`` (the signed-in user when the route resolved one, else None).
+    """
+    return {
+        "csrf_token": csrf_token_for(request),
+        "current_user": getattr(request.state, "user", None),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -155,17 +195,18 @@ def current_session(request: Request, db: Session = Depends(get_session)) -> Aut
     """
     The live session named by the session cookie, or None. Loaded once per request
     and cached on ``request.state.auth_session``. ``load_session`` may refresh
-    ``last_seen_at`` or delete an expired row; that is committed here because many
-    requests (GETs) never commit.
+    ``last_seen_at`` or (bulk) delete an expired row; that is committed here
+    because many requests (GETs) never commit. Nothing else is pending in the
+    unit of work this early in the request.
     """
     state = request.state
     if hasattr(state, "auth_session"):
         return state.auth_session
-    raw = request.cookies.get(app_settings.session_cookie_name)
+    raw = request.cookies.get(session_cookie_name())
     auth = load_session(db, raw) if raw else None
     if auth is not None:
         state.csrf_token = auth.csrf_token
-    if db.dirty or db.deleted:
+    if raw and (auth is None or db.dirty):
         db.commit()
     state.auth_session = auth
     return auth
@@ -250,18 +291,22 @@ async def _supplied_token(request: Request) -> str | None:
 async def verify_csrf(
     request: Request, auth: AuthSession | None = Depends(current_session)
 ) -> None:
-    """App-wide: 403 for an unsafe method without the right CSRF token."""
+    """
+    App-wide: 403 (:class:`CSRFError`) for an unsafe method without the right
+    CSRF token. The expected token is worked out first; when there is none (no
+    session and no valid pre-session cookie) the request is refused before its
+    body is read, so an anonymous client cannot make the server parse a large
+    form or multipart upload.
+    """
     if request.method not in UNSAFE_METHODS:
         return
-    supplied = await _supplied_token(request)
     if auth is not None:
         expected = auth.csrf_token
     else:
-        cookie = request.cookies.get(CSRF_COOKIE_NAME)
+        cookie = request.cookies.get(csrf_cookie_name())
         expected = cookie if presession_token_valid(cookie) else None
-    if (
-        not supplied
-        or not expected
-        or not hmac.compare_digest(supplied.encode(), expected.encode())
-    ):
-        raise HTTPException(403, "CSRF token missing or invalid")
+    if not expected:
+        raise CSRFError()
+    supplied = await _supplied_token(request)
+    if not supplied or not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise CSRFError()

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Sign in · DCI Payroll{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card">
+    <div class="card-header bg-primary">Sign in</div>
+    <div class="card-body">
+      {% include "_messages.html" %}
+      <form method="post" action="/login?next={{ next_path | urlencode }}" autocomplete="on">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ next_path }}">
+        <div class="mb-3">
+          <label class="form-label" for="email">Email</label>
+          <input class="form-control" type="email" id="email" name="email" autocomplete="username" required autofocus maxlength="320">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="password">Password</label>
+          <input class="form-control" type="password" id="password" name="password" autocomplete="current-password" required maxlength="128">
+        </div>
+        <button type="submit" class="btn btn-brand w-100">Continue</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

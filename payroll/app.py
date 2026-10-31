@@ -6,8 +6,12 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from payroll import app_settings
-from payroll.auth.dependencies import verify_csrf
-from payroll.auth.middleware import CSRFCookieMiddleware, SecurityHeadersMiddleware
+from payroll.auth.dependencies import CSRFError, verify_csrf
+from payroll.auth.middleware import (
+    CSRFCookieMiddleware,
+    SecurityHeadersMiddleware,
+    security_headers,
+)
 from payroll.exceptions import AppBaseError
 from payroll.logger_conf import configure_logging
 
@@ -46,16 +50,24 @@ def create_app() -> FastAPI:
         openapi_url=f"{app_settings.base_url_prefix}/openapi.json",
         lifespan=lifespan,
         # CSRF check on every POST/PUT/PATCH/DELETE route (safe methods pass through).
+        # App-level dependencies are attached to every FastAPI route: those added
+        # with include_router, @application.<method> or add_api_route. Plain
+        # Starlette routes (application.add_route / add_websocket_route) and
+        # anything mounted (application.mount: /static, a sub-application) bypass
+        # it, so they must never accept state-changing requests.
         dependencies=[Depends(verify_csrf)],
     )
 
     # Security headers on every response (incl. errors and /static); the CSRF cookie
     # middleware sets the pre-session double-submit cookie when a page minted one.
+    docs_paths = frozenset({application.docs_url, application.redoc_url})
     application.add_middleware(CSRFCookieMiddleware)
-    application.add_middleware(
-        SecurityHeadersMiddleware,
-        docs_paths=frozenset({application.docs_url, application.redoc_url}),
-    )
+    application.add_middleware(SecurityHeadersMiddleware, docs_paths=docs_paths)
+
+    from payroll.auth.routers import csrf_error_handler
+
+    # Stale login/MFA/enroll forms get an "expired" page; other CSRF failures a 403.
+    application.add_exception_handler(CSRFError, csrf_error_handler)
 
     # ------------------------------------------------------------------ #
     # Global exception handler — catches all AppBaseError subclasses and  #
@@ -72,7 +84,10 @@ def create_app() -> FastAPI:
     @application.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled exception: %s", exc)
+        # Starlette's ServerErrorMiddleware runs this outside the user middleware,
+        # so SecurityHeadersMiddleware never sees the 500: add its headers here.
         return JSONResponse(
+            headers=security_headers(request.url.path, docs_paths),
             status_code=500,
             content={
                 "errors": [
@@ -107,6 +122,10 @@ def create_app() -> FastAPI:
         name="static",
     )
     application.include_router(frontend_router)
+
+    from payroll.auth.routers import router as auth_router
+
+    application.include_router(auth_router)
 
     logger.info("Registered routers with prefix: %s", prefix)
     return application

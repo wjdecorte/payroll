@@ -23,13 +23,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlmodel import Session, SQLModel  # noqa: E402
 
-from payroll import app_settings  # noqa: E402
 from payroll.app import app  # noqa: E402
 from payroll.auth import sessions as auth_sessions  # noqa: E402
 from payroll.auth.dependencies import (  # noqa: E402
-    CSRF_COOKIE_NAME,
     CSRF_HEADER,
+    csrf_cookie_name,
     new_presession_csrf_token,
+    session_cookie_name,
 )
 from payroll.auth.models import User  # noqa: E402
 from payroll.common.dependencies import get_session  # noqa: E402
@@ -74,7 +74,7 @@ def add_presession_csrf(client: TestClient) -> str:
     request the client sends then passes ``verify_csrf`` while no session exists.
     """
     token = new_presession_csrf_token()
-    client.cookies.set(CSRF_COOKIE_NAME, token)
+    client.cookies.set(csrf_cookie_name(), token)
     client.headers[CSRF_HEADER] = token
     return token
 
@@ -136,7 +136,7 @@ def login_as(client: TestClient, user: User, *, mfa_verified: bool = True) -> st
     raw, auth = auth_sessions.create_session(db, user, ip="testclient", user_agent="pytest")
     auth.mfa_verified = mfa_verified
     db.flush()
-    client.cookies.set(app_settings.session_cookie_name, raw)
+    client.cookies.set(session_cookie_name(), raw)
     client.headers[CSRF_HEADER] = auth.csrf_token
     return auth.csrf_token
 

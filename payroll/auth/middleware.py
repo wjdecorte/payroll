@@ -9,7 +9,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from payroll import app_settings
-from payroll.auth.dependencies import CSRF_COOKIE_NAME, PENDING_CSRF_COOKIE_STATE
+from payroll.auth.dependencies import PENDING_CSRF_COOKIE_STATE, csrf_cookie_name
 
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; "
@@ -31,12 +31,32 @@ HSTS_VALUE = "max-age=31536000"
 STATIC_PREFIX = "/static/"
 
 
+def security_headers(path: str, docs_paths: frozenset[str] = frozenset()) -> dict[str, str]:
+    """The security headers for a response to ``path`` (see SecurityHeadersMiddleware)."""
+    headers = {
+        "Content-Security-Policy": (
+            DOCS_CONTENT_SECURITY_POLICY if path in docs_paths else CONTENT_SECURITY_POLICY
+        ),
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "same-origin",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if not path.startswith(STATIC_PREFIX):
+        headers["Cache-Control"] = "no-store"
+    if app_settings.session_cookie_secure:
+        headers["Strict-Transport-Security"] = HSTS_VALUE
+    return headers
+
+
 class SecurityHeadersMiddleware:
     """
     Adds CSP, ``X-Frame-Options: DENY``, ``Referrer-Policy: same-origin``,
     ``X-Content-Type-Options: nosniff`` to every response, ``Cache-Control:
     no-store`` to everything except ``/static/*``, and HSTS only when
     ``session_cookie_secure`` is on (i.e. the app is served over TLS).
+
+    Starlette's ServerErrorMiddleware sits outside every user middleware, so the
+    app's unhandled-exception (500) handler adds :func:`security_headers` itself.
     """
 
     def __init__(self, app: ASGIApp, docs_paths: frozenset[str] = frozenset()) -> None:
@@ -47,21 +67,13 @@ class SecurityHeadersMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        path: str = scope.get("path", "")
-        is_static = path.startswith(STATIC_PREFIX)
-        csp = DOCS_CONTENT_SECURITY_POLICY if path in self.docs_paths else CONTENT_SECURITY_POLICY
+        wanted = security_headers(scope.get("path", ""), self.docs_paths)
 
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                headers["Content-Security-Policy"] = csp
-                headers["X-Frame-Options"] = "DENY"
-                headers["Referrer-Policy"] = "same-origin"
-                headers["X-Content-Type-Options"] = "nosniff"
-                if not is_static:
-                    headers["Cache-Control"] = "no-store"
-                if app_settings.session_cookie_secure:
-                    headers["Strict-Transport-Security"] = HSTS_VALUE
+                for name, value in wanted.items():
+                    headers[name] = value
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
@@ -69,9 +81,10 @@ class SecurityHeadersMiddleware:
 
 def presession_cookie_header(token: str) -> str:
     """The ``Set-Cookie`` value for a pre-session CSRF token (browser-session lifetime)."""
+    name = csrf_cookie_name()  # __Host- prefixed when Secure: Path=/ and no Domain
     cookie = SimpleCookie()
-    cookie[CSRF_COOKIE_NAME] = token
-    morsel = cookie[CSRF_COOKIE_NAME]
+    cookie[name] = token
+    morsel = cookie[name]
     morsel["path"] = "/"
     morsel["httponly"] = True
     morsel["samesite"] = "Lax"
