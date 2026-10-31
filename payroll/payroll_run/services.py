@@ -11,9 +11,11 @@ Flow for a calculation request:
   5. Return a PayrollResult
 """
 
+import dataclasses
 import logging
 import re
 from datetime import datetime
+from decimal import Decimal
 
 from sqlmodel import Session, select
 
@@ -42,6 +44,38 @@ from .schemas import (
 logger = logging.getLogger(f"{app_settings.logger_name}.payroll_run.service")
 
 _PAY_PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+# TODO(Task 4): remove float bridge — once the persistence and API schemas carry
+# Decimal, call calc_payroll directly and drop this float <-> Decimal conversion.
+def _calc_payroll_float_bridge(
+    gross_salary: float,
+    health_insurance: float,
+    hsa_contribution: float,
+    health_in_income_tax: bool,
+    hsa_in_income_tax: bool,
+    ytd_fica_wages: float,
+) -> PayrollCalculation:
+    """Run the Decimal tax engine from float inputs and return float amounts.
+
+    Inputs are converted with ``Decimal(str(x))`` (never ``Decimal(float)``) and
+    every Decimal result is converted back to ``float`` so the DB models and the
+    API's JSON output are unchanged for now.
+    """
+    calc = calc_payroll(
+        gross_salary=Decimal(str(gross_salary)),
+        health_insurance=Decimal(str(health_insurance)),
+        hsa_contribution=Decimal(str(hsa_contribution)),
+        health_in_income_tax=health_in_income_tax,
+        hsa_in_income_tax=hsa_in_income_tax,
+        ytd_fica_wages=Decimal(str(ytd_fica_wages)),
+    )
+    as_floats = {
+        f.name: float(v)
+        for f in dataclasses.fields(calc)
+        if isinstance(v := getattr(calc, f.name), Decimal)
+    }
+    return dataclasses.replace(calc, **as_floats)
 
 
 class PayrollRunService:
@@ -79,7 +113,7 @@ class PayrollRunService:
             payload.ytd_fica_wages = self._get_previous_ytd_fica(payload.pay_period)
             logger.info("Resolved YTD FICA from previous run: %.2f", payload.ytd_fica_wages)
 
-        calc = calc_payroll(
+        calc = _calc_payroll_float_bridge(
             gross_salary=payload.gross_salary,
             health_insurance=payload.health_insurance,
             hsa_contribution=payload.hsa_contribution,
@@ -118,7 +152,7 @@ class PayrollRunService:
             save_run=False,
             notes=run.notes,
         )
-        calc = calc_payroll(
+        calc = _calc_payroll_float_bridge(
             gross_salary=run.gross_salary,
             health_insurance=run.health_insurance,
             hsa_contribution=run.hsa_contribution,

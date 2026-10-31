@@ -3,13 +3,21 @@ Payroll calculation engine.
 
 All functions are pure (no I/O, no database, no FastAPI) so they are
 trivial to unit-test and reuse across different layers of the application.
+
+All money is exact ``Decimal``. ``round_money`` (half-up to cents) is applied at
+exactly the points the original float engine rounded to two places.
 """
 
+from decimal import Decimal
+
+from payroll.common.money import round_money
 from payroll.tax import constants as tax
 from payroll.tax.schemas import PayrollCalculation
 
+ZERO = Decimal("0")
 
-def calc_federal_withholding(annual_wages: float) -> float:
+
+def calc_federal_withholding(annual_wages: Decimal) -> Decimal:
     """
     Compute the annual federal income tax using IRS Pub 15-T Percentage Method
     for a single/MFS filer whose W-4 Step 2 box is NOT checked.
@@ -26,26 +34,25 @@ def calc_federal_withholding(annual_wages: float) -> float:
         Annual federal income tax amount (divide by 12 for monthly withholding).
     """
     # Worksheet 1A Step 1g: apply the standard deduction offset for single filers
-    adjusted = max(0.0, annual_wages - tax.FED_STEP1G_SINGLE)
-    if adjusted == 0.0:
-        return 0.0
+    adjusted = max(ZERO, annual_wages - tax.FED_STEP1G_SINGLE)
+    if adjusted == ZERO:
+        return ZERO
 
+    # The top bracket has no upper bound (None), so the loop always returns.
     for lower, upper, rate, base in tax.FEDERAL_BRACKETS:
-        if adjusted < upper:
+        if upper is None or adjusted < upper:
             return base + rate * (adjusted - lower)
 
-    # Fallback: top bracket (adjusted >= last lower limit)
-    last = tax.FEDERAL_BRACKETS[-1]
-    return last[3] + last[2] * (adjusted - last[0])
+    raise AssertionError("FEDERAL_BRACKETS must end with an unbounded (None) bracket")
 
 
 def calc_payroll(
-    gross_salary: float,
-    health_insurance: float,
-    hsa_contribution: float,
+    gross_salary: Decimal,
+    health_insurance: Decimal,
+    hsa_contribution: Decimal,
     health_in_income_tax: bool,
     hsa_in_income_tax: bool,
-    ytd_fica_wages: float,
+    ytd_fica_wages: Decimal,
     pay_periods: int = tax.PAY_PERIODS_PER_YEAR,
 ) -> PayrollCalculation:
     """
@@ -67,8 +74,13 @@ def calc_payroll(
         pay_periods:         Pay periods per year (12 for monthly).
 
     Returns:
-        PayrollCalculation dataclass with all computed amounts.
+        PayrollCalculation dataclass with all computed amounts (``Decimal``).
+
+    Raises:
+        ValueError: If ``gross_salary`` is negative.
     """
+    if gross_salary < 0:
+        raise ValueError(f"gross_salary must not be negative (got {gross_salary})")
 
     # ------------------------------------------------------------------
     # Wage bases
@@ -93,52 +105,52 @@ def calc_payroll(
     # ------------------------------------------------------------------
     # Social Security
     # ------------------------------------------------------------------
-    ss_taxable = max(0.0, min(fica_wages, tax.SS_WAGE_BASE - ytd_fica_wages))
-    ss_ee = round(ss_taxable * tax.SS_EE_RATE, 2)
-    ss_er = round(ss_taxable * tax.SS_ER_RATE, 2)
+    ss_taxable = max(ZERO, min(fica_wages, tax.SS_WAGE_BASE - ytd_fica_wages))
+    ss_ee = round_money(ss_taxable * tax.SS_EE_RATE)
+    ss_er = round_money(ss_taxable * tax.SS_ER_RATE)
     ss_cap_hit = (ytd_fica_wages + fica_wages) >= tax.SS_WAGE_BASE
 
     # ------------------------------------------------------------------
     # Medicare
     # ------------------------------------------------------------------
-    medicare_ee = round(fica_wages * tax.MEDICARE_EE_RATE, 2)
-    medicare_er = round(fica_wages * tax.MEDICARE_ER_RATE, 2)
+    medicare_ee = round_money(fica_wages * tax.MEDICARE_EE_RATE)
+    medicare_er = round_money(fica_wages * tax.MEDICARE_ER_RATE)
 
     # Additional 0.9% Medicare (employee only)
     ytd_after = ytd_fica_wages + fica_wages
     if ytd_after > tax.ADD_MEDICARE_THRESH:
         add_med_base = min(fica_wages, ytd_after - tax.ADD_MEDICARE_THRESH)
-        additional_medicare = round(add_med_base * tax.ADD_MEDICARE_RATE, 2)
+        additional_medicare = round_money(add_med_base * tax.ADD_MEDICARE_RATE)
     else:
-        additional_medicare = 0.0
+        additional_medicare = ZERO
 
-    total_medicare_ee = round(medicare_ee + additional_medicare, 2)
+    total_medicare_ee = round_money(medicare_ee + additional_medicare)
 
     # ------------------------------------------------------------------
     # Federal income tax withholding
     # ------------------------------------------------------------------
     annual_income_tax_wages = income_tax_wages * pay_periods
     annual_fed_tax = calc_federal_withholding(annual_income_tax_wages)
-    federal_withholding = round(annual_fed_tax / pay_periods, 2)
+    federal_withholding = round_money(annual_fed_tax / pay_periods)
 
     # ------------------------------------------------------------------
     # Georgia state income tax withholding
     # ------------------------------------------------------------------
     annual_ga_income_tax_wages = ga_income_tax_wages * pay_periods
-    ga_annual_taxable = max(0.0, annual_ga_income_tax_wages - tax.GA_STD_DEDUCTION)
+    ga_annual_taxable = max(ZERO, annual_ga_income_tax_wages - tax.GA_STD_DEDUCTION)
     annual_ga_tax = ga_annual_taxable * tax.GA_RATE
-    ga_withholding = round(annual_ga_tax / pay_periods, 2)
+    ga_withholding = round_money(annual_ga_tax / pay_periods)
 
     # ------------------------------------------------------------------
     # Totals
     # ------------------------------------------------------------------
-    total_employee_deductions = round(
-        federal_withholding + ga_withholding + ss_ee + total_medicare_ee, 2
+    total_employee_deductions = round_money(
+        federal_withholding + ga_withholding + ss_ee + total_medicare_ee
     )
-    net_pay = round(gross_salary - total_employee_deductions, 2)
-    total_employer_taxes = round(ss_er + medicare_er, 2)
-    total_employer_cost = round(
-        gross_salary + health_insurance + hsa_contribution + total_employer_taxes, 2
+    net_pay = round_money(gross_salary - total_employee_deductions)
+    total_employer_taxes = round_money(ss_er + medicare_er)
+    total_employer_cost = round_money(
+        gross_salary + health_insurance + hsa_contribution + total_employer_taxes
     )
 
     return PayrollCalculation(
@@ -154,13 +166,13 @@ def calc_payroll(
         total_medicare_ee=total_medicare_ee,
         medicare_er=medicare_er,
         ga_annual_taxable=ga_annual_taxable,
-        annual_fed_tax=round(annual_fed_tax, 2),
-        annual_ga_tax=round(annual_ga_tax, 2),
+        annual_fed_tax=round_money(annual_fed_tax),
+        annual_ga_tax=round_money(annual_ga_tax),
         federal_withholding=federal_withholding,
         ga_withholding=ga_withholding,
         total_employee_deductions=total_employee_deductions,
         net_pay=net_pay,
         total_employer_taxes=total_employer_taxes,
         total_employer_cost=total_employer_cost,
-        ytd_fica_after=round(ytd_fica_wages + fica_wages, 2),
+        ytd_fica_after=round_money(ytd_fica_wages + fica_wages),
     )

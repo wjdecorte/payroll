@@ -9,7 +9,7 @@ Sources:
   Georgia income tax             : Georgia DOR (dor.georgia.gov)
 """
 
-import math
+from decimal import Decimal
 
 TAX_YEAR: int = 2026
 
@@ -17,22 +17,23 @@ TAX_YEAR: int = 2026
 # FICA
 # ---------------------------------------------------------------------------
 
-SS_EE_RATE: float = 0.062  # Employee Social Security rate
-SS_ER_RATE: float = 0.062  # Employer Social Security rate
-SS_WAGE_BASE: float = 184_500.00  # 2026 annual SS wage base (SSA.gov)
+SS_EE_RATE: Decimal = Decimal("0.062")  # Employee Social Security rate
+SS_ER_RATE: Decimal = Decimal("0.062")  # Employer Social Security rate
+SS_WAGE_BASE: Decimal = Decimal("184_500.00")  # 2026 annual SS wage base (SSA.gov)
 
-MEDICARE_EE_RATE: float = 0.0145  # Employee Medicare rate
-MEDICARE_ER_RATE: float = 0.0145  # Employer Medicare rate
+MEDICARE_EE_RATE: Decimal = Decimal("0.0145")  # Employee Medicare rate
+MEDICARE_ER_RATE: Decimal = Decimal("0.0145")  # Employer Medicare rate
 
 # Additional 0.9% Medicare applies to the EMPLOYEE only on annual wages above this threshold
-ADD_MEDICARE_RATE: float = 0.009
-ADD_MEDICARE_THRESH: float = 200_000.00
+ADD_MEDICARE_RATE: Decimal = Decimal("0.009")
+ADD_MEDICARE_THRESH: Decimal = Decimal("200_000.00")
 
 # ---------------------------------------------------------------------------
 # Federal Income Tax — Percentage Method
 # Single filer, 2020+ W-4, Standard Withholding
 #
 # Each tuple: (lower_annualized_wage, upper_annualized_wage, rate, base_tax_at_lower)
+# The top bracket's upper bound is None (unbounded).
 #
 # These are the EXACT thresholds from IRS Pub 15-T (2026), Table for Automated
 # Payroll Systems, STANDARD Withholding Rate Schedule, Single or MFS column
@@ -48,16 +49,16 @@ ADD_MEDICARE_THRESH: float = 200_000.00
 # Source: IRS Pub 15-T (2026), published Dec 3, 2025
 # ---------------------------------------------------------------------------
 
-FEDERAL_BRACKETS: list[tuple[float, float, float, float]] = [
-    #   lower        upper       rate    base_tax
-    (0, 7_500, 0.0000, 0.00),
-    (7_500, 19_900, 0.1000, 0.00),
-    (19_900, 57_900, 0.1200, 1_240.00),
-    (57_900, 113_200, 0.2200, 5_800.00),
-    (113_200, 209_275, 0.2400, 17_966.00),
-    (209_275, 263_725, 0.3200, 41_024.00),
-    (263_725, 648_100, 0.3500, 58_448.00),
-    (648_100, math.inf, 0.3700, 192_979.25),
+FEDERAL_BRACKETS: list[tuple[Decimal, Decimal | None, Decimal, Decimal]] = [
+    #   lower                upper                rate              base_tax
+    (Decimal("0"), Decimal("7_500"), Decimal("0.0000"), Decimal("0.00")),
+    (Decimal("7_500"), Decimal("19_900"), Decimal("0.1000"), Decimal("0.00")),
+    (Decimal("19_900"), Decimal("57_900"), Decimal("0.1200"), Decimal("1_240.00")),
+    (Decimal("57_900"), Decimal("113_200"), Decimal("0.2200"), Decimal("5_800.00")),
+    (Decimal("113_200"), Decimal("209_275"), Decimal("0.2400"), Decimal("17_966.00")),
+    (Decimal("209_275"), Decimal("263_725"), Decimal("0.3200"), Decimal("41_024.00")),
+    (Decimal("263_725"), Decimal("648_100"), Decimal("0.3500"), Decimal("58_448.00")),
+    (Decimal("648_100"), None, Decimal("0.3700"), Decimal("192_979.25")),  # None = no upper limit
 ]
 
 # ---------------------------------------------------------------------------
@@ -69,15 +70,15 @@ FEDERAL_BRACKETS: list[tuple[float, float, float, float]] = [
 #   Married Filing Jointly             : $12,900
 # ---------------------------------------------------------------------------
 
-FED_STEP1G_SINGLE: float = 8_600.00  # Single / MFS, Step 2 box NOT checked
+FED_STEP1G_SINGLE: Decimal = Decimal("8_600.00")  # Single / MFS, Step 2 box NOT checked
 
 # ---------------------------------------------------------------------------
 # Georgia Income Tax — 2026
 # Flat rate per HB 1437; scheduled to decrease 0.10% per year through 2029.
 # ---------------------------------------------------------------------------
 
-GA_RATE: float = 0.0519  # 5.19% flat rate effective 2026
-GA_STD_DEDUCTION: float = 12_000.00  # Annual standard deduction, single filer
+GA_RATE: Decimal = Decimal("0.0519")  # 5.19% flat rate effective 2026
+GA_STD_DEDUCTION: Decimal = Decimal("12_000.00")  # Annual standard deduction, single filer
 GA_STATE: str = "Georgia"
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 
 from payroll.common.schemas import AppBaseSchema
 from payroll.tax import constants as tax
@@ -9,57 +10,60 @@ class PayrollCalculation:
     """
     Pure-data result of the payroll calculation engine.
 
-    All amounts are monthly unless prefixed with ``annual_``.
+    All amounts are monthly unless prefixed with ``annual_``, and every amount
+    is an exact ``Decimal`` (never ``float``).
     This is a plain dataclass (not Pydantic) so the engine remains
     dependency-free and is trivial to unit-test.
     """
 
     # Wage bases
-    fica_wages: float
-    income_tax_wages: float
-    annual_income_tax_wages: float
+    fica_wages: Decimal
+    income_tax_wages: Decimal
+    annual_income_tax_wages: Decimal
 
     # Social Security
-    ss_taxable_wages: float
-    ss_ee: float
-    ss_er: float
+    ss_taxable_wages: Decimal
+    ss_ee: Decimal
+    ss_er: Decimal
     ss_cap_hit: bool
 
     # Medicare
-    medicare_ee: float
-    additional_medicare: float
-    total_medicare_ee: float
-    medicare_er: float
+    medicare_ee: Decimal
+    additional_medicare: Decimal
+    total_medicare_ee: Decimal
+    medicare_er: Decimal
 
     # Federal income tax
-    annual_fed_tax: float
-    federal_withholding: float
+    annual_fed_tax: Decimal
+    federal_withholding: Decimal
 
     # Georgia income tax
-    ga_annual_taxable: float
-    annual_ga_tax: float
-    ga_withholding: float
+    ga_annual_taxable: Decimal
+    annual_ga_tax: Decimal
+    ga_withholding: Decimal
 
     # Totals
-    total_employee_deductions: float
-    net_pay: float
-    total_employer_taxes: float
-    total_employer_cost: float
-    ytd_fica_after: float
+    total_employee_deductions: Decimal
+    net_pay: Decimal
+    total_employer_taxes: Decimal
+    total_employer_cost: Decimal
+    ytd_fica_after: Decimal
 
 
 class TaxConstantsSchema(AppBaseSchema):
     """Read-only view of the current tax year constants."""
 
+    # TODO(Task 4): remove float bridge — constants are Decimal; the API still emits floats.
+
     tax_year: int = tax.TAX_YEAR
-    ss_wage_base: float = tax.SS_WAGE_BASE
-    ss_ee_rate: float = tax.SS_EE_RATE
-    ss_er_rate: float = tax.SS_ER_RATE
-    medicare_ee_rate: float = tax.MEDICARE_EE_RATE
-    medicare_er_rate: float = tax.MEDICARE_ER_RATE
-    additional_medicare_rate: float = tax.ADD_MEDICARE_RATE
-    additional_medicare_threshold: float = tax.ADD_MEDICARE_THRESH
-    ga_flat_rate: float = tax.GA_RATE
-    ga_standard_deduction: float = tax.GA_STD_DEDUCTION
+    ss_wage_base: float = float(tax.SS_WAGE_BASE)
+    ss_ee_rate: float = float(tax.SS_EE_RATE)
+    ss_er_rate: float = float(tax.SS_ER_RATE)
+    medicare_ee_rate: float = float(tax.MEDICARE_EE_RATE)
+    medicare_er_rate: float = float(tax.MEDICARE_ER_RATE)
+    additional_medicare_rate: float = float(tax.ADD_MEDICARE_RATE)
+    additional_medicare_threshold: float = float(tax.ADD_MEDICARE_THRESH)
+    ga_flat_rate: float = float(tax.GA_RATE)
+    ga_standard_deduction: float = float(tax.GA_STD_DEDUCTION)
     ga_state: str = tax.GA_STATE
     pay_periods_per_year: int = tax.PAY_PERIODS_PER_YEAR
