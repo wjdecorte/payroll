@@ -121,8 +121,29 @@ def rotate_session(
 # ---------------------------------------------------------------------------
 
 
+def _lock_user_row(db: Session, user: User) -> None:
+    """
+    ``SELECT ... FOR UPDATE`` the user's row and refresh ``user`` from it, so
+    concurrent logins for the same account update the counters one at a time
+    from the committed values (no lost updates). The lock is held until the
+    caller's transaction ends.
+    """
+    db.exec(
+        select(User)
+        .where(User.id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+
+
 def is_locked(user: User, now: datetime | None = None) -> bool:
-    """True while ``user.locked_until`` is in the future."""
+    """
+    True while ``user.locked_until`` is in the future.
+
+    Callers must check this BEFORE verifying the password and must not call
+    :func:`register_failure` for an attempt made while the account is locked
+    (otherwise lockouts compound and the doubling escalates without bound).
+    """
     if user.locked_until is None:
         return False
     return (now or utcnow()) < user.locked_until
@@ -133,8 +154,14 @@ def register_failure(db: Session, user: User, now: datetime | None = None) -> No
     Count a failed login. On reaching ``max_failed_logins`` the account locks for
     ``lockout_minutes * 2**lock_count`` minutes, ``lock_count`` grows by one and the
     failure counter restarts.
+
+    Self-serializing: the user's row is locked (``FOR UPDATE``) and re-read before
+    counting, so parallel wrong-password requests are all counted. Call it only
+    for attempts made while :func:`is_locked` was False (checked before the
+    password). Does not commit: the caller commits, which releases the row lock.
     """
     now = now or utcnow()
+    _lock_user_row(db, user)
     user.failed_logins += 1
     if user.failed_logins >= app_settings.max_failed_logins:
         minutes = app_settings.lockout_minutes * 2**user.lock_count
@@ -142,6 +169,7 @@ def register_failure(db: Session, user: User, now: datetime | None = None) -> No
         user.lock_count += 1
         user.failed_logins = 0
     db.add(user)
+    db.flush()
 
 
 def register_success(db: Session, user: User) -> None:
@@ -149,8 +177,15 @@ def register_success(db: Session, user: User) -> None:
     Reset the lockout state after a successful login. ``lock_count`` is reset as
     well (the doubling only escalates across consecutive lockouts with no
     successful login in between).
+
+    Locks the user's row first like :func:`register_failure`, so a reset cannot
+    interleave with a concurrent failure. Only call it for a login that passed
+    the :func:`is_locked` check made before the password. Does not commit: the
+    caller commits.
     """
+    _lock_user_row(db, user)
     user.failed_logins = 0
     user.locked_until = None
     user.lock_count = 0
     db.add(user)
+    db.flush()

@@ -3,6 +3,7 @@
 import hashlib
 from datetime import datetime, timedelta
 
+from sqlalchemy import text
 from sqlmodel import select
 
 from payroll import app_settings
@@ -218,3 +219,74 @@ def test_functions_do_not_commit(session):
     # Nothing was committed: rolling back undoes the session row too.
     session.rollback()
     assert session.exec(select(AuthSession)).all() == []
+
+
+# ---------------------------------------------------------------------------
+# lockout under concurrency (committed rows, one DB connection per thread)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_failures_are_not_lost(engine):
+    """
+    Parallel wrong-password attempts on separate connections must count exactly
+    like sequential ones (no lost updates on failed_logins / lock_count).
+    """
+    import threading
+
+    from sqlmodel import Session as DBSession
+
+    threads_n, per_thread = 5, 2  # 10 failures in total, max_failed_logins = 5
+    with DBSession(engine) as db:
+        user = User(
+            email="race@example.com", display_name="Race", password_hash="$argon2id$x", role="owner"
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    barrier = threading.Barrier(threads_n)
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            with DBSession(engine) as db:
+                me = db.get(User, user_id)  # every thread starts from the same stale snapshot
+                barrier.wait()
+                for _ in range(per_thread):
+                    sessions.register_failure(db, me, now=T0)
+                    db.commit()
+        except BaseException as exc:  # surfaced below
+            errors.append(exc)
+
+    try:
+        workers = [threading.Thread(target=worker) for _ in range(threads_n)]
+        for t in workers:
+            t.start()
+        for t in workers:
+            t.join(timeout=30)
+        assert not errors, errors
+        with DBSession(engine) as db:
+            final = db.get(User, user_id)
+            # Sequential semantics: failure 5 locks for 15 min (lock_count 1), failure 10
+            # locks for 15 * 2 = 30 min (lock_count 2); the counter restarts each time.
+            assert final.failed_logins == 0
+            assert final.lock_count == 2
+            assert final.locked_until == T0 + timedelta(minutes=30)
+    finally:
+        with DBSession(engine) as db:
+            row = db.get(User, user_id)
+            if row is not None:
+                db.delete(row)
+                db.commit()
+
+
+def test_register_failure_refreshes_stale_object(session):
+    """A stale in-memory user is refreshed from the locked row before counting."""
+    user = _user(session)
+    session.flush()
+    session.connection().execute(
+        text("UPDATE app_user SET failed_logins = 3 WHERE id = :id"), {"id": user.id}
+    )
+    assert user.failed_logins == 0  # stale
+    sessions.register_failure(session, user, now=T0)
+    assert user.failed_logins == 4
