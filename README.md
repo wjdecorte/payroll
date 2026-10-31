@@ -14,7 +14,12 @@ uv sync
 uv run uvicorn payroll.app:app --reload --port 9000
 ```
 
-Open **http://localhost:9000/payroll/api/v1/docs** for the interactive API docs.
+Sign in at **http://localhost:9000/login**. Every page and API route needs a
+signed-in user (only `/login`, `/payroll/api/v1/healthcheck` and `/static` are
+public); changing data needs the `owner` role, `accountant` and `viewer` can read.
+
+The interactive API docs (`/payroll/api/v1/docs`, `/redoc`, `/openapi.json`) are
+served only with `DEBUG_MODE=true`, and only to a signed-in user.
 
 ## Project layout
 
