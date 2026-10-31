@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from payroll.tax.engine import calc_payroll
+from tests.tax.make_golden import build_cases
 
 GOLDEN = json.loads((Path(__file__).parent / "golden_cases.json").read_text())
 
@@ -20,3 +21,12 @@ def test_engine_matches_golden(case):
             assert actual[field] is expected, field
         else:
             assert actual[field] == pytest.approx(expected, abs=0.005), field
+
+
+def test_golden_file_has_full_grid():
+    assert len(GOLDEN) == 640
+
+    def key(inputs):
+        return json.dumps(inputs, sort_keys=True)
+
+    assert {key(c["inputs"]) for c in GOLDEN} == {key(c["inputs"]) for c in build_cases()}
