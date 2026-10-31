@@ -5,8 +5,9 @@ Password, TOTP and recovery-code primitives (SPEC SEC2/SEC3, DESIGN §8).
   defaults). Over-long input is refused before it can reach the hasher.
 - TOTP: RFC 6238 via pyotp, 30 s step, ±1 step tolerance, replay-protected by
   ``User.totp_last_step``.
-- Recovery codes: ``xxxxx-xxxxx`` from :mod:`secrets`, stored as sha256 hex and
-  consumed single-use with an atomic conditional UPDATE.
+- Recovery codes: ``xxxxx-xxxxx`` from :mod:`secrets`, stored as a per-user
+  HMAC-SHA256 keyed from the encryption key, consumed single-use with an atomic
+  conditional UPDATE.
 """
 
 import hashlib
@@ -19,12 +20,12 @@ from pathlib import Path
 import pyotp
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
-from sqlalchemy import update
+from sqlalchemy import delete, update
 from sqlmodel import Session
 
 from payroll import app_settings
 from payroll.auth.models import RecoveryCode, User, utcnow
-from payroll.common.crypto import decrypt_secret
+from payroll.common.crypto import decrypt_secret, derive_subkey
 
 MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_LENGTH = 128
@@ -36,6 +37,7 @@ TOTP_WINDOW = 1  # accept the previous, current and next step
 RECOVERY_CODE_COUNT = 10
 # Lowercase letters and digits minus the look-alikes 0/o, 1/l/i.
 RECOVERY_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+RECOVERY_CODE_KEY_LABEL = "payroll/recovery-code/v1"  # derive_subkey label for code hashes
 _RECOVERY_GROUP = 5
 
 _COMMON_PASSWORDS_FILE = Path(__file__).with_name("common_passwords.txt")
@@ -71,21 +73,31 @@ def _normalize_password(password: str) -> str:
     return unicodedata.normalize("NFKC", password)
 
 
-def _too_long(password: str) -> bool:
-    # NFKC can expand text, so check both the raw input (cheap guard that keeps
-    # huge strings away from the normalizer) and the normalized form.
-    return (
-        len(password) > MAX_PASSWORD_LENGTH
-        or len(_normalize_password(password)) > MAX_PASSWORD_LENGTH
-    )
+def _unusable_reason(password: str) -> str | None:
+    """
+    Why ``password`` must never reach the hasher, or None if it may.
+
+    Over-long input is refused (NFKC can expand text, so both the raw input, a
+    cheap guard that keeps huge strings away from the normalizer, and the
+    normalized form are checked), as is text that cannot be UTF-8 encoded (lone
+    surrogates), which Argon2 would otherwise raise on.
+    """
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."
+    try:
+        password.encode("utf-8")
+    except UnicodeEncodeError:
+        return "Password contains characters that cannot be used."
+    if len(_normalize_password(password)) > MAX_PASSWORD_LENGTH:
+        return f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."
+    return None
 
 
 def validate_password_policy(password: str) -> None:
     """Raise :class:`PasswordPolicyError` unless ``password`` meets the policy."""
-    if _too_long(password):
-        raise PasswordPolicyError(
-            f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."
-        )
+    reason = _unusable_reason(password)
+    if reason is not None:
+        raise PasswordPolicyError(reason)
     normalized = _normalize_password(password)
     if len(normalized) < MIN_PASSWORD_LENGTH:
         raise PasswordPolicyError(
@@ -96,11 +108,13 @@ def validate_password_policy(password: str) -> None:
 
 
 def hash_password(password: str) -> str:
-    """Argon2id hash of the NFKC-normalized password. Refuses over-long input."""
-    if _too_long(password):
-        raise PasswordPolicyError(
-            f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."
-        )
+    """
+    Argon2id hash of the NFKC-normalized password. Raises
+    :class:`PasswordPolicyError` for over-long or non-encodable input.
+    """
+    reason = _unusable_reason(password)
+    if reason is not None:
+        raise PasswordPolicyError(reason)
     return _hasher.hash(_normalize_password(password))
 
 
@@ -108,17 +122,23 @@ def verify_password(password: str, password_hash: str | None) -> bool:
     """
     True only if ``password`` matches ``password_hash``. Never raises.
 
-    With ``password_hash=None`` (unknown user) or an over-long password, a verify
-    against a module-level dummy hash still runs so the response takes about as
-    long as a real failed attempt; the result is always ``False``.
+    With ``password_hash=None`` (unknown user) or an unusable password (over-long
+    or not UTF-8 encodable), a verify against a module-level dummy hash still runs
+    so the response takes about as long as a real failed attempt; the result is
+    always ``False``. A malformed stored hash also gives ``False``.
     """
-    if password_hash is None or _too_long(password):
+    if password_hash is None or _unusable_reason(password) is not None:
         _dummy_verify()
         return False
     try:
         return _hasher.verify(password_hash, _normalize_password(password))
-    except VerificationError, InvalidHashError:
+    except VerificationError, InvalidHashError, ValueError:
         return False
+
+
+def password_needs_rehash(password_hash: str) -> bool:
+    """True if ``password_hash`` used weaker parameters than the current hasher."""
+    return _hasher.check_needs_rehash(password_hash)
 
 
 def _dummy_verify() -> None:
@@ -149,8 +169,16 @@ def verify_totp(user: User, code: str, now: datetime | None = None) -> bool:
 
     Accepts the current step ±1, but never a step at or before
     ``user.totp_last_step`` (replay protection). On success sets
-    ``user.totp_last_step`` to the matched step; the caller commits it. ``now``
-    defaults to the current time; a naive ``now`` is taken as UTC.
+    ``user.totp_last_step`` to the matched step. ``now`` defaults to the current
+    time; a naive ``now`` is taken as UTC.
+
+    The caller MUST load the user row with ``SELECT ... FOR UPDATE``
+    (``select(User).where(...).with_for_update()``) and commit after this call;
+    otherwise two concurrent logins can both accept the same code.
+
+    ``totp_enabled`` is deliberately ignored: enrollment verifies a first code
+    before TOTP is switched on. A corrupt ``totp_secret_enc`` (or one encrypted
+    under a different key) raises ``ValueError`` from ``decrypt_secret``.
     """
     if user.totp_secret_enc is None:
         return False
@@ -196,9 +224,30 @@ def generate_recovery_codes(n: int = RECOVERY_CODE_COUNT) -> list[str]:
     return list(codes)
 
 
-def hash_recovery_code(code: str) -> str:
-    """sha256 hex of the normalized code (case, whitespace and hyphens ignored)."""
-    return hashlib.sha256(_normalize_recovery_code(code).encode("ascii", "replace")).hexdigest()
+def hash_recovery_code(code: str, user_id: int) -> str:
+    """
+    Keyed hash of a recovery code for one user (64 hex chars):
+    ``HMAC-SHA256(K, f"{user_id}:{normalized code}")`` with ``K`` derived from the
+    encryption key. Case, whitespace and hyphens are ignored. The server key stops
+    a leaked table being brute-forced offline, and binding the user id stops one
+    guess being checked against every user's codes at once.
+    """
+    key = derive_subkey(RECOVERY_CODE_KEY_LABEL)
+    message = f"{user_id}:{_normalize_recovery_code(code)}".encode("utf-8", "replace")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def issue_recovery_codes(session: Session, user_id: int, n: int = RECOVERY_CODE_COUNT) -> list[str]:
+    """
+    Replace ``user_id``'s recovery codes with ``n`` new ones and return them in
+    plain text (show them once; only their keyed hashes are stored). Any earlier
+    codes, used or not, stop working. The caller commits the transaction.
+    """
+    session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
+    codes = generate_recovery_codes(n)
+    for code in codes:
+        session.add(RecoveryCode(user_id=user_id, code_hash=hash_recovery_code(code, user_id)))
+    return codes
 
 
 def consume_recovery_code(session: Session, user_id: int, code: str) -> bool:
@@ -213,7 +262,7 @@ def consume_recovery_code(session: Session, user_id: int, code: str) -> bool:
         update(RecoveryCode)
         .where(
             RecoveryCode.user_id == user_id,
-            RecoveryCode.code_hash == hash_recovery_code(code),
+            RecoveryCode.code_hash == hash_recovery_code(code, user_id),
             RecoveryCode.used_at.is_(None),
         )
         .values(used_at=utcnow(), modify_date=utcnow())

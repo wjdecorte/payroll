@@ -1,5 +1,6 @@
 """Tests for the password, TOTP and recovery-code primitives in payroll.auth.security."""
 
+import hashlib
 import re
 import statistics
 import time
@@ -18,7 +19,9 @@ from payroll.auth.security import (
     generate_recovery_codes,
     hash_password,
     hash_recovery_code,
+    issue_recovery_codes,
     new_totp_secret,
+    password_needs_rehash,
     totp_uri,
     validate_password_policy,
     verify_password,
@@ -103,6 +106,47 @@ def test_verify_unknown_user_hash_none_returns_false_and_takes_similar_time(spy_
 @pytest.mark.parametrize("bad_hash", ["", "not-a-hash", "$argon2id$v=19$m=1,t=1,p=1$bad"])
 def test_verify_malformed_hash_returns_false(bad_hash):
     assert verify_password(GOOD_PASSWORD, bad_hash) is False
+
+
+SURROGATE = "\ud800aaaaaaaaaaa"  # lone surrogate: not encodable as UTF-8
+
+
+def test_verify_unencodable_password_returns_false(spy_hasher):
+    real_hash = security._hasher.real.hash(GOOD_PASSWORD)
+    assert verify_password(SURROGATE, real_hash) is False
+    assert verify_password(SURROGATE, None) is False
+    # Both went through the dummy verify, never handing the bad string to Argon2.
+    assert spy_hasher.verified == ["dummy-password-for-timing"] * 2
+
+
+def test_verify_non_ascii_stored_hash_returns_false():
+    assert verify_password(GOOD_PASSWORD, "$argon2id$v=19$m=65536,t=3,p=4$ü$ü") is False
+
+
+def test_unencodable_password_is_a_policy_error():
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy("\ud800" * 12)
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy(SURROGATE)
+    with pytest.raises(PasswordPolicyError):
+        hash_password(SURROGATE)
+
+
+def test_password_too_long_after_nfkc_expansion_is_rejected():
+    expanding = "\ufdfa" * 8  # 8 chars raw; each expands to 18 chars under NFKC
+    assert len(unicodedata.normalize("NFKC", expanding)) > security.MAX_PASSWORD_LENGTH
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy(expanding)
+    with pytest.raises(PasswordPolicyError):
+        hash_password(expanding)
+
+
+def test_password_needs_rehash():
+    from argon2 import PasswordHasher
+
+    assert password_needs_rehash(hash_password(GOOD_PASSWORD)) is False
+    weak = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(GOOD_PASSWORD)
+    assert password_needs_rehash(weak) is True
 
 
 def test_unicode_password_roundtrip():
@@ -296,24 +340,42 @@ def test_generate_recovery_codes_format():
     assert len(generate_recovery_codes(3)) == 3
 
 
-def test_hash_recovery_code_is_sha256_hex_and_normalized():
-    digest = hash_recovery_code("abcde-fghjk")
+def test_hash_recovery_code_is_keyed_per_user_and_normalized():
+    digest = hash_recovery_code("abcde-fghjk", user_id=1)
     assert re.fullmatch(r"[0-9a-f]{64}", digest)
-    assert hash_recovery_code("  ABCDE-FGHJK\n") == digest
-    assert hash_recovery_code("abcde fghjk") == digest
-    assert hash_recovery_code("abcdefghjk") == digest
-    assert hash_recovery_code("abcde-fghjm") != digest
+    assert hash_recovery_code("  ABCDE-FGHJK\n", user_id=1) == digest
+    assert hash_recovery_code("abcde fghjk", user_id=1) == digest
+    assert hash_recovery_code("abcdefghjk", user_id=1) == digest
+    assert hash_recovery_code("abcde-fghjm", user_id=1) != digest
+    # The same code hashes differently per user, so one leaked table cannot be
+    # swept for every user at once.
+    assert hash_recovery_code("abcde-fghjk", user_id=2) != digest
+    # Keyed (HMAC with a server-derived key), not a plain sha256 of the code.
+    for plain in ("abcde-fghjk", "abcdefghjk", "1:abcdefghjk"):
+        assert digest != hashlib.sha256(plain.encode()).hexdigest()
 
 
 def _persist_user_with_codes(session, email: str) -> tuple[User, list[str]]:
     user = _user(email=email)
     session.add(user)
     session.flush()
-    codes = generate_recovery_codes()
-    for code in codes:
-        session.add(RecoveryCode(user_id=user.id, code_hash=hash_recovery_code(code)))
+    codes = issue_recovery_codes(session, user.id)
     session.flush()
     return user, codes
+
+
+def test_issue_recovery_codes_stores_keyed_hashes_and_replaces_old(session):
+    user, first = _persist_user_with_codes(session, "owner@example.com")
+    assert len(first) == 10
+    rows = session.exec(select(RecoveryCode).where(RecoveryCode.user_id == user.id)).all()
+    assert {r.code_hash for r in rows} == {hash_recovery_code(c, user.id) for c in first}
+
+    second = issue_recovery_codes(session, user.id)
+    session.flush()
+    rows = session.exec(select(RecoveryCode).where(RecoveryCode.user_id == user.id)).all()
+    assert len(rows) == 10
+    assert consume_recovery_code(session, user.id, first[0]) is False
+    assert consume_recovery_code(session, user.id, second[0]) is True
 
 
 def test_recovery_code_single_use(session):
@@ -322,16 +384,17 @@ def test_recovery_code_single_use(session):
     assert consume_recovery_code(session, user.id, codes[0]) is True
     assert consume_recovery_code(session, user.id, codes[0]) is False
 
-    # Case and whitespace are normalized.
+    # Case, whitespace and dashes are normalized.
     assert consume_recovery_code(session, user.id, f"  {codes[1].upper()} ") is True
     assert consume_recovery_code(session, user.id, codes[1]) is False
+    assert consume_recovery_code(session, user.id, codes[2].replace("-", " ").upper()) is True
 
     assert consume_recovery_code(session, user.id, "zzzzz-zzzzz") is False
     assert consume_recovery_code(session, user.id, "") is False
 
     rows = session.exec(select(RecoveryCode).where(RecoveryCode.user_id == user.id)).all()
     used = [r for r in rows if r.used_at is not None]
-    assert len(used) == 2
+    assert len(used) == 3
 
 
 def test_recovery_code_is_scoped_to_its_user(session):

@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from payroll import Settings
-from payroll.common.crypto import decrypt_secret, encrypt_secret
+from payroll.common.crypto import decrypt_secret, derive_subkey, encrypt_secret
 
 OTHER_KEY = os.urandom(32)
 
@@ -79,3 +79,12 @@ def test_key_override_must_be_32_bytes(bad_key):
         encrypt_secret("abc", key=bad_key)
     with pytest.raises(ValueError):
         decrypt_secret(encrypt_secret("abc"), key=bad_key)
+
+
+def test_derive_subkey_is_deterministic_and_label_separated():
+    key = derive_subkey("payroll/recovery-code/v1")
+    assert len(key) == 32
+    assert derive_subkey("payroll/recovery-code/v1") == key
+    assert derive_subkey("payroll/other/v1") != key
+    # Derived from, but not equal to, the configured encryption key.
+    assert key != base64.b64decode(os.environ["ENCRYPTION_KEY"])

@@ -2,6 +2,8 @@
 
 import base64
 import binascii
+import hashlib
+import hmac
 import os
 
 from cryptography.exceptions import InvalidTag
@@ -40,3 +42,12 @@ def decrypt_secret(token: str, key: bytes | None = None) -> str:
         return aes.decrypt(raw[:_NONCE_BYTES], raw[_NONCE_BYTES:], None).decode()
     except (InvalidTag, binascii.Error, UnicodeError) as exc:
         raise ValueError("could not decrypt secret") from exc
+
+
+def derive_subkey(label: str) -> bytes:
+    """
+    A 32-byte key for one purpose, derived from the configured encryption key as
+    ``HMAC-SHA256(key, label)``. Distinct labels give independent keys, so the
+    encryption key itself is never reused directly for another purpose.
+    """
+    return hmac.new(_resolve_key(None), label.encode("utf-8"), hashlib.sha256).digest()
