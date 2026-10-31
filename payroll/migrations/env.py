@@ -19,9 +19,13 @@ import payroll.payroll_run.models  # noqa: F401
 # Alembic Config object — gives access to values in alembic.ini
 config = context.config
 
-# Set up Python logging from the alembic.ini [loggers] section
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Set up Python logging from the alembic.ini [loggers] section, but only for a
+# standalone ``alembic`` run. When the app (lifespan, in every worker) or the
+# runner calls Alembic, it sets ``configure_logger=False``: fileConfig would
+# otherwise replace the root handlers and, with the default
+# disable_existing_loggers=True, silence every payroll.* and uvicorn.* logger.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # SQLModel's metadata contains all registered table models
 target_metadata = SQLModel.metadata

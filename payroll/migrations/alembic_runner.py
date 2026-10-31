@@ -35,6 +35,8 @@ _MIGRATION_LOCK_KEY = 7_322_918_604_150_421
 
 def _get_alembic_config() -> Config:
     cfg = Config(str(_ALEMBIC_INI))
+    # Keep the caller's logging setup: env.py skips alembic.ini's fileConfig.
+    cfg.attributes["configure_logger"] = False
     # Override sqlalchemy.url from application settings so we never have
     # to hard-code the database URL in alembic.ini
     cfg.set_main_option("sqlalchemy.url", app_settings.database_url)
