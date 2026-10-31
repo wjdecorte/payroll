@@ -3,6 +3,9 @@ from datetime import datetime
 from sqlmodel import Session, select
 
 from payroll import app_settings
+from payroll.audit.services import record as record_audit
+from payroll.auth.models import User
+from payroll.auth.permissions import OWNER, ensure_role
 
 from .config_models import PayrollConfig
 from .config_schemas import PayrollConfigRead, PayrollConfigUpdate
@@ -18,12 +21,29 @@ class PayrollConfigService:
         config = self._get_or_create()
         return PayrollConfigRead.model_validate(config)
 
-    def update_config(self, payload: PayrollConfigUpdate) -> PayrollConfigRead:
+    def update_config(self, payload: PayrollConfigUpdate, *, actor: User) -> PayrollConfigRead:
+        """Replace the configuration (``actor`` must be an owner); audits the changed fields."""
+        ensure_role(actor, OWNER)
         config = self._get_or_create()
+        before: dict[str, object] = {}
+        after: dict[str, object] = {}
         for field, value in payload.model_dump().items():
+            old = getattr(config, field)
+            if old != value:
+                before[field], after[field] = old, value
             setattr(config, field, value)
         config.modify_date = datetime.utcnow()
         self.session.add(config)
+        # Same transaction as the change (committed together below).
+        record_audit(
+            self.session,
+            action="payroll_config.update",
+            user_id=actor.id,
+            entity="payroll_config",
+            entity_id=str(config.id),
+            before=before,
+            after=after,
+        )
         self.session.commit()
         self.session.refresh(config)
         return PayrollConfigRead.model_validate(config)
@@ -50,11 +70,22 @@ class PayrollConfigService:
         config = self._get_or_create()
         return config.federal_due_date_note, config.georgia_due_date_note
 
-    def increment_journal_no(self, count: int) -> PayrollConfigRead:
-        """Advance next_journal_no by count and persist."""
+    def increment_journal_no(self, count: int, *, actor: User) -> PayrollConfigRead:
+        """Advance next_journal_no by count and persist (``actor`` must be an owner)."""
+        ensure_role(actor, OWNER)
         config = self._get_or_create()
-        config.next_journal_no = max(1, config.next_journal_no + count)
+        old = config.next_journal_no
+        config.next_journal_no = max(1, old + count)
         self.session.add(config)
+        record_audit(
+            self.session,
+            action="payroll_config.increment_journal_no",
+            user_id=actor.id,
+            entity="payroll_config",
+            entity_id=str(config.id),
+            before={"next_journal_no": old},
+            after={"next_journal_no": config.next_journal_no},
+        )
         self.session.commit()
         self.session.refresh(config)
         return PayrollConfigRead.model_validate(config)

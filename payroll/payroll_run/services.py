@@ -24,6 +24,8 @@ from sqlmodel import Session, select
 
 from payroll import app_settings
 from payroll.audit.services import record as record_audit
+from payroll.auth.models import User
+from payroll.auth.permissions import OWNER, ensure_role
 from payroll.tax import constants as tax
 from payroll.tax.engine import calc_payroll
 from payroll.tax.schemas import PayrollCalculation, TaxConstantsSchema
@@ -61,15 +63,21 @@ class PayrollRunService:
     # Public API
     # ------------------------------------------------------------------
 
-    def calculate(self, payload: PayrollInput) -> PayrollResult:
+    def calculate(self, payload: PayrollInput, *, actor: User) -> PayrollResult:
         """
-        Calculate a payroll run and optionally save it.
+        Calculate a payroll run and optionally save it. Saving needs an ``owner``
+        ``actor`` (recorded as the audit row's ``user_id``); a calculation that is
+        not saved changes nothing and is open to any role.
 
         Raises:
+            PermissionDeniedError: If save_run=True and ``actor`` is not an owner.
             InvalidPayPeriodError: If pay_period is not in YYYY-MM format.
             PayrollRunAlreadyExistsError: If a run for this period already exists
                                           and save_run=True.
         """
+        if payload.save_run:
+            ensure_role(actor, OWNER)
+
         self._validate_pay_period(payload.pay_period)
 
         if payload.save_run:
@@ -103,7 +111,7 @@ class PayrollRunService:
 
         saved_run: PayrollRun | None = None
         if payload.save_run:
-            saved_run = self._persist(payload, calc)
+            saved_run = self._persist(payload, calc, actor)
             logger.info("Saved payroll run id=%d", saved_run.id)
 
         tax_detail = self._tax_detail_from_calc(calc, payload.ytd_fica_wages)
@@ -130,14 +138,15 @@ class PayrollRunService:
         runs = self.session.exec(statement).all()
         return [PayrollRunSummary.model_validate(r) for r in runs]
 
-    def delete_run(self, run_id: int) -> None:
-        """Delete a payroll run by ID."""
+    def delete_run(self, run_id: int, *, actor: User) -> None:
+        """Delete a payroll run by ID. ``actor`` must be an owner (checked first)."""
+        ensure_role(actor, OWNER)
         run = self._get_or_raise(run_id)
         # Audited in the same transaction as the delete (committed together below).
         record_audit(
             self.session,
             action="payroll_run.delete",
-            user_id=None,  # TODO(Task 10): pass actor user id
+            user_id=actor.id,
             entity="payroll_run",
             entity_id=str(run.id),
             before=self._audit_snapshot(run),
@@ -185,7 +194,7 @@ class PayrollRunService:
             raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
         return run
 
-    def _persist(self, payload: PayrollInput, calc: PayrollCalculation) -> PayrollRun:
+    def _persist(self, payload: PayrollInput, calc: PayrollCalculation, actor: User) -> PayrollRun:
         run = PayrollRun(
             pay_period=payload.pay_period,
             gross_salary=payload.gross_salary,
@@ -220,7 +229,7 @@ class PayrollRunService:
         record_audit(
             self.session,
             action="payroll_run.save",
-            user_id=None,  # TODO(Task 10): pass actor user id
+            user_id=actor.id,
             entity="payroll_run",
             entity_id=str(run.id),
             after=self._audit_snapshot(run),

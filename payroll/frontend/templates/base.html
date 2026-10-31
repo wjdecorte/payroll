@@ -164,12 +164,16 @@
   <div class="d-flex align-items-center gap-2">
     {% block nav %}
     <a class="nav-link" href="/"><i class="bi bi-calculator me-1"></i>Calculator</a>
+    {% if current_user and current_user.role == "owner" %}
     <a class="nav-link" href="/admin"><i class="bi bi-sliders me-1"></i>Admin</a>
+    {% endif %}
     <div class="meta d-none d-md-block">Georgia &nbsp;·&nbsp; Single Filing &nbsp;·&nbsp; Monthly &nbsp;·&nbsp; Tax Year 2026</div>
     {% endblock %}
     <div class="meta" title="Running build">v{{ app_version }}{% if build_number %} · build {{ build_number }}{% endif %} · {{ build_sha }}</div>
+    {# current_user is set on every signed-in page (by current_user / require_role). #}
     {% if current_user %}
-    <a class="nav-link" href="/account/password" title="Change password"><i class="bi bi-person-circle me-1"></i>{{ current_user.display_name }}</a>
+    <span class="meta" title="Signed in ({{ current_user.role }})"><i class="bi bi-person-circle me-1"></i>{{ current_user.display_name }}</span>
+    <a class="nav-link" href="/account/password" title="Change password">Account</a>
     <form method="post" action="/logout" class="d-inline m-0">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="btn btn-sm btn-outline-light"><i class="bi bi-box-arrow-right me-1"></i>Sign out</button>

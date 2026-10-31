@@ -6,12 +6,19 @@ Full-page routes (not in the OpenAPI schema):
   GET  /admin     -> payroll configuration page
   POST /admin     -> saves the configuration
 
+Authorization (payroll.auth.permissions): every route needs a signed-in user
+(router-level ``require_reader``); ``GET/POST /admin`` and every route that can
+change data (calculate, save-run, delete, increment-journal-no) also need the
+``owner`` role. ``/htmx/calculate`` never saves, but it is the calculator form's
+action and is owner-only like the rest of the form.
+
 HTMX partial routes — return HTML fragments, not full pages:
   POST /htmx/calculate       -> runs a payroll calculation, returns _results.html
   POST /htmx/save-run        -> calculates and saves, returns _results.html
   GET  /htmx/history         -> returns _history.html (list of saved runs)
   GET  /htmx/runs/{id}       -> loads a saved run into the results panel
   DELETE /htmx/runs/{id}     -> deletes a run, returns refreshed _history.html
+  POST /htmx/increment-journal-no -> advances the next JE number, returns the badge
 
 The routes call the payroll services in-process (same session as the API).
 Service results are rendered via ``model_dump(by_alias=True, mode="json")`` so the
@@ -31,6 +38,8 @@ from sqlmodel import Session
 
 from payroll import app_settings
 from payroll.auth.dependencies import csrf_context
+from payroll.auth.models import User
+from payroll.auth.permissions import require_owner, require_reader
 from payroll.common.dependencies import get_session
 from payroll.common.money import round_money
 from payroll.exceptions import AppBaseError
@@ -106,7 +115,7 @@ def _error_partial(request: Request, exc: AppBaseError, *, with_status: bool = T
     )
 
 
-router = APIRouter(include_in_schema=False)
+router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader)])
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +159,9 @@ async def index(request: Request, session: Session = Depends(get_session)) -> HT
     )
 
 
-@router.get("/admin", response_class=HTMLResponse)
+@router.get("/admin", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
 async def admin(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-    """Render the payroll configuration admin page."""
+    """Render the payroll configuration admin page (owner only: account setup)."""
     try:
         config = _dump(PayrollConfigService(session).get_config())
         return templates.TemplateResponse(
@@ -165,7 +174,11 @@ async def admin(request: Request, session: Session = Depends(get_session)) -> HT
 
 
 @router.post("/admin", response_class=HTMLResponse)
-async def admin_save(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+async def admin_save(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+) -> HTMLResponse:
     """Save payroll configuration and render the admin page."""
     form = await request.form()
 
@@ -205,7 +218,7 @@ async def admin_save(request: Request, session: Session = Depends(get_session)) 
 
     try:
         update = PayrollConfigUpdate.model_validate(payload)
-        config = _dump(PayrollConfigService(session).update_config(update))
+        config = _dump(PayrollConfigService(session).update_config(update, actor=actor))
         return templates.TemplateResponse(
             request,
             "admin.html",
@@ -254,6 +267,7 @@ async def htmx_calculate(
     use_previous_ytd_fica: bool = Form(False),
     notes: str = Form(""),
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> HTMLResponse:
     """Calculate payroll and return the results partial (never saves)."""
     try:
@@ -271,7 +285,7 @@ async def htmx_calculate(
                 "notes": notes or None,
             }
         )
-        result = _dump(PayrollRunService(session).calculate(payload))
+        result = _dump(PayrollRunService(session).calculate(payload, actor=actor))
 
         return templates.TemplateResponse(
             request,
@@ -315,6 +329,7 @@ async def htmx_save_run(
     ytd_fica_wages: Decimal = Form(Decimal("0.00")),
     notes: str = Form(""),
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> HTMLResponse:
     """Save a calculated run to history and return the updated results partial."""
     try:
@@ -333,7 +348,7 @@ async def htmx_save_run(
             }
         )
         run_service = PayrollRunService(session)
-        result = _dump(run_service.calculate(payload))
+        result = _dump(run_service.calculate(payload, actor=actor))
         history: list[dict] = []
         try:
             history = _dump_list(run_service.list_runs(limit=50))
@@ -407,12 +422,15 @@ async def htmx_get_run(
 
 @router.delete("/htmx/runs/{run_id}", response_class=HTMLResponse)
 async def htmx_delete_run(
-    request: Request, run_id: int, session: Session = Depends(get_session)
+    request: Request,
+    run_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> HTMLResponse:
     """Delete a saved run and return the refreshed history partial."""
     try:
         run_service = PayrollRunService(session)
-        run_service.delete_run(run_id)
+        run_service.delete_run(run_id, actor=actor)
         history = _dump_list(run_service.list_runs(limit=50))
         return templates.TemplateResponse(
             request,
@@ -427,10 +445,11 @@ async def htmx_delete_run(
 async def htmx_increment_journal_no(
     count: int = Query(default=2, ge=1),
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> HTMLResponse:
     """Increment next_journal_no in config after a QBO CSV export. Returns updated badge HTML."""
     try:
-        config = PayrollConfigService(session).increment_journal_no(count)
+        config = PayrollConfigService(session).increment_journal_no(count, actor=actor)
         return HTMLResponse(
             f'<span id="je-no-badge" class="badge bg-secondary ms-2">'
             f"Next JE #: {config.next_journal_no}</span>"

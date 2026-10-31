@@ -7,6 +7,7 @@ Alembic migrations, and each test runs inside a rolled-back transaction.
 """
 
 import os
+from contextlib import contextmanager
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql://payroll:payroll@localhost:5433/payroll_test"
@@ -23,7 +24,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlmodel import Session, SQLModel  # noqa: E402
 
-from payroll.app import app  # noqa: E402
+from payroll import app_settings  # noqa: E402
+from payroll.app import app, create_app  # noqa: E402
 from payroll.auth import sessions as auth_sessions  # noqa: E402
 from payroll.auth.dependencies import (  # noqa: E402
     CSRF_HEADER,
@@ -79,25 +81,63 @@ def add_presession_csrf(client: TestClient) -> str:
     return token
 
 
-@pytest.fixture(name="client")
-def client_fixture(session):
-    """
-    FastAPI TestClient with ``get_session`` overridden to the test session.
-
-    CSRF protection is on app-wide, so the client carries a pre-session CSRF
-    cookie and the matching ``X-CSRF-Token`` default header; ``login_as`` swaps the
-    header for the session's token. Tests that exercise CSRF failures should build
-    their own bare ``TestClient``.
-    """
+@pytest.fixture(name="db_override")
+def db_override_fixture(session):
+    """Route every request's ``get_session`` to the rolled-back test session."""
 
     def override_get_session():
         yield session
 
     app.dependency_overrides[get_session] = override_get_session
-    with TestClient(app, raise_server_exceptions=False) as c:
+    yield
+    app.dependency_overrides.clear()
+
+
+def _test_client() -> TestClient:
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture(name="client")
+def client_fixture(db_override):
+    """
+    Unauthenticated TestClient with ``get_session`` overridden to the test session.
+
+    CSRF protection is on app-wide, so the client carries a pre-session CSRF
+    cookie and the matching ``X-CSRF-Token`` default header; ``login_as`` swaps the
+    header for the session's token. Tests that exercise CSRF failures should build
+    their own bare ``TestClient``. Every route except the login pages,
+    ``/healthcheck`` and ``/static`` needs a signed-in user: use ``owner_client``
+    (or another role client) for those.
+    """
+    with _test_client() as c:
         add_presession_csrf(c)
         yield c
-    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def debug_app(session, monkeypatch):
+    """
+    A separate app instance built with ``debug_mode`` on (so it serves the API
+    docs), with ``get_session`` overridden to the test session. Use it with a
+    plain ``TestClient(debug_app)`` (no ``with``: the lifespan is not needed).
+    """
+    monkeypatch.setattr(app_settings, "debug_mode", True)
+    application = create_app()
+    monkeypatch.setattr(app_settings, "debug_mode", False)
+
+    def override_get_session():
+        yield session
+
+    application.dependency_overrides[get_session] = override_get_session
+    return application
+
+
+@pytest.fixture(name="anon_client")
+def anon_client_fixture(db_override):
+    """Its own unauthenticated client (pre-session CSRF pair, no session)."""
+    with _test_client() as c:
+        add_presession_csrf(c)
+        yield c
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +179,56 @@ def login_as(client: TestClient, user: User, *, mfa_verified: bool = True) -> st
     client.cookies.set(session_cookie_name(), raw)
     client.headers[CSRF_HEADER] = auth.csrf_token
     return auth.csrf_token
+
+
+def _role_user(session: Session, role: str) -> User:
+    return make_user(
+        session,
+        role=role,
+        email=f"{role}.fixture@example.com",
+        display_name=f"Test {role.title()}",
+    )
+
+
+@pytest.fixture
+def owner_user(session) -> User:
+    return _role_user(session, "owner")
+
+
+@pytest.fixture
+def accountant_user(session) -> User:
+    return _role_user(session, "accountant")
+
+
+@pytest.fixture
+def viewer_user(session) -> User:
+    return _role_user(session, "viewer")
+
+
+@contextmanager
+def _signed_in_client(user: User):
+    """A separate TestClient (own cookie jar) signed in as ``user`` with its CSRF token."""
+    with _test_client() as c:
+        login_as(c, user)
+        yield c
+
+
+@pytest.fixture
+def owner_client(db_override, owner_user):
+    with _signed_in_client(owner_user) as c:
+        yield c
+
+
+@pytest.fixture
+def accountant_client(db_override, accountant_user):
+    with _signed_in_client(accountant_user) as c:
+        yield c
+
+
+@pytest.fixture
+def viewer_client(db_override, viewer_user):
+    with _signed_in_client(viewer_user) as c:
+        yield c
 
 
 # ---------------------------------------------------------------------------

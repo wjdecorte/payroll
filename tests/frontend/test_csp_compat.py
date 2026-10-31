@@ -111,8 +111,8 @@ def test_admin_form_post_with_field_only(authed):
     assert client.post("/admin", data=data).status_code == 403
 
 
-def test_index_without_session_still_renders_a_token(client):
-    response = client.get("/")
+def test_page_without_session_still_renders_a_token(client):
+    response = client.get("/login")
     assert response.status_code == 200
     body = next(attrs for tag, attrs in _tags(response.text) if tag == "body")
     assert json.loads(body["hx-headers"])[CSRF_HEADER]

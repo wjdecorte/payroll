@@ -155,8 +155,9 @@ def test_login_page_renders_form(web):
     assert csrf_of(response)
 
 
-def test_auth_pages_not_in_openapi(web):
-    paths = web.get(f"{app_settings.base_url_prefix}/openapi.json").json()["paths"]
+def test_auth_pages_not_in_openapi():
+    # The schema is only served in debug mode; check the app's generated one.
+    paths = app.openapi()["paths"]
     for path in ("/login", "/login/mfa", "/enroll", "/logout", "/account/password"):
         assert path not in paths
 
