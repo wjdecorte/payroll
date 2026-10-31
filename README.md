@@ -33,7 +33,9 @@ You need Python 3.14, [uv](https://docs.astral.sh/uv/), Docker, and a Postgres d
 ```bash
 uv sync
 cp .env.example .env     # then set ENCRYPTION_KEY (see Configuration) and SESSION_COOKIE_SECURE=false for plain http
-# Start Postgres (the dev compose db is internal-only), or point DATABASE_URL at any Postgres you run
+# Throwaway Postgres on host port 5433 (tmpfs, NOT for real data):
+docker compose -f compose.test.yml up -d db
+export DATABASE_URL=postgresql://payroll:payroll@localhost:5433/payroll_test
 uv run uvicorn payroll.app:app --reload --port 9000
 ```
 
@@ -134,7 +136,8 @@ The tests need PostgreSQL. A throwaway one is defined in `compose.test.yml`
 ```bash
 docker compose -f compose.test.yml up -d db
 uv sync
-uv run pytest            # coverage floor enforced (--cov-fail-under in pyproject.toml)
+uv run pytest            # full run; coverage floor enforced (--cov-fail-under in pyproject.toml)
+uv run pytest tests/test_x.py -k name --no-cov   # partial runs MUST pass --no-cov or the floor fails the exit code
 uv run ruff check .
 uv run ruff format .
 uv run pre-commit install

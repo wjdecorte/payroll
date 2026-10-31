@@ -8,18 +8,24 @@ Synology paths below assume the stack lives in `/volume1/docker/payroll`.
 Pushing to `master` builds the image (after tests pass) and **Watchtower pulls it within
 about 5 minutes**. The new container runs the money-to-`NUMERIC` migration on startup.
 
-1. **Stop Watchtower first** so the upgrade happens when you are ready:
+Order matters (the old `frontend` container still holds host port 8070, and with
+Watchtower stopped a plain `up -d` would reuse a stale local `:latest`):
+
+1. **Pause Watchtower** so the upgrade happens when you are ready:
    `docker compose -f compose.synology.yml stop watchtower`
 2. **Back up the database:**
    ```bash
    docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_$(date +%F).dump
    ```
-   Restore (to an empty/recreated database):
+   Restore (stop the app first, into an empty/recreated database):
    ```bash
+   docker compose -f compose.synology.yml stop api
    docker compose -f compose.synology.yml exec -T db pg_restore -U payroll -d payroll --clean --if-exists < payroll_pre_v2_YYYY-MM-DD.dump
    ```
    The migration's downgrade cannot restore sub-cent float noise that existed in the old
-   float columns; the dump is the only way back to the exact old data.
+   float columns; the dump is the only way back to the exact old data. To roll back to
+   pre-v2 data you must also **pin the old image tag** (e.g. `ghcr.io/wjdecorte/payroll:sha-<old>`)
+   in the compose file instead of `:latest`, or `:latest` (and Watchtower) will migrate it again.
 3. **Check for legacy sub-cent inputs** (run before upgrading):
    ```sql
    SELECT id FROM payroll_run
@@ -29,12 +35,20 @@ about 5 minutes**. The new container runs the money-to-`NUMERIC` migration on st
       OR ytd_fica_before::numeric <> round(ytd_fica_before::numeric,2);
    ```
    Run it with `docker compose -f compose.synology.yml exec db psql -U payroll payroll`.
-   Any rows returned are saved runs whose inputs had fractions of a cent; their rebuilt
-   journal could differ by a cent from what you posted. Review those runs against QBO
-   after the upgrade. No hits means nothing to do.
-4. Set `ENCRYPTION_KEY` (next section), then update the compose file (the `frontend`
-   service is gone), `docker compose -f compose.synology.yml up -d`, create the owner,
-   and start Watchtower again.
+   It checks only these four `payroll_run` input columns because they drive every other
+   figure. Any rows returned are saved runs whose inputs had fractions of a cent; their
+   rebuilt journal could differ by a cent from what you posted. Review those runs against
+   QBO after the upgrade. No hits means nothing to do.
+4. Set `ENCRYPTION_KEY` in `.env` (next section), replace the compose file with the new one
+   (the `frontend` service is gone), then pull and start, removing the orphan:
+   ```bash
+   docker compose -f compose.synology.yml pull
+   docker compose -f compose.synology.yml up -d --remove-orphans
+   ```
+5. **Verify:** `docker compose -f compose.synology.yml logs api` shows the migration running
+   to the current head, and `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
+6. Create the owner (see First run), then **re-enable Watchtower:**
+   `docker compose -f compose.synology.yml start watchtower`
 
 What changes for you:
 - Saved runs display their stored values. Calculation now rounds half-up on exact
@@ -90,7 +104,7 @@ so scan the one currently displayed and save the recovery codes.
 
 - `audit_log` is append-only, enforced by database triggers. In a hardened setup the
   database role the app connects as should **not own** the table (owners can drop triggers).
-- `/docs`, `/redoc` and `/openapi.json` are disabled unless `DEBUG_MODE=true`.
+- `/payroll/api/v1/docs`, `/redoc` and `/openapi.json` are disabled unless `DEBUG_MODE=true`.
 - Request bodies larger than `MAX_REQUEST_BODY_BYTES` (default 1 MiB) get HTTP 413.
 - Postgres credentials in the compose files are `payroll`/`payroll` and the DB is internal
   only. On Synology, still change them: edit `POSTGRES_PASSWORD` and the password in

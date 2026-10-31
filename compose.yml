@@ -29,7 +29,8 @@ services:
     environment:
       DATABASE_URL: postgresql://payroll:payroll@db:5432/payroll
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY (see .env.example for how to generate one)}
-      # Plain-HTTP local dev needs a non-Secure cookie; production (HTTPS) must keep true.
+      # Plain-HTTP local dev needs a non-Secure cookie (true would break login over http);
+      # production (HTTPS) must keep true.
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       WORKERS: 2
       API_LOG_TYPE: standard
