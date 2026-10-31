@@ -238,3 +238,50 @@ def test_models_match_migrated_schema(scratch_engine):
         ctx = MigrationContext.configure(conn, opts={"compare_type": True})
         diffs = compare_metadata(ctx, SQLModel.metadata)
     assert diffs == []
+
+
+_BOOT_SCRIPT = """
+import sys, time
+start_at = float(sys.argv[1])
+from payroll.migrations import alembic_runner  # settings read DATABASE_URL from env
+time.sleep(max(0.0, start_at - time.time()))
+alembic_runner.upgrade()
+"""
+
+
+def test_concurrent_upgrades_are_serialized(scratch_engine):
+    """Two workers booting at once must both succeed (gunicorn WORKERS=2).
+
+    Separate processes, like gunicorn workers: Alembic's ``context`` is a
+    process-global, so threads would collide inside Alembic instead of
+    exercising the database-level race.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    alembic_runner.upgrade(PRE_MONEY_REVISION)
+    _insert_rows(scratch_engine, RUN_FLOATS, CONFIG_FLOATS)
+
+    env = os.environ | {"DATABASE_URL": app_settings.database_url}
+    start_at = str(time.time() + 3)  # both processes start upgrading at the same instant
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _BOOT_SCRIPT, start_at],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    results = [(p.wait(timeout=60), p.stderr.read()) for p in procs]
+
+    for returncode, stderr in results:
+        assert returncode == 0, stderr
+    _assert_numeric_14_2(scratch_engine)
+    _assert_converted_values(scratch_engine)
+    with scratch_engine.connect() as conn:
+        version = conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+    assert version == alembic_runner._HEAD_REVISION

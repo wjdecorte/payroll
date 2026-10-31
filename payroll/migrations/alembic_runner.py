@@ -27,6 +27,10 @@ _INITIAL_REVISION = "c3a8d2f19b40"  # baseline tables, no next_journal_no
 _JOURNAL_NO_REVISION = "4a7f8b2c9d1e"  # adds next_journal_no to payroll_config
 _HEAD_REVISION = "9d4e6b1f2a37"  # money columns float -> NUMERIC(14,2)
 
+# Postgres advisory-lock key serializing migrations across processes (e.g. two
+# gunicorn workers booting at once). Arbitrary constant, unique to this app.
+_MIGRATION_LOCK_KEY = 7_322_918_604_150_421
+
 
 def _get_alembic_config() -> Config:
     cfg = Config(str(_ALEMBIC_INI))
@@ -100,19 +104,37 @@ def upgrade(revision: str = "head") -> None:
     Automatically handles legacy databases that were created by SQLModel's
     create_all before Alembic was introduced: inspects the actual schema to
     determine the correct revision to stamp at, then runs any pending migrations.
+
+    Holds a Postgres session-level advisory lock for the whole check/stamp/upgrade,
+    so concurrent callers (several workers starting together) run one at a time:
+    the later ones wait, then find the database already at the target revision.
     """
+    from sqlalchemy import create_engine, text
+
     cfg = _get_alembic_config()
+    lock_engine = create_engine(app_settings.database_url)
+    try:
+        with lock_engine.connect() as lock_conn:
+            lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+            lock_conn.commit()  # session-level lock: keep no transaction open while waiting
+            try:
+                stamp_at = _get_legacy_stamp_revision()
+                if stamp_at is not None:
+                    logger.info(
+                        "Legacy database detected (no alembic_version). Stamping at '%s'.",
+                        stamp_at,
+                    )
+                    command.stamp(cfg, stamp_at)
 
-    stamp_at = _get_legacy_stamp_revision()
-    if stamp_at is not None:
-        logger.info(
-            "Legacy database detected (no alembic_version). Stamping at '%s'.",
-            stamp_at,
-        )
-        command.stamp(cfg, stamp_at)
-
-    logger.info("Running database migration: upgrade to '%s'", revision)
-    command.upgrade(cfg, revision)
+                logger.info("Running database migration: upgrade to '%s'", revision)
+                command.upgrade(cfg, revision)
+            finally:
+                lock_conn.execute(
+                    text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+                )
+                lock_conn.commit()
+    finally:
+        lock_engine.dispose()
 
 
 def downgrade(revision: str) -> None:
