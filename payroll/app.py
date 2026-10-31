@@ -18,36 +18,16 @@ async def lifespan(application: FastAPI):
     configure_logging()
     logger.info("Starting %s v%s", app_settings.app_name, app_settings.app_version)
 
-    # Bring the database schema to the latest revision via Alembic.
-    # Falls back to SQLModel.create_all + manual ALTER TABLE if Alembic fails
-    # (e.g. first boot race-condition or misconfiguration) so the app is never
-    # left unable to start.
+    # Bring the database schema to the latest revision via Alembic. A failed
+    # migration must stop startup: never serve against a half-migrated schema.
+    from payroll.migrations.alembic_runner import upgrade as _alembic_upgrade
+
     try:
-        from payroll.migrations.alembic_runner import upgrade as _alembic_upgrade
-
         _alembic_upgrade()
-        logger.info("Database schema is up to date (Alembic)")
-    except Exception as _mig_err:
-        logger.warning(
-            "Alembic migration failed (%s) — falling back to SQLModel.create_all",
-            _mig_err,
-        )
-        from sqlalchemy import text
-        from sqlmodel import SQLModel
-
-        import payroll.payroll_run.config_models  # noqa: F401
-        import payroll.payroll_run.models  # noqa: F401
-        from payroll.common.dependencies import engine as _engine
-
-        SQLModel.metadata.create_all(_engine)
-        with _engine.begin() as _conn:
-            _conn.execute(
-                text(
-                    "ALTER TABLE payroll_config"
-                    " ADD COLUMN IF NOT EXISTS next_journal_no INTEGER NOT NULL DEFAULT 202"
-                )
-            )
-        logger.info("Database schema verified via SQLModel fallback")
+    except Exception:
+        logger.exception("Database migration failed — refusing to start")
+        raise
+    logger.info("Database schema is up to date (Alembic)")
 
     yield
 
