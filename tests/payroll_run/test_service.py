@@ -6,7 +6,7 @@ with a real (Postgres, rolled-back) database session. All money is Decimal.
 from decimal import Decimal
 
 import pytest
-from sqlmodel import select
+from sqlmodel import func, select
 
 from payroll.audit.models import AuditLog
 from payroll.common.exceptions import PermissionDeniedError
@@ -430,6 +430,11 @@ class TestUsePreviousYtdFica:
         assert result.tax_detail.ytd_fica_after == D("16000.00")
 
 
+def _audit_count(session) -> int:
+    """Rows in audit_log (append-only and shared: compare deltas, never assert empty)."""
+    return session.exec(select(func.count()).select_from(AuditLog)).one()
+
+
 class TestAuditTrail:
     def test_save_records_one_audit_row(self, service, base_input, session, owner_user):
         created = service.calculate(base_input, actor=owner_user)
@@ -446,8 +451,9 @@ class TestAuditTrail:
 
     def test_unsaved_calculation_records_nothing(self, service, base_input, session, owner_user):
         base_input.save_run = False
+        before = _audit_count(session)
         service.calculate(base_input, actor=owner_user)
-        assert session.exec(select(AuditLog)).all() == []
+        assert _audit_count(session) == before
 
     def test_delete_records_one_audit_row(self, service, base_input, session, owner_user):
         created = service.calculate(base_input, actor=owner_user)
@@ -475,11 +481,12 @@ class TestActorEnforcement:
         return request.getfixturevalue(request.param)
 
     def test_reader_cannot_save_a_run(self, service, base_input, session, reader):
+        audit_before = _audit_count(session)
         with pytest.raises(PermissionDeniedError) as exc_info:
             service.calculate(base_input, actor=reader)
         assert exc_info.value.http_code == 403
         assert session.exec(select(PayrollRun)).all() == []
-        assert session.exec(select(AuditLog)).all() == []
+        assert _audit_count(session) == audit_before
 
     def test_reader_may_calculate_without_saving(self, service, base_input, session, reader):
         base_input.save_run = False
