@@ -36,6 +36,18 @@ ANONYMOUS_ENDPOINTS = frozenset(
     {("GET", "/login"), ("POST", "/login"), ("GET", f"{PREFIX}/healthcheck")}
 )
 PUBLIC_MOUNTS = frozenset({"/static"})
+# Unsafe endpoints any signed-in (or pending-session) user may call, whatever the
+# role. Exact (method, path) matches; every other unsafe route is owner-only.
+ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
+    {
+        ("POST", "/logout"),
+        ("POST", "/account/password"),
+        ("POST", "/login"),
+        ("POST", "/login/mfa"),
+        ("POST", "/enroll"),
+    }
+)
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 9
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
 _PATH_PARAM = re.compile(r"\{[^}]+\}")
@@ -72,8 +84,11 @@ def _endpoints(application) -> list[tuple[str, str]]:
         if isinstance(route, Mount):
             continue
         assert isinstance(route, Route), f"unexpected route type {route!r}: add it to this test"
+        # A Route without methods (an ASGI-app endpoint) accepts every method:
+        # it must not be silently skipped.
+        assert route.methods is not None, f"route {route.path} accepts any method"
         path = _PATH_PARAM.sub("1", route.path)
-        for method in sorted((route.methods or set()) - {"HEAD"}):
+        for method in sorted(route.methods - {"HEAD"}):
             found.append((method, path))
     return found
 
@@ -192,6 +207,73 @@ def test_unsafe_requests_without_csrf_are_refused_before_auth(any_app):
                 assert response.status_code in (403, 303), where
                 if response.status_code == 303:
                     assert response.headers["location"].startswith(("/login", "/enroll")), where
+
+
+def _assert_unsafe_routes_owner_only(application, client) -> int:
+    """
+    Every POST/PUT/PATCH/DELETE route of ``application``, sent by ``client`` (a
+    signed-in non-owner with its CSRF token), must be refused with the role 403,
+    except the exact ROLE_FREE_UNSAFE_ENDPOINTS. Returns how many were checked.
+    """
+    unsafe = [e for e in _endpoints(application) if e[0] in UNSAFE_METHODS]
+    for allowed in ROLE_FREE_UNSAFE_ENDPOINTS:
+        assert allowed in unsafe, f"stale allow-list entry {allowed}"
+    checked = 0
+    for method, path in unsafe:
+        if (method, path) in ROLE_FREE_UNSAFE_ENDPOINTS:
+            continue
+        headers = HX if path.startswith("/htmx/") else {}
+        response = client.request(method, path, headers=headers, follow_redirects=False)
+        where = f"{method} {path} -> {response.status_code}"
+        assert response.status_code == 403, where
+        assert response.json()["errors"][0]["type"] == "PermissionDeniedError", where
+        checked += 1
+    return checked
+
+
+@pytest.mark.parametrize("role_client", ["viewer_client", "accountant_client"])
+def test_every_unsafe_route_is_owner_only(request, role_client):
+    client = request.getfixturevalue(role_client)
+    checked = _assert_unsafe_routes_owner_only(app, client)
+    assert checked >= MIN_OWNER_ONLY_UNSAFE_ENDPOINTS
+
+
+def test_unsafe_route_enumeration_catches_a_missing_role_check(session, monkeypatch, viewer_user):
+    """A route added with only the reader dependency (owner check forgotten) fails the check."""
+    from fastapi import Depends
+
+    from payroll.app import create_app
+    from payroll.auth.permissions import require_reader
+    from payroll.common.dependencies import get_session
+    from tests.conftest import login_as
+
+    application = create_app()
+
+    @application.post("/htmx/forgot-owner-check", dependencies=[Depends(require_reader)])
+    async def forgot_owner_check() -> dict:
+        return {"mutated": True}
+
+    def override_get_session():
+        yield session
+
+    application.dependency_overrides[get_session] = override_get_session
+    client = TestClient(application, raise_server_exceptions=False)
+    login_as(client, viewer_user)
+    with pytest.raises(AssertionError, match="POST /htmx/forgot-owner-check -> 200"):
+        _assert_unsafe_routes_owner_only(application, client)
+
+
+def test_role_is_reread_every_request(owner_client, owner_user, session):
+    """Demoting a signed-in owner takes effect on their next request (same session)."""
+    url = f"{API}/config/increment-journal-no"
+    assert owner_client.post(url).status_code == 200
+    owner_user.role = "viewer"
+    session.add(owner_user)
+    session.flush()
+    response = owner_client.post(url)
+    assert response.status_code == 403
+    assert response.json()["errors"][0]["type"] == "PermissionDeniedError"
+    assert owner_client.get(f"{API}/runs").status_code == 200  # still signed in, as a viewer
 
 
 def test_anonymous_browser_is_sent_to_login(anon_client):
