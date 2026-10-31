@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -102,6 +103,18 @@ def create_app() -> FastAPI:
 
     application.include_router(common_router, prefix=prefix)
     application.include_router(payroll_run_router, prefix=prefix)
+
+    # UI: pages + HTMX partials (hidden from the OpenAPI schema) and static assets.
+    from fastapi.staticfiles import StaticFiles
+
+    from payroll.frontend.routers import router as frontend_router
+
+    application.mount(
+        "/static",
+        StaticFiles(directory=Path(__file__).parent / "frontend" / "static"),
+        name="static",
+    )
+    application.include_router(frontend_router)
 
     logger.info("Registered routers with prefix: %s", prefix)
     return application

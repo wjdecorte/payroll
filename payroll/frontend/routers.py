@@ -1,26 +1,40 @@
 """
 Frontend routes.
 
-Full-page routes:
-  GET /          → renders the main page (index.html)
+Full-page routes (not in the OpenAPI schema):
+  GET  /          -> renders the main page (index.html)
+  GET  /admin     -> payroll configuration page
+  POST /admin     -> saves the configuration
 
 HTMX partial routes — return HTML fragments, not full pages:
-  POST /htmx/calculate       → runs a payroll calculation, returns _results.html
-  GET  /htmx/history         → returns _history.html (list of saved runs)
-  GET  /htmx/runs/{id}       → loads a saved run into the results panel
-  DELETE /htmx/runs/{id}     → deletes a run, returns refreshed _history.html
+  POST /htmx/calculate       -> runs a payroll calculation, returns _results.html
+  POST /htmx/save-run        -> calculates and saves, returns _results.html
+  GET  /htmx/history         -> returns _history.html (list of saved runs)
+  GET  /htmx/runs/{id}       -> loads a saved run into the results panel
+  DELETE /htmx/runs/{id}     -> deletes a run, returns refreshed _history.html
+
+The routes call the payroll services in-process (same session as the API).
+Service results are rendered via ``model_dump(by_alias=True, mode="json")`` so the
+templates keep consuming the same camelCase dict shape the HTTP API returned.
 """
 
-import asyncio
+import datetime
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, ValidationError
+from sqlmodel import Session
 
-from payroll.frontend import frontend_settings
-from payroll.frontend.client import APIError, PayrollAPIClient
+from payroll import app_settings
+from payroll.common.dependencies import get_session
+from payroll.exceptions import AppBaseError
+from payroll.payroll_run.config_schemas import PayrollConfigUpdate
+from payroll.payroll_run.config_services import PayrollConfigService
+from payroll.payroll_run.schemas import PayrollInput
+from payroll.payroll_run.services import PayrollRunService
 
 logger = logging.getLogger("payroll.frontend")
 
@@ -30,11 +44,31 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 # Register a currency formatter so templates can write {{ value | currency }}
 templates.env.filters["currency"] = lambda v: f"${v:,.2f}" if v is not None else "$0.00"
 templates.env.filters["abs"] = abs
-templates.env.globals["app_version"] = frontend_settings.app_version
-templates.env.globals["build_number"] = frontend_settings.build_number
-templates.env.globals["build_sha"] = frontend_settings.build_sha[:7]
+templates.env.globals["app_name"] = app_settings.app_name
+templates.env.globals["app_version"] = app_settings.app_version
+templates.env.globals["build_number"] = app_settings.build_number
+templates.env.globals["build_sha"] = app_settings.build_sha[:7]
 
-router = APIRouter()
+
+def _dump(model: BaseModel) -> dict:
+    """Render a service result as the camelCase JSON-shaped dict templates expect."""
+    return model.model_dump(by_alias=True, mode="json")
+
+
+def _dump_list(models: list[BaseModel]) -> list[dict]:
+    return [_dump(m) for m in models]
+
+
+def _error_partial(request: Request, exc: AppBaseError, *, with_status: bool = True):
+    context = {"message": exc.message}
+    if with_status:
+        context["status_code"] = exc.http_code
+    return templates.TemplateResponse(
+        request, "partials/_error.html", context, status_code=exc.http_code
+    )
+
+
+router = APIRouter(include_in_schema=False)
 
 
 # ---------------------------------------------------------------------------
@@ -43,27 +77,27 @@ router = APIRouter()
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
+async def index(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
     """Render the main page with an empty results panel."""
-    client = PayrollAPIClient()
     latest_run = None
     config = None
     ytd_fica_default = 0.0
+    history: list[dict] = []
 
     try:
-        config = await client.get_config()
-        history = await client.list_runs()
+        config = _dump(PayrollConfigService(session).get_config())
+        run_service = PayrollRunService(session)
+        history = _dump_list(run_service.list_runs(limit=50))
         if history:
-            latest_run = await client.get_run(history[0]["id"])
+            latest_run = _dump(run_service.get_run(history[0]["id"]))
 
             # Only pre-fill YTD FICA if the previous run is in the same year as now
-            import datetime
-
             current_year = str(datetime.datetime.now().year)
             if latest_run.get("payPeriod", "").startswith(current_year):
                 ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", 0.0)
 
     except Exception:
+        logger.exception("Could not load index data")
         history = []
 
     return templates.TemplateResponse(
@@ -79,29 +113,22 @@ async def index(request: Request) -> HTMLResponse:
 
 
 @router.get("/admin", response_class=HTMLResponse)
-async def admin(request: Request) -> HTMLResponse:
+async def admin(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
     """Render the payroll configuration admin page."""
-    client = PayrollAPIClient()
     try:
-        config = await client.get_config()
+        config = _dump(PayrollConfigService(session).get_config())
         return templates.TemplateResponse(
             request,
             "admin.html",
             {"config": config, "saved": False},
         )
-    except APIError as exc:
-        return templates.TemplateResponse(
-            request,
-            "partials/_error.html",
-            {"message": exc.detail, "status_code": exc.status_code},
-            status_code=exc.status_code,
-        )
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
 
 
 @router.post("/admin", response_class=HTMLResponse)
-async def admin_save(request: Request) -> HTMLResponse:
+async def admin_save(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
     """Save payroll configuration and render the admin page."""
-    client = PayrollAPIClient()
     form = await request.form()
 
     def money(name: str) -> float:
@@ -138,29 +165,41 @@ async def admin_save(request: Request) -> HTMLResponse:
     }
 
     try:
-        config = await client.update_config(payload)
+        update = PayrollConfigUpdate.model_validate(payload)
+        config = _dump(PayrollConfigService(session).update_config(update))
         return templates.TemplateResponse(
             request,
             "admin.html",
             {"config": config, "saved": True},
         )
-    except APIError as exc:
+    except (AppBaseError, ValidationError) as exc:
+        if isinstance(exc, ValidationError):
+            detail, status_code = str(exc), 422
+        else:
+            detail, status_code = exc.message, exc.http_code
         return templates.TemplateResponse(
             request,
             "admin.html",
             {
                 "config": payload,
                 "saved": False,
-                "error": exc.detail,
-                "status_code": exc.status_code,
+                "error": detail,
+                "status_code": status_code,
             },
-            status_code=exc.status_code,
+            status_code=status_code,
         )
 
 
 # ---------------------------------------------------------------------------
 # HTMX partial routes
 # ---------------------------------------------------------------------------
+
+
+def _next_journal_no(session: Session) -> int:
+    try:
+        return PayrollConfigService(session).get_config().next_journal_no
+    except Exception:
+        return 202
 
 
 @router.post("/htmx/calculate", response_class=HTMLResponse)
@@ -175,11 +214,11 @@ async def htmx_calculate(
     ytd_fica_wages: float = Form(0.0),
     use_previous_ytd_fica: bool = Form(False),
     notes: str = Form(""),
+    session: Session = Depends(get_session),
 ) -> HTMLResponse:
     """Calculate payroll and return the results partial (never saves)."""
-    client = PayrollAPIClient()
     try:
-        result = await client.calculate(
+        payload = PayrollInput.model_validate(
             {
                 "payPeriod": pay_period,
                 "grossSalary": gross_salary,
@@ -193,12 +232,7 @@ async def htmx_calculate(
                 "notes": notes or None,
             }
         )
-        next_journal_no = 202
-        try:
-            config = await client.get_config()
-            next_journal_no = config.get("nextJournalNo", 202)
-        except Exception:
-            pass
+        result = _dump(PayrollRunService(session).calculate(payload))
 
         return templates.TemplateResponse(
             request,
@@ -207,23 +241,25 @@ async def htmx_calculate(
                 "result": result,
                 "history": [],
                 "save_run": False,
-                "next_journal_no": next_journal_no,
+                "next_journal_no": _next_journal_no(session),
             },
         )
 
-    except APIError as exc:
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    except ValidationError as exc:
         return templates.TemplateResponse(
             request,
             "partials/_error.html",
-            {"message": exc.detail, "status_code": exc.status_code},
-            status_code=exc.status_code,
+            {"message": str(exc), "status_code": 422},
+            status_code=422,
         )
     except Exception as exc:
         logger.exception("Unexpected error during calculate: %s", exc)
         return templates.TemplateResponse(
             request,
             "partials/_error.html",
-            {"message": "An unexpected error occurred. Is the API running?"},
+            {"message": "An unexpected error occurred."},
             status_code=500,
         )
 
@@ -239,11 +275,11 @@ async def htmx_save_run(
     hsa_in_income_tax: bool = Form(False),
     ytd_fica_wages: float = Form(0.0),
     notes: str = Form(""),
+    session: Session = Depends(get_session),
 ) -> HTMLResponse:
     """Save a calculated run to history and return the updated results partial."""
-    client = PayrollAPIClient()
     try:
-        result = await client.calculate(
+        payload = PayrollInput.model_validate(
             {
                 "payPeriod": pay_period,
                 "grossSalary": gross_salary,
@@ -257,12 +293,11 @@ async def htmx_save_run(
                 "notes": notes or None,
             }
         )
-        history = []
-        next_journal_no = 202
+        run_service = PayrollRunService(session)
+        result = _dump(run_service.calculate(payload))
+        history: list[dict] = []
         try:
-            config = await client.get_config()
-            next_journal_no = config.get("nextJournalNo", 202)
-            history = await client.list_runs()
+            history = _dump_list(run_service.list_runs(limit=50))
         except Exception:
             pass
 
@@ -273,16 +308,18 @@ async def htmx_save_run(
                 "result": result,
                 "history": history,
                 "save_run": True,
-                "next_journal_no": next_journal_no,
+                "next_journal_no": _next_journal_no(session),
             },
         )
 
-    except APIError as exc:
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    except ValidationError as exc:
         return templates.TemplateResponse(
             request,
             "partials/_error.html",
-            {"message": exc.detail, "status_code": exc.status_code},
-            status_code=exc.status_code,
+            {"message": str(exc), "status_code": 422},
+            status_code=422,
         )
     except Exception as exc:
         logger.exception("Unexpected error during save-run: %s", exc)
@@ -295,38 +332,26 @@ async def htmx_save_run(
 
 
 @router.get("/htmx/history", response_class=HTMLResponse)
-async def htmx_history(request: Request) -> HTMLResponse:
+async def htmx_history(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
     """Return the payroll history table partial."""
-    client = PayrollAPIClient()
     try:
-        history = await client.list_runs()
+        history = _dump_list(PayrollRunService(session).list_runs(limit=50))
         return templates.TemplateResponse(
             request,
             "partials/_history.html",
             {"history": history},
         )
-    except APIError as exc:
-        return templates.TemplateResponse(
-            request,
-            "partials/_error.html",
-            {"message": exc.detail},
-            status_code=exc.status_code,
-        )
+    except AppBaseError as exc:
+        return _error_partial(request, exc, with_status=False)
 
 
 @router.get("/htmx/runs/{run_id}", response_class=HTMLResponse)
-async def htmx_get_run(request: Request, run_id: int) -> HTMLResponse:
+async def htmx_get_run(
+    request: Request, run_id: int, session: Session = Depends(get_session)
+) -> HTMLResponse:
     """Load a saved payroll run into the results panel."""
-    client = PayrollAPIClient()
     try:
-        result, config = await asyncio.gather(
-            client.get_run(run_id),
-            client.get_config(),
-            return_exceptions=True,
-        )
-        if isinstance(result, Exception):
-            raise result
-        next_journal_no = config.get("nextJournalNo", 202) if isinstance(config, dict) else 202
+        result = _dump(PayrollRunService(session).get_run(run_id))
         return templates.TemplateResponse(
             request,
             "partials/_results.html",
@@ -334,51 +359,42 @@ async def htmx_get_run(request: Request, run_id: int) -> HTMLResponse:
                 "result": result,
                 "history": [],
                 "save_run": False,
-                "next_journal_no": next_journal_no,
+                "next_journal_no": _next_journal_no(session),
             },
         )
-    except APIError as exc:
-        return templates.TemplateResponse(
-            request,
-            "partials/_error.html",
-            {"message": exc.detail, "status_code": exc.status_code},
-            status_code=exc.status_code,
-        )
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
 
 
 @router.delete("/htmx/runs/{run_id}", response_class=HTMLResponse)
-async def htmx_delete_run(request: Request, run_id: int) -> HTMLResponse:
+async def htmx_delete_run(
+    request: Request, run_id: int, session: Session = Depends(get_session)
+) -> HTMLResponse:
     """Delete a saved run and return the refreshed history partial."""
-    client = PayrollAPIClient()
     try:
-        await client.delete_run(run_id)
-        history = await client.list_runs()
+        run_service = PayrollRunService(session)
+        run_service.delete_run(run_id)
+        history = _dump_list(run_service.list_runs(limit=50))
         return templates.TemplateResponse(
             request,
             "partials/_history.html",
             {"history": history},
         )
-    except APIError as exc:
-        return templates.TemplateResponse(
-            request,
-            "partials/_error.html",
-            {"message": exc.detail},
-            status_code=exc.status_code,
-        )
+    except AppBaseError as exc:
+        return _error_partial(request, exc, with_status=False)
 
 
 @router.post("/htmx/increment-journal-no", response_class=HTMLResponse)
 async def htmx_increment_journal_no(
-    request: Request,
     count: int = Query(default=2, ge=1),
+    session: Session = Depends(get_session),
 ) -> HTMLResponse:
     """Increment next_journal_no in config after a QBO CSV export. Returns updated badge HTML."""
-    client = PayrollAPIClient()
     try:
-        config = await client.increment_journal_no(count)
-        next_no = config.get("nextJournalNo", 202)
+        config = PayrollConfigService(session).increment_journal_no(count)
         return HTMLResponse(
-            f'<span id="je-no-badge" class="badge bg-secondary ms-2">Next JE #: {next_no}</span>'
+            f'<span id="je-no-badge" class="badge bg-secondary ms-2">'
+            f"Next JE #: {config.next_journal_no}</span>"
         )
     except Exception:
         return HTMLResponse('<span id="je-no-badge"></span>')
