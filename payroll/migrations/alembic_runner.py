@@ -134,12 +134,28 @@ def upgrade(revision: str = "head") -> None:
                 logger.info("Running database migration: upgrade to '%s'", revision)
                 command.upgrade(cfg, revision)
             finally:
-                lock_conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-                )
-                lock_conn.commit()
+                _release_migration_lock(lock_conn)
     finally:
         lock_engine.dispose()
+
+
+def _release_migration_lock(lock_conn) -> None:
+    """
+    Release the migration advisory lock. Never raises: a failure here (e.g. the
+    lock connection died, which releases a session-level lock anyway) is logged
+    and must not replace the migration's own exception or outcome.
+    """
+    from sqlalchemy import text
+
+    try:
+        lock_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        lock_conn.commit()
+    except Exception as exc:
+        logger.warning(
+            "Could not release the migration advisory lock (%s); it is released when "
+            "its connection closes.",
+            type(exc).__name__,
+        )
 
 
 def downgrade(revision: str) -> None:
