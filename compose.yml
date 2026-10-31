@@ -1,3 +1,6 @@
+# Local development stack. The database is NOT published on the host (internal network only).
+# ENCRYPTION_KEY is required; generate one and export it before `docker compose up`:
+#   export ENCRYPTION_KEY=$(python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())")
 services:
   db:
     image: postgres:17
@@ -5,10 +8,10 @@ services:
       POSTGRES_USER: payroll
       POSTGRES_PASSWORD: payroll
       POSTGRES_DB: payroll
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payroll"]
@@ -25,13 +28,18 @@ services:
       - "9000:9000"
     environment:
       DATABASE_URL: postgresql://payroll:payroll@db:5432/payroll
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY (see .env.example for how to generate one)}
+      # Plain-HTTP local dev needs a non-Secure cookie; production (HTTPS) must keep true.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       WORKERS: 2
       API_LOG_TYPE: standard
       DEBUG_MODE: "false"
-      # Override QBO account names here if needed, or use a .env file
+      # Override QBO account names (ACCT_*) here if needed
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/payroll/api/v1/healthcheck"]
@@ -40,20 +48,8 @@ services:
       retries: 3
       start_period: 10s
 
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["uvicorn", "payroll.frontend.app:app", "--host", "0.0.0.0", "--port", "8080"]
-    ports:
-      - "8070:8080"
-    environment:
-      API_BASE_URL: http://api:9000/payroll/api/v1
-      FRONTEND_PORT: "8080"
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
+networks:
+  internal:
 
 volumes:
   pgdata:
