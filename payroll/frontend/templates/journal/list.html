@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Journal · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-journal-text me-2"></i>Journal</span>
+      {% if is_owner %}
+      <a class="btn btn-sm btn-light" href="/journal/new"><i class="bi bi-plus-lg me-1"></i>New entry</a>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <form method="get" action="/journal" class="row g-2 align-items-end mb-3 no-print">
+        <div class="col-auto">
+          <label class="form-label" for="start">From</label>
+          <input class="form-control" type="date" id="start" name="start" value="{{ start }}">
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="end">To</label>
+          <input class="form-control" type="date" id="end" name="end" value="{{ end }}">
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="source">Source</label>
+          <select class="form-select" id="source" name="source">
+            <option value="">All sources</option>
+            {% for value, label in sources %}
+            <option value="{{ value }}"{% if source == value %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto"><button type="submit" class="btn btn-brand">Filter</button></div>
+      </form>
+      <table class="table table-sm table-hover align-middle">
+        <thead>
+          <tr><th>Date</th><th>Entry</th><th>Source</th><th>Memo</th><th class="num">Amount</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          {% set e = row.entry %}
+          <tr{% if e.status == "void" %} class="text-muted"{% endif %}>
+            <td>{{ e.entry_date }}</td>
+            <td><a href="/journal/{{ e.id }}">#{{ e.entry_no }}</a></td>
+            <td>{{ e.source_type | replace("_", " ") | capitalize }}</td>
+            <td>{{ e.memo or "" }}</td>
+            <td class="num">{{ row.total | currency }}</td>
+            <td>
+              {% if e.status == "void" %}<span class="badge bg-secondary">Void</span>{% else %}<span class="badge bg-success">Posted</span>{% endif %}
+              {% if e.reverses_entry_id %}<span class="badge bg-info">Reversal</span>{% endif %}
+              {% if row.reversed_by %}<span class="badge bg-warning text-dark">Reversed</span>{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-4">No journal entries found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <nav class="d-flex justify-content-between no-print" aria-label="Pages">
+        {% if page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="/journal?{{ query }}page={{ page - 1 }}">Previous</a>{% else %}<span></span>{% endif %}
+        <span class="text-muted">Page {{ page }}</span>
+        {% if has_next %}<a class="btn btn-sm btn-outline-secondary" href="/journal?{{ query }}page={{ page + 1 }}">Next</a>{% else %}<span></span>{% endif %}
+      </nav>
+    </div>
+  </div>
+</div>
+{% endblock %}
