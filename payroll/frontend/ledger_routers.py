@@ -20,8 +20,6 @@ the typed values and status 422; a wrong lock password re-renders with 403. The
 password is read from the form and passed straight to the service: never echoed.
 """
 
-from datetime import date
-
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session
@@ -35,7 +33,8 @@ from payroll.ledger.accounts import ROLE_TYPES, AccountService
 from payroll.ledger.exceptions import InvalidAccountError, LockPasswordError
 from payroll.ledger.models import Account, AccountType, SystemRole
 from payroll.ledger.period_lock import PeriodLockService
-from payroll.reports.periods import InvalidPeriodError, company_today
+from payroll.reports.periods import company_today
+from payroll.reports.periods import parse_date as _parse_date
 from payroll.reports.statements import ReportService, fiscal_year_start
 
 router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader)])
@@ -52,15 +51,6 @@ ROLE_LABELS: dict[SystemRole, str] = {
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _parse_date(value: str, label: str) -> date | None:
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise InvalidPeriodError(message=f"{label} is not a valid date") from exc
 
 
 # ---------------------------------------------------------------------------

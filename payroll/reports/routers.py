@@ -94,3 +94,10 @@ async def balance_sheet(
     return ReportService(session).balance_sheet(
         as_of or company_today(), basis=basis, compare=compare
     )
+
+
+# CSV / PDF twins (``/ledger/reports/<report>.csv`` and ``.pdf``) take the report
+# pages' query strings; imported late because the frontend package imports reports.
+from payroll.frontend.report_export import add_export_routes  # noqa: E402
+
+add_export_routes(router, "")

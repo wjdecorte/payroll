@@ -28,6 +28,16 @@ class InvalidPeriodError(AppBaseError):
     http_code: int = 422
 
 
+def parse_date(value: str, label: str) -> date | None:
+    """An ISO date from a form or query string; empty -> ``None``, bad -> :class:`InvalidPeriodError`."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise InvalidPeriodError(message=f"{label} is not a valid date") from exc
+
+
 def ensure_supported_date(value: date) -> date:
     """``value`` if it lies in the supported range, else :class:`InvalidPeriodError`."""
     if not is_supported_date(value):

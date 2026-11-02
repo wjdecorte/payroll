@@ -20,6 +20,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "pyotp>=2.10.0",
     "segno>=1.6.6",
+    "weasyprint>=70.0",
 ]
 
 [build-system]

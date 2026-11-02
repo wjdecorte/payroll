@@ -25,7 +25,7 @@ PAGES = (
 
 @pytest.fixture(autouse=True)
 def _today(monkeypatch):
-    monkeypatch.setattr("payroll.frontend.report_routers.company_today", lambda: date(2026, 2, 15))
+    monkeypatch.setattr("payroll.reports.runs.company_today", lambda: date(2026, 2, 15))
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def test_default_pnl_is_cash_this_month(owner_client, ledger):
 
 
 def test_presets_and_custom_change_heading(owner_client, ledger, monkeypatch):
-    monkeypatch.setattr("payroll.frontend.report_routers.company_today", lambda: date(2026, 5, 10))
+    monkeypatch.setattr("payroll.reports.runs.company_today", lambda: date(2026, 5, 10))
     last_q = owner_client.get("/reports/profit-and-loss?preset=last_quarter").text
     assert "2026-01-01 to 2026-03-31" in last_q and "$4,999.25" in last_q
     custom = owner_client.get(

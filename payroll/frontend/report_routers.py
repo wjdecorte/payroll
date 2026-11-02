@@ -8,6 +8,7 @@ Full-page routes (not in the OpenAPI schema), all GET-only:
   GET /reports/trial-balance     -> ``asOf``
   GET /reports/general-ledger    -> ``preset``/``start``/``end``, ``account``
   GET /reports/journal           -> ``preset``/``start``/``end``
+  GET /reports/<report>.csv|.pdf -> the same report as a download (same query string)
 
 Every route needs a signed-in user (router-level ``require_reader``). The picker is
 a plain GET form, so the pages work without JavaScript. Query parameters are strings
@@ -25,24 +26,25 @@ from sqlmodel import Session
 from payroll.auth.permissions import require_reader
 from payroll.common.dependencies import get_session
 from payroll.exceptions import AppBaseError
-from payroll.frontend.ledger_routers import _label, _parse_date
+from payroll.frontend.ledger_routers import _label
+from payroll.frontend.report_export import add_export_routes
 from payroll.frontend.routers import templates
 from payroll.ledger.accounts import AccountService
 from payroll.reports.basis import DEFAULT_BASIS, Basis
-from payroll.reports.periods import (
-    PRESETS,
-    InvalidPeriodError,
-    Period,
-    company_today,
-    resolve_period,
+from payroll.reports.periods import PRESETS
+from payroll.reports.runs import (
+    DEFAULT_PRESET,
+    run_balance_sheet,
+    run_general_ledger,
+    run_journal,
+    run_profit_and_loss,
+    run_trial_balance,
+    trial_invariants,
 )
-from payroll.reports.schemas import Invariant
-from payroll.reports.statements import COMPARISONS, ReportService, fiscal_year_start
+from payroll.reports.statements import fiscal_year_start
 
 router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader)])
 
-DEFAULT_PRESET = "this_month"
-MAX_ACCOUNT_ID = 2**31 - 1  # integer primary key range
 PRESET_LABELS = {
     "this_month": "This month",
     "last_month": "Last month",
@@ -135,43 +137,11 @@ def _page(
             "bases": [(b.value, b.value.capitalize()) for b in Basis],
             "accounts": _choices(session) if picker.accounts else [],
             "error": error.message if error else None,
+            "export_query": request.url.query,
             **context,
         },
         status_code=error.http_code if error else 200,
     )
-
-
-def _period(preset: str, start: str, end: str) -> Period:
-    preset = preset or DEFAULT_PRESET
-    if preset != "custom" and preset not in PRESETS:
-        raise InvalidPeriodError(message="Choose a period from the list")
-    return resolve_period(
-        preset,
-        company_today(),
-        start=_parse_date(start, "Start"),
-        end=_parse_date(end, "End"),
-    )
-
-
-def _basis(raw: str) -> Basis:
-    try:
-        return Basis(raw or DEFAULT_BASIS.value)
-    except ValueError as exc:
-        raise InvalidPeriodError(message="Choose cash or accrual basis") from exc
-
-
-def _compare(raw: str) -> str | None:
-    if raw and raw not in COMPARISONS:
-        raise InvalidPeriodError(message="Choose a comparison from the list")
-    return raw or None
-
-
-def _account_id(raw: str) -> int | None:
-    if not raw:
-        return None
-    if len(raw) > 10 or not (raw.isascii() and raw.isdigit()) or int(raw) > MAX_ACCOUNT_ID:
-        raise InvalidPeriodError(message="Choose a valid account")
-    return int(raw)
 
 
 @router.get("/reports", response_class=HTMLResponse)
@@ -200,16 +170,15 @@ async def profit_and_loss(
         basis_toggle=True,
         comparison=True,
     )
+    query = {"preset": preset, "start": start, "end": end, "basis": basis, "compare": compare}
     try:
-        statement = ReportService(session).profit_and_loss(
-            _period(preset, start, end), basis=_basis(basis), compare=_compare(compare)
-        )
+        run = run_profit_and_loss(session, query)
     except AppBaseError as exc:
         return _page(
             request, "reports/statement.html", "Profit and Loss", picker, session, error=exc
         )
     return _page(
-        request, "reports/statement.html", "Profit and Loss", picker, session, statement=statement
+        request, "reports/statement.html", "Profit and Loss", picker, session, statement=run.report
     )
 
 
@@ -231,15 +200,11 @@ async def balance_sheet(
         comparison=True,
     )
     try:
-        statement = ReportService(session).balance_sheet(
-            _parse_date(asOf, "As-of date") or company_today(),
-            basis=_basis(basis),
-            compare=_compare(compare),
-        )
+        run = run_balance_sheet(session, {"asOf": asOf, "basis": basis, "compare": compare})
     except AppBaseError as exc:
         return _page(request, "reports/statement.html", "Balance Sheet", picker, session, error=exc)
     return _page(
-        request, "reports/statement.html", "Balance Sheet", picker, session, statement=statement
+        request, "reports/statement.html", "Balance Sheet", picker, session, statement=run.report
     )
 
 
@@ -251,9 +216,7 @@ async def trial_balance(
 ) -> HTMLResponse:
     picker = Picker("/reports/trial-balance", as_of=asOf, date=True)
     try:
-        trial = ReportService(session).trial_balance(
-            _parse_date(asOf, "As-of date") or company_today()
-        )
+        trial = run_trial_balance(session, {"asOf": asOf}).report
     except AppBaseError as exc:
         return _page(
             request,
@@ -263,17 +226,6 @@ async def trial_balance(
             session,
             error=exc,
         )
-    invariants = [
-        Invariant(
-            name="Debits equal credits",
-            ok=trial.balanced,
-            detail=(
-                "Total debits equal total credits"
-                if trial.balanced
-                else "Total debits and total credits differ"
-            ),
-        )
-    ]
     return _page(
         request,
         "reports/trial_balance.html",
@@ -281,7 +233,7 @@ async def trial_balance(
         picker,
         session,
         trial=trial,
-        invariants=invariants,
+        invariants=trial_invariants(trial),
         year_start=fiscal_year_start(trial.as_of),
     )
 
@@ -305,9 +257,8 @@ async def general_ledger(
         accounts=True,
     )
     try:
-        period = _period(preset, start, end)
-        ledger = ReportService(session).general_ledger(
-            period.start, period.end, _account_id(account)
+        run = run_general_ledger(
+            session, {"preset": preset, "start": start, "end": end, "account": account}
         )
     except AppBaseError as exc:
         return _page(
@@ -319,7 +270,7 @@ async def general_ledger(
             error=exc,
         )
     return _page(
-        request, "reports/general_ledger.html", "General Ledger", picker, session, ledger=ledger
+        request, "reports/general_ledger.html", "General Ledger", picker, session, ledger=run.report
     )
 
 
@@ -339,8 +290,7 @@ async def journal_report(
         period=True,
     )
     try:
-        period = _period(preset, start, end)
-        entries = ReportService(session).journal(period.start, period.end)
+        run = run_journal(session, {"preset": preset, "start": start, "end": end})
     except AppBaseError as exc:
         return _page(request, "reports/journal.html", "Journal", picker, session, error=exc)
     return _page(
@@ -349,6 +299,11 @@ async def journal_report(
         "Journal",
         picker,
         session,
-        entries=entries,
-        period=period,
+        entries=run.report.entries,
+        period=run.period,
     )
+
+
+# GET /reports/<report>.csv and .pdf: the same query string, validation and report as
+# the page above (see payroll.frontend.report_export).
+add_export_routes(router, "/reports")

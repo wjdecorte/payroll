@@ -29,6 +29,9 @@ Every page and API route needs a signed-in user; only `/login`, the MFA pages,
 ## Quick start (local)
 
 You need Python 3.14, [uv](https://docs.astral.sh/uv/), Docker, and a Postgres database.
+PDF export uses WeasyPrint, which needs the native Pango libraries: `brew install pango` on macOS,
+`apt-get install libpango-1.0-0 libpangoft2-1.0-0` on Debian/Ubuntu (the Docker image and CI install them;
+without them the PDF tests skip and the CSV export is unaffected).
 
 ```bash
 uv sync

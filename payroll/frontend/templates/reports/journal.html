@@ -9,6 +9,7 @@
       {% if error %}
       <div class="alert alert-danger" role="alert">{{ error }}</div>
       {% else %}
+      {% include "reports/_exports.html" %}
       <p class="text-muted small">{{ period.start }} to {{ period.end }}</p>
       {% for e in entries %}
       <table class="table table-sm align-middle{% if e.is_void %} text-muted{% endif %}">

@@ -9,6 +9,7 @@
       {% if error %}
       <div class="alert alert-danger" role="alert">{{ error }}</div>
       {% else %}
+      {% include "reports/_exports.html" %}
       {% include "reports/_banner.html" %}
       <p class="text-muted small">As of {{ trial.as_of }}. Ledger balances; the basis does not apply.</p>
       <table class="table table-sm table-hover align-middle">

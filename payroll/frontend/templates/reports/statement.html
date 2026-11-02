@@ -9,6 +9,7 @@
       {% if error %}
       <div class="alert alert-danger" role="alert">{{ error }}</div>
       {% else %}
+      {% include "reports/_exports.html" %}
       {% set invariants = statement.invariants %}
       {% include "reports/_banner.html" %}
       {% set columns = statement.columns %}

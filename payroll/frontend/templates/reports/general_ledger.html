@@ -9,6 +9,7 @@
       {% if error %}
       <div class="alert alert-danger" role="alert">{{ error }}</div>
       {% else %}
+      {% include "reports/_exports.html" %}
       <p class="text-muted small">{{ ledger.start }} to {{ ledger.end }}</p>
       {% for reg in ledger.accounts %}
       <h2 class="h6 mt-3"><a href="/accounts/{{ reg.account_id }}/register?start={{ ledger.start }}&amp;end={{ ledger.end }}">{{ reg.number or "" }} {{ reg.name }}</a></h2>

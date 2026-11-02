@@ -123,3 +123,11 @@ class Statement(AppBaseSchema):
     rows: list[StatementRow]
     invariants: list[Invariant]
     basis_note: str
+
+
+class JournalReport(AppBaseSchema):
+    """The journal report with its period (the JSON endpoint returns just ``entries``)."""
+
+    start: date
+    end: date
+    entries: list[JournalReportEntry]
