@@ -204,7 +204,7 @@ def test_seed_default_chart_is_idempotent(session, owner_user):
     assert len(nodes) == len(DEFAULT_CHART)
 
 
-def test_seed_default_chart_fills_in_missing_rows(session, owner_user):
+def test_seed_default_chart_skips_inactive_rows(session, owner_user):
     svc = AccountService(session)
     seed_default_chart(session, actor=owner_user)
     wages = next(n.account for n in svc.tree() if n.full_name == "Payroll Expenses:Wages")
@@ -257,3 +257,29 @@ def test_every_mutation_is_audited(session, owner_user):
 def test_blank_name_rejected(session, owner_user):
     with pytest.raises(InvalidAccountError):
         AccountService(session).create(actor=owner_user, name="  ", type=AccountType.ASSET)
+
+
+def test_racing_writers_get_conflict_not_integrity_error(session, owner_user, monkeypatch):
+    svc = AccountService(session)
+    first = svc.create(actor=owner_user, name="A", type=AccountType.ASSET, number="1000")
+    other = svc.create(actor=owner_user, name="B", type=AccountType.ASSET)
+    # Simulate two requests that both passed the select-then-insert checks.
+    monkeypatch.setattr(svc, "_check_unique", lambda *a, **k: None)
+    with pytest.raises(AccountConflictError):
+        svc.create(actor=owner_user, name="C", type=AccountType.ASSET, number="1000")
+    with pytest.raises(AccountConflictError):
+        svc.update(other.id, actor=owner_user, number="1000")
+    with pytest.raises(AccountConflictError):
+        svc.create(actor=owner_user, name="a", type=AccountType.ASSET)
+    # role slot race: another account already holds the role at the database level
+    svc.bind_role(SystemRole.ACCOUNTS_RECEIVABLE, first.id, actor=owner_user)
+    monkeypatch.setattr(svc, "account_by_role", lambda role: None)
+    with pytest.raises(AccountConflictError):
+        svc.bind_role(SystemRole.ACCOUNTS_RECEIVABLE, other.id, actor=owner_user)
+    monkeypatch.undo()
+    # the session is usable, nothing from the failed calls (audit rows included) remains
+    assert [a.name for a in svc.list()] == ["A", "B"]
+    actions = [r.action for r in session.exec(select(AuditLog)).all()]
+    assert actions.count("account.create") == 2
+    assert actions.count("account.update") == 0
+    assert svc.create(actor=owner_user, name="D", type=AccountType.ASSET).id

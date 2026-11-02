@@ -99,3 +99,13 @@ def test_errors_use_structured_body(owner_client):
 def test_unauthenticated_is_401(anon_client):
     assert anon_client.get(f"{PREFIX}/accounts").status_code == 401
     assert anon_client.get(f"{PREFIX}/accounts/tree").status_code == 401
+
+
+def test_racing_create_is_409_not_500(owner_client, monkeypatch):
+    from payroll.ledger.accounts import AccountService
+
+    assert _create(owner_client, number="1000").status_code == 201
+    monkeypatch.setattr(AccountService, "_check_unique", lambda *a, **k: None)
+    response = _create(owner_client, name="Other", number="1000")
+    assert response.status_code == 409
+    assert response.json()["errors"][0]["type"] == "AccountConflictError"

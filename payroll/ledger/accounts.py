@@ -1,12 +1,15 @@
 """Chart of accounts: create, edit, deactivate and bind system roles."""
 
+import functools
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
 from payroll import app_settings
@@ -38,6 +41,27 @@ def utcnow_naive() -> datetime:
 
 
 _UNSET: Any = object()  # distinguishes "leave parent alone" from "make top-level"
+
+
+def _conflict_safe[**P, R](method: Callable[P, R]) -> Callable[P, R]:
+    """Turn a unique-index violation from a racing writer into AccountConflictError.
+
+    The service checks uniqueness first for friendly messages, but two concurrent
+    requests can both pass those checks; the database indexes then reject the loser.
+    The rollback also discards the audit row written in the same transaction.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args: P.args, **kwargs: P.kwargs) -> R:  # type: ignore[no-untyped-def]
+        try:
+            return method(self, *args, **kwargs)
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise AccountConflictError(
+                message="Another change took that account number, name or system role"
+            ) from exc
+
+    return wrapper
 
 
 @dataclass
@@ -103,6 +127,7 @@ class AccountService:
     # Mutations (owner only; one commit per call)
     # ------------------------------------------------------------------
 
+    @_conflict_safe
     def create(
         self,
         *,
@@ -136,6 +161,7 @@ class AccountService:
         logger.info("Created account id=%s", account.id)
         return account
 
+    @_conflict_safe
     def update(
         self,
         account_id: int,
@@ -214,6 +240,7 @@ class AccountService:
         self.session.commit()
         return account
 
+    @_conflict_safe
     def bind_role(self, role: SystemRole, account_id: int | None, *, actor: User) -> None:
         """Bind ``role`` to an account (moving it from any other); ``None`` unbinds."""
         ensure_role(actor, OWNER)
