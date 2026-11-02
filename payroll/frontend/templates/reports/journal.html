@@ -14,11 +14,11 @@
       <table class="table table-sm align-middle{% if e.is_void %} text-muted{% endif %}">
         <thead>
           <tr class="table-light">
-            <th colspan="2">{{ e.entry_date }} · <a href="/journal/{{ e.id }}">#{{ e.entry_no }}</a> · {{ e.source_type.value | replace("_", " ") | capitalize }}
+            <th scope="col" colspan="2">{{ e.entry_date }} · <a href="/journal/{{ e.id }}">#{{ e.entry_no }}</a> · {{ e.source_type.value | replace("_", " ") | capitalize }}
               {% if e.is_void %}<span class="badge bg-secondary">Void</span>{% endif %}
               {% if e.is_reversal %}<span class="badge bg-info">Reversal</span>{% endif %}
               {% if e.memo %} · {{ e.memo }}{% endif %}</th>
-            <th class="num">Debit</th><th class="num">Credit</th>
+            <th scope="col" class="num">Debit</th><th scope="col" class="num">Credit</th>
           </tr>
         </thead>
         <tbody>

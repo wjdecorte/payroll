@@ -27,6 +27,7 @@ from payroll import app_settings
 from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
+from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.money import CENT
 from payroll.ledger.accounts import utcnow_naive
 from payroll.ledger.exceptions import (
@@ -164,6 +165,12 @@ class LedgerPostingService:
     def _post(
         self, draft: EntryDraft, *, actor: User, reverses_entry_id: int | None = None
     ) -> JournalEntry:
+        # (0) a date the reports can handle
+        if not is_supported_date(draft.entry_date):
+            raise InvalidEntryError(
+                message=f"The entry date must be within {supported_range_text()}"
+            )
+
         # (1) amounts and text
         try:
             source_type = SourceType(draft.source_type)

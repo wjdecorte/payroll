@@ -4,6 +4,10 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from payroll import app_settings
+from payroll.common.dates import (
+    is_supported_date,
+    supported_range_text,
+)
 from payroll.exceptions import AppBaseError
 
 PRESETS: tuple[str, ...] = (
@@ -22,6 +26,15 @@ PRESETS: tuple[str, ...] = (
 class InvalidPeriodError(AppBaseError):
     message: str = "Invalid reporting period"
     http_code: int = 422
+
+
+def ensure_supported_date(value: date) -> date:
+    """``value`` if it lies in the supported range, else :class:`InvalidPeriodError`."""
+    if not is_supported_date(value):
+        raise InvalidPeriodError(
+            message=f"{value.isoformat()} is outside the supported dates ({supported_range_text()})"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -62,7 +75,7 @@ def _shift_year(value: date, years: int) -> date:
         return value.replace(year=value.year + years, day=28)
 
 
-def resolve_period(
+def _resolve(
     preset: str,
     today: date | None = None,
     *,
@@ -72,6 +85,8 @@ def resolve_period(
     if preset == "custom":
         if start is None or end is None:
             raise InvalidPeriodError("A custom period requires both start and end dates")
+        ensure_supported_date(start)
+        ensure_supported_date(end)
         if start > end:
             raise InvalidPeriodError("Period start must not be after its end")
         return Period(start, end, f"{start.isoformat()} to {end.isoformat()}")
@@ -97,7 +112,40 @@ def resolve_period(
     return Period(_shift_year(today, -1) + timedelta(days=1), today, "Trailing 12 months")
 
 
+def resolve_period(
+    preset: str,
+    today: date | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> Period:
+    """The period for ``preset``; every date in it lies in the supported range."""
+    try:
+        period = _resolve(preset, today, start=start, end=end)
+    except (ValueError, OverflowError) as exc:  # date arithmetic ran off the calendar
+        raise InvalidPeriodError(message="The period is outside the supported dates") from exc
+    ensure_supported_date(period.start)
+    ensure_supported_date(period.end)
+    return period
+
+
 def previous_period(period: Period) -> Period:
+    """The comparison period before ``period``; :class:`InvalidPeriodError` if out of range."""
+    try:
+        return _supported(_previous_period(period))
+    except (ValueError, OverflowError) as exc:
+        raise InvalidPeriodError(
+            message="The comparison period is outside the supported dates"
+        ) from exc
+
+
+def _supported(period: Period) -> Period:
+    ensure_supported_date(period.start)
+    ensure_supported_date(period.end)
+    return period
+
+
+def _previous_period(period: Period) -> Period:
     start, end = period.start, period.end
     if start.day == 1 and end == _month_end(end.year, end.month):
         months = (end.year - start.year) * 12 + end.month - start.month + 1
@@ -111,6 +159,16 @@ def previous_period(period: Period) -> Period:
 
 
 def previous_year(period: Period) -> Period:
-    return Period(
-        _shift_year(period.start, -1), _shift_year(period.end, -1), f"{period.label} (prior year)"
-    )
+    """The same dates one year earlier; :class:`InvalidPeriodError` if out of range."""
+    try:
+        return _supported(
+            Period(
+                _shift_year(period.start, -1),
+                _shift_year(period.end, -1),
+                f"{period.label} (prior year)",
+            )
+        )
+    except (ValueError, OverflowError) as exc:
+        raise InvalidPeriodError(
+            message="The comparison period is outside the supported dates"
+        ) from exc

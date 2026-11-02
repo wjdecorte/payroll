@@ -13,7 +13,7 @@
       {% for reg in ledger.accounts %}
       <h2 class="h6 mt-3"><a href="/accounts/{{ reg.account_id }}/register?start={{ ledger.start }}&amp;end={{ ledger.end }}">{{ reg.number or "" }} {{ reg.name }}</a></h2>
       <table class="table table-sm table-hover align-middle">
-        <thead><tr><th>Date</th><th>Entry</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+        <thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Memo</th><th scope="col" class="num">Debit</th><th scope="col" class="num">Credit</th><th scope="col" class="num">Balance</th></tr></thead>
         <tbody>
           <tr class="table-light"><td colspan="5">Opening balance</td><td class="num">{{ reg.opening_balance | currency }}</td></tr>
           {% for line in reg.lines %}

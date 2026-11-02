@@ -12,7 +12,7 @@
       {% include "reports/_banner.html" %}
       <p class="text-muted small">As of {{ trial.as_of }}. Ledger balances; the basis does not apply.</p>
       <table class="table table-sm table-hover align-middle">
-        <thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+        <thead><tr><th scope="col">Account</th><th scope="col" class="num">Debit</th><th scope="col" class="num">Credit</th></tr></thead>
         <tbody>
           {% for row in trial.rows %}
           <tr>

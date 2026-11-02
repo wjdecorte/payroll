@@ -17,9 +17,9 @@
       <table class="table table-sm table-hover align-middle">
         <thead>
           <tr>
-            <th>{{ statement.title }}</th>
-            {% for col in columns %}<th class="num">{{ col.label }}</th>{% endfor %}
-            {% if compared %}<th class="num">Change</th><th class="num">% change</th>{% endif %}
+            <th scope="col">{{ statement.title }}</th>
+            {% for col in columns %}<th scope="col" class="num">{{ col.label }}</th>{% endfor %}
+            {% if compared %}<th scope="col" class="num">Change</th><th scope="col" class="num">% change</th>{% endif %}
           </tr>
         </thead>
         <tbody>

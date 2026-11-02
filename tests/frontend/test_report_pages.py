@@ -236,3 +236,76 @@ def test_pages_have_no_inline_script_or_style(owner_client, ledger):
         text = owner_client.get(path).text
         assert " style=" not in text and " onclick=" not in text
         assert not re.search(r"<script(?![^>]*\bsrc=)", text)
+
+
+OUT_OF_RANGE = ["0001-01-01", "9999-12-31", "1899-12-31", "2201-01-01"]
+COMPARES = ["", "previous_period", "previous_year"]
+
+
+@pytest.mark.parametrize("day", OUT_OF_RANGE)
+@pytest.mark.parametrize("compare", COMPARES)
+def test_out_of_range_dates_are_422_on_every_report(owner_client, ledger, day, compare):
+    cmp = f"&compare={compare}" if compare else ""
+    paths = [
+        f"/reports/profit-and-loss?preset=custom&start={day}&end={day}{cmp}",
+        f"/reports/profit-and-loss?preset=custom&start=2026-01-01&end={day}{cmp}",
+        f"/reports/balance-sheet?asOf={day}{cmp}",
+        f"/reports/trial-balance?asOf={day}",
+        f"/reports/general-ledger?preset=custom&start={day}&end={day}",
+        f"/reports/journal?preset=custom&start={day}&end={day}",
+        f"/accounts/{ledger.chart['Travel'].id}/register?start={day}&end={day}",
+        f"/payroll/api/v1/ledger/reports/trial-balance?asOf={day}",
+        f"/payroll/api/v1/ledger/reports/balance-sheet?asOf={day}{cmp}",
+        f"/payroll/api/v1/ledger/reports/profit-and-loss?start={day}&end={day}{cmp}",
+        f"/payroll/api/v1/ledger/reports/general-ledger?start={day}&end={day}",
+        f"/payroll/api/v1/ledger/reports/journal?start={day}&end={day}",
+        f"/payroll/api/v1/ledger/reports/account-register/{ledger.chart['Travel'].id}?start={day}&end={day}",
+    ]
+    for path in paths:
+        assert owner_client.get(path).status_code == 422, path
+
+
+@pytest.mark.parametrize("compare", ["previous_period", "previous_year"])
+def test_comparison_running_out_of_range_is_422(owner_client, ledger, compare):
+    page = owner_client.get(
+        f"/reports/profit-and-loss?preset=custom&start=1900-01-01&end=1900-01-31&compare={compare}"
+    )
+    assert page.status_code == 422
+    assert (
+        owner_client.get(f"/reports/balance-sheet?asOf=1900-01-15&compare={compare}").status_code
+        == 422
+    )
+
+
+def test_boundary_dates_still_work(owner_client, ledger):
+    for path in (
+        "/reports/profit-and-loss?preset=custom&start=1900-01-01&end=2200-12-31",
+        "/reports/balance-sheet?asOf=1900-01-01",
+        "/reports/balance-sheet?asOf=2200-12-31&compare=previous_year",
+        "/reports/trial-balance?asOf=2200-12-31",
+        "/reports/general-ledger?preset=custom&start=1900-01-01&end=2200-12-31",
+        "/reports/journal?preset=custom&start=1900-01-01&end=2200-12-31",
+    ):
+        assert owner_client.get(path).status_code == 200, path
+
+
+@pytest.mark.parametrize("day", ["1899-12-31", "2201-01-01"])
+def test_journal_entry_form_and_service_reject_unsupported_date(owner_client, ledger, session, day):
+    from payroll.exceptions import AppBaseError
+    from payroll.ledger.exceptions import InvalidEntryError
+
+    form = {
+        "entry_date": day,
+        "memo": "x",
+        "line_account": [str(ledger.chart["Travel"].id), str(ledger.chart["Business Checking"].id)],
+        "line_debit": ["5.00", ""],
+        "line_credit": ["", "5.00"],
+        "line_memo": ["", ""],
+    }
+    assert owner_client.post("/journal", data=form).status_code == 422
+    with pytest.raises(InvalidEntryError):
+        ledger.post(date.fromisoformat(day), "Travel", "Business Checking", "5.00")
+    with pytest.raises((InvalidEntryError, AppBaseError)):
+        ledger.posting.reverse(
+            ledger.sale_jan.id, entry_date=date.fromisoformat(day), actor=ledger.owner
+        )

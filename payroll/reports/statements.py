@@ -12,7 +12,13 @@ from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, AccountType, JournalEntry, JournalLine
 from payroll.reports import queries
 from payroll.reports.basis import BASIS_NOTE, DEFAULT_BASIS, Basis
-from payroll.reports.periods import InvalidPeriodError, Period, previous_period, previous_year
+from payroll.reports.periods import (
+    InvalidPeriodError,
+    Period,
+    ensure_supported_date,
+    previous_period,
+    previous_year,
+)
 from payroll.reports.schemas import (
     ColumnHeader,
     GeneralLedger,
@@ -105,6 +111,8 @@ def _equation(as_of: date, left: str, a: Decimal, right: str, b: Decimal) -> str
 
 
 def _check_period(start: date, end: date) -> None:
+    ensure_supported_date(start)
+    ensure_supported_date(end)
     if start > end:
         raise InvalidPeriodError(message="The start date must not be after the end date")
 
@@ -181,11 +189,12 @@ class ReportService:
         self, as_of: date, *, basis: Basis = DEFAULT_BASIS, compare: str | None = None
     ) -> Statement:
         """Assets, liabilities and equity (with synthesized earnings) as of ``as_of``."""
+        ensure_supported_date(as_of)
         _check_compare(compare)
         basis = Basis(basis)
         ends = [as_of]
         if compare == "previous_period":
-            ends.append(_month_earlier(as_of))
+            ends.append(ensure_supported_date(_month_earlier(as_of)))
         elif compare == "previous_year":
             ends.append(previous_year(Period(as_of, as_of, "")).end)
         accounts = AccountService(self.session).list(include_inactive=True)
@@ -359,6 +368,7 @@ class ReportService:
 
     def trial_balance(self, as_of: date, *, include_zero: bool = False) -> TrialBalance:
         """Each account's net balance as of ``as_of`` in exactly one of debit / credit."""
+        ensure_supported_date(as_of)
         nets: dict[int, tuple[Account, Decimal]] = {
             t.account.id: (t.account, t.debit - t.credit)
             for t in queries.account_totals(
