@@ -140,10 +140,12 @@ def create_app() -> FastAPI:
     # Register routers                                                     #
     # ------------------------------------------------------------------ #
     from payroll.common.routers import router as common_router
+    from payroll.ledger.routers import router as ledger_router
     from payroll.payroll_run.routers import router as payroll_run_router
 
     application.include_router(common_router, prefix=prefix)
     application.include_router(payroll_run_router, prefix=prefix)
+    application.include_router(ledger_router, prefix=prefix)
 
     # UI: pages + HTMX partials (hidden from the OpenAPI schema) and static assets.
     from fastapi.staticfiles import StaticFiles

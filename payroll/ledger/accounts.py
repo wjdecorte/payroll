@@ -1,0 +1,312 @@
+"""Chart of accounts: create, edit, deactivate and bind system roles."""
+
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any, Literal
+
+from sqlalchemy import func
+from sqlmodel import Session, col, select
+
+from payroll import app_settings
+from payroll.audit.services import record as record_audit
+from payroll.auth.models import User
+from payroll.auth.permissions import OWNER, ensure_role
+from payroll.ledger.exceptions import (
+    AccountConflictError,
+    AccountInUseError,
+    AccountNotFoundError,
+    InvalidAccountError,
+)
+from payroll.ledger.models import NORMAL_DEBIT, Account, AccountType, JournalLine, SystemRole
+
+logger = logging.getLogger(f"{app_settings.logger_name}.ledger.accounts")
+
+# The account type each system role must be bound to.
+ROLE_TYPES: dict[SystemRole, AccountType] = {
+    SystemRole.ACCOUNTS_RECEIVABLE: AccountType.ASSET,
+    SystemRole.UNDEPOSITED_FUNDS: AccountType.ASSET,
+    SystemRole.DUE_TO_OWNER: AccountType.LIABILITY,
+    SystemRole.RETAINED_EARNINGS: AccountType.EQUITY,
+    SystemRole.OPENING_BALANCE_EQUITY: AccountType.EQUITY,
+}
+
+
+def utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)  # AppBaseModel stores naive UTC
+
+
+_UNSET: Any = object()  # distinguishes "leave parent alone" from "make top-level"
+
+
+@dataclass
+class AccountNode:
+    account: Account
+    depth: int
+    full_name: str
+
+
+class AccountService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    # ------------------------------------------------------------------
+    # Reads
+    # ------------------------------------------------------------------
+
+    def get(self, account_id: int) -> Account:
+        account = self.session.get(Account, account_id)
+        if account is None:
+            raise AccountNotFoundError()
+        return account
+
+    def list(self, include_inactive: bool = False) -> list[Account]:
+        stmt = select(Account).order_by(col(Account.number).asc().nulls_last(), Account.name)
+        if not include_inactive:
+            stmt = stmt.where(col(Account.is_active).is_(True))
+        return list(self.session.exec(stmt).all())
+
+    def tree(self, include_inactive: bool = False) -> list[AccountNode]:
+        """Depth-first list: each parent followed by its children, siblings by number/name."""
+        accounts = self.list(include_inactive=True)
+        children: dict[int | None, list[Account]] = {}
+        for acct in accounts:
+            children.setdefault(acct.parent_id, []).append(acct)
+        nodes: list[AccountNode] = []
+
+        def walk(parent_id: int | None, depth: int, prefix: str) -> None:
+            for acct in children.get(parent_id, []):
+                full = f"{prefix}{acct.name}"
+                if acct.is_active or include_inactive:
+                    nodes.append(AccountNode(account=acct, depth=depth, full_name=full))
+                walk(acct.id, depth + 1, f"{full}:")
+
+        walk(None, 0, "")
+        return nodes
+
+    def account_by_role(self, role: SystemRole) -> Account | None:
+        return self.session.exec(select(Account).where(Account.system_role == role)).first()
+
+    @staticmethod
+    def normal_balance(account: Account) -> Literal["debit", "credit"]:
+        return "debit" if account.type in NORMAL_DEBIT else "credit"
+
+    def balances(self) -> dict[int, Decimal]:
+        """Debits minus credits per account id, over every journal line."""
+        stmt = select(
+            JournalLine.account_id, func.sum(JournalLine.debit - JournalLine.credit)
+        ).group_by(JournalLine.account_id)
+        return {acct_id: total for acct_id, total in self.session.exec(stmt).all()}
+
+    # ------------------------------------------------------------------
+    # Mutations (owner only; one commit per call)
+    # ------------------------------------------------------------------
+
+    def create(
+        self,
+        *,
+        actor: User,
+        name: str,
+        type: AccountType,
+        number: str | None = None,
+        parent_id: int | None = None,
+        detail_type: str | None = None,
+    ) -> Account:
+        ensure_role(actor, OWNER)
+        name = name.strip()
+        number = (number or "").strip() or None
+        if parent_id is not None:
+            self._check_parent(None, parent_id, type)
+        self._check_unique(None, name, number, parent_id)
+        account = Account(
+            name=name, number=number, parent_id=parent_id, type=type, detail_type=detail_type
+        )
+        self.session.add(account)
+        self.session.flush()
+        record_audit(
+            self.session,
+            action="account.create",
+            user_id=actor.id,
+            entity="account",
+            entity_id=str(account.id),
+            after=self._snapshot(account),
+        )
+        self.session.commit()
+        logger.info("Created account id=%s", account.id)
+        return account
+
+    def update(
+        self,
+        account_id: int,
+        *,
+        actor: User,
+        name: str | None = None,
+        number: str | None = None,
+        parent_id: int | None = _UNSET,
+        detail_type: str | None = None,
+        type: AccountType | None = None,
+    ) -> Account:
+        """Edit fields; ``None`` leaves a field alone, except ``parent_id=None`` which
+        makes the account top-level (omit it, i.e. pass nothing, to keep the parent)."""
+        ensure_role(actor, OWNER)
+        account = self.get(account_id)
+        before = self._snapshot(account)
+
+        new_type = type if type is not None else account.type
+        new_parent = account.parent_id if parent_id is _UNSET else parent_id
+        new_name = name.strip() if name is not None else account.name
+        new_number = ((number or "").strip() or None) if number is not None else account.number
+
+        if new_type != account.type:
+            self._check_type_change(account, new_type)
+        if new_parent is not None:
+            self._check_parent(account, new_parent, new_type)
+        self._check_unique(account, new_name, new_number, new_parent)
+
+        account.type = new_type
+        account.parent_id = new_parent
+        account.name = new_name
+        account.number = new_number
+        if detail_type is not None:
+            account.detail_type = detail_type
+        account.modify_date = utcnow_naive()
+        self.session.add(account)
+        self.session.flush()
+        record_audit(
+            self.session,
+            action="account.update",
+            user_id=actor.id,
+            entity="account",
+            entity_id=str(account.id),
+            before=before,
+            after=self._snapshot(account),
+        )
+        self.session.commit()
+        return account
+
+    def set_active(self, account_id: int, active: bool, *, actor: User) -> Account:
+        ensure_role(actor, OWNER)
+        account = self.get(account_id)
+        before = self._snapshot(account)
+        if not active and account.is_active:
+            if account.system_role is not None:
+                raise AccountInUseError(
+                    message="Unbind the account's system role before deactivating it"
+                )
+            if self.balances().get(account.id, Decimal("0")) != 0:
+                raise AccountInUseError(
+                    message="An account with a non-zero balance cannot be deactivated"
+                )
+        account.is_active = active
+        account.modify_date = utcnow_naive()
+        self.session.add(account)
+        self.session.flush()
+        record_audit(
+            self.session,
+            action="account.activate" if active else "account.deactivate",
+            user_id=actor.id,
+            entity="account",
+            entity_id=str(account.id),
+            before=before,
+            after=self._snapshot(account),
+        )
+        self.session.commit()
+        return account
+
+    def bind_role(self, role: SystemRole, account_id: int | None, *, actor: User) -> None:
+        """Bind ``role`` to an account (moving it from any other); ``None`` unbinds."""
+        ensure_role(actor, OWNER)
+        current = self.account_by_role(role)
+        target = self.get(account_id) if account_id is not None else None
+        if target is not None:
+            if target.type != ROLE_TYPES[role]:
+                raise InvalidAccountError(
+                    message=f"Role {role.value} needs an {ROLE_TYPES[role].value} account"
+                )
+            if not target.is_active:
+                raise InvalidAccountError(message="A system role needs an active account")
+            if target.system_role not in (None, role):
+                raise AccountConflictError(message="That account already holds another system role")
+        before = {"account_id": current.id if current else None}
+        if current is not None and (target is None or current.id != target.id):
+            current.system_role = None
+            current.modify_date = utcnow_naive()
+            self.session.add(current)
+            self.session.flush()  # free the unique slot before rebinding
+        if target is not None and target.system_role != role:
+            target.system_role = role
+            target.modify_date = utcnow_naive()
+            self.session.add(target)
+            self.session.flush()
+        record_audit(
+            self.session,
+            action="account.bind_role",
+            user_id=actor.id,
+            entity="system_role",
+            entity_id=role.value,
+            before=before,
+            after={"account_id": account_id},
+        )
+        self.session.commit()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _check_parent(self, account: Account | None, parent_id: int, new_type: AccountType) -> None:
+        parent = self.get(parent_id)
+        if parent.type != new_type:
+            raise InvalidAccountError(message="A sub-account must have the same type as its parent")
+        if account is not None:
+            node: Account | None = parent
+            while node is not None:
+                if node.id == account.id:
+                    raise InvalidAccountError(message="An account cannot be its own ancestor")
+                node = self.session.get(Account, node.parent_id) if node.parent_id else None
+
+    def _check_type_change(self, account: Account, new_type: AccountType) -> None:
+        has_lines = self.session.exec(
+            select(JournalLine.id).where(JournalLine.account_id == account.id).limit(1)
+        ).first()
+        if has_lines is not None:
+            raise InvalidAccountError(message="The type of an account with activity cannot change")
+        if account.system_role is not None and ROLE_TYPES[account.system_role] != new_type:
+            raise InvalidAccountError(
+                message="The account is bound to a system role of another type"
+            )
+        has_children = self.session.exec(
+            select(Account.id).where(Account.parent_id == account.id).limit(1)
+        ).first()
+        if has_children is not None:
+            raise InvalidAccountError(message="Change the type of the sub-accounts first")
+
+    def _check_unique(
+        self, account: Account | None, name: str, number: str | None, parent_id: int | None
+    ) -> None:
+        if not name:
+            raise InvalidAccountError(message="An account needs a name")
+        own_id = account.id if account is not None else None
+        if number is not None:
+            other = self.session.exec(select(Account).where(Account.number == number)).first()
+            if other is not None and other.id != own_id:
+                raise AccountConflictError(message=f"Account number {number} is already in use")
+        stmt = select(Account).where(func.lower(Account.name) == name.lower())
+        stmt = stmt.where(
+            Account.parent_id.is_(None) if parent_id is None else Account.parent_id == parent_id  # type: ignore[union-attr]
+        )
+        other = self.session.exec(stmt).first()
+        if other is not None and other.id != own_id:
+            raise AccountConflictError(message=f"An account named '{name}' already exists here")
+
+    @staticmethod
+    def _snapshot(account: Account) -> dict[str, Any]:
+        return {
+            "number": account.number,
+            "name": account.name,
+            "parent_id": account.parent_id,
+            "type": account.type,
+            "detail_type": account.detail_type,
+            "is_active": account.is_active,
+            "system_role": account.system_role,
+        }
