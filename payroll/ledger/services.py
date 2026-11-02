@@ -13,7 +13,7 @@ for it and then sees the new date.
 """
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -266,6 +266,7 @@ class LedgerPostingService:
             for a in self.session.exec(
                 select(Account)
                 .where(col(Account.id).in_(account_ids))
+                .order_by(col(Account.id))
                 .with_for_update(read=True)
                 .execution_options(populate_existing=True)
             ).all()
@@ -384,27 +385,42 @@ class JournalService:
         ensure_role(actor, OWNER)
         if draft.source_type != SourceType.MANUAL:
             raise InvalidEntryError(message="Only manual entries can be created here")
-        entry = self.posting.post(draft, actor=actor)
-        self.session.commit()
-        return entry
+        return self._commit(lambda: self.posting.post(draft, actor=actor))
 
     def reverse_manual(
         self, entry_id: int, *, entry_date: date, actor: User, memo: str | None = None
     ) -> JournalEntry:
         ensure_role(actor, OWNER)
         self._check_manual(entry_id)
-        reversal = self.posting.reverse(entry_id, entry_date=entry_date, actor=actor, memo=memo)
-        self.session.commit()
-        return reversal
+        return self._commit(
+            lambda: self.posting.reverse(entry_id, entry_date=entry_date, actor=actor, memo=memo)
+        )
 
     def void_manual(
         self, entry_id: int, *, entry_date: date, actor: User, memo: str | None = None
     ) -> JournalEntry:
         ensure_role(actor, OWNER)
         self._check_manual(entry_id)
-        reversal = self.posting.void(entry_id, entry_date=entry_date, actor=actor, memo=memo)
-        self.session.commit()
-        return reversal
+        return self._commit(
+            lambda: self.posting.void(entry_id, entry_date=entry_date, actor=actor, memo=memo)
+        )
+
+    def _commit(self, work: Callable[[], JournalEntry]) -> JournalEntry:
+        """Run ``work`` and commit; on any error roll back at once.
+
+        Posting takes row locks (FOR UPDATE on the entry and counter, FOR SHARE on
+        accounts and the period lock). The routes are ``async def`` running this
+        session on the event-loop thread, and the request session is only closed
+        after the exception handlers run, so a lock left held by a failed call could
+        block a second request's synchronous query and freeze the loop.
+        """
+        try:
+            result = work()
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+        return result
 
     def _check_manual(self, entry_id: int) -> None:
         # Entries created by documents (invoices, payroll runs, ...) are reversed or

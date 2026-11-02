@@ -1,6 +1,9 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+from sqlmodel import text
+
 from payroll.ledger.models import SourceType
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 
@@ -134,14 +137,19 @@ def test_void_round_trip(owner_client, chart):
     assert {a["balance"] for a in accounts} == {"0.00"}
 
 
-def test_reverse_into_locked_period_is_409(owner_client, chart, session):
-    from sqlmodel import text
-
+@pytest.mark.parametrize("action", ["reverse", "void"])
+def test_reverse_or_void_into_locked_period_is_409(owner_client, chart, session, action):
     original = owner_client.post(URL, json=_body(chart, entry_date="2026-04-02")).json()
     session.execute(text("UPDATE period_lock SET lock_date = '2026-03-31' WHERE id = 1"))
-    response = owner_client.post(f"{URL}/{original['id']}/void", json={"entryDate": "2026-03-31"})
+    session.commit()
+    response = owner_client.post(
+        f"{URL}/{original['id']}/{action}", json={"entryDate": "2026-03-31"}
+    )
     assert response.status_code == 409
     assert response.json()["errors"][0]["type"] == "PeriodLockedError"
+    again = owner_client.get(f"{URL}/{original['id']}").json()
+    assert again["status"] == "posted"
+    assert again["reversedByEntryId"] is None
 
 
 def test_list_filters_by_date_range_and_source_type(owner_client, owner_user, chart, session):

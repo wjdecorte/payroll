@@ -16,7 +16,12 @@ import sqlalchemy as sa
 from sqlmodel import Session, select
 
 from payroll.auth.models import User
-from payroll.ledger.exceptions import PeriodLockedError, UnbalancedEntryError
+from payroll.ledger.exceptions import (
+    AlreadyReversedError,
+    InactiveAccountError,
+    PeriodLockedError,
+    UnbalancedEntryError,
+)
 from payroll.ledger.models import Account, AccountType, EntryCounter, JournalEntry, SourceType
 from payroll.ledger.services import EntryDraft, JournalService, LedgerPostingService, LineDraft
 from payroll.migrations import alembic_runner
@@ -158,3 +163,65 @@ def test_post_waits_for_lock_date_change(ledger_db, day, outcome):
     else:
         assert result["value"] == 1
         assert _committed_numbers(engine) == [1]
+
+
+def _assert_unlocked(engine, entry_id: int, account_ids: tuple[int, ...]) -> None:
+    """Another session can lock every row a failed post touched, without waiting."""
+    with engine.connect() as other:
+        for sql, params in [
+            ("SELECT id FROM journal_entry WHERE id = :id FOR UPDATE NOWAIT", {"id": entry_id}),
+            ("SELECT id FROM period_lock WHERE id = 1 FOR UPDATE NOWAIT", {}),
+            (
+                "SELECT id FROM account WHERE id = ANY(:ids) FOR UPDATE NOWAIT",
+                {"ids": list(account_ids)},
+            ),
+            ("SELECT source_type FROM entry_counter FOR UPDATE NOWAIT", {}),
+        ]:
+            other.execute(sa.text(sql), params)  # raises LockNotAvailable if still held
+        other.rollback()
+
+
+@pytest.mark.parametrize(
+    ("failure", "method"),
+    [
+        (failure, method)
+        for failure in ("locked_period", "inactive_account", "already_reversed")
+        for method in ("create_manual", "reverse_manual", "void_manual")
+        # creating an entry cannot hit an existing reversal
+        if (failure, method) != ("already_reversed", "create_manual")
+    ],
+)
+def test_failed_manual_call_releases_its_locks(ledger_db, method, failure):
+    engine, (user_id, cash, sales) = ledger_db
+    with Session(engine) as setup:
+        journals = JournalService(setup)
+        actor = setup.get(User, user_id)
+        entry_id = journals.create_manual(_draft(cash, sales, day=date(2026, 4, 2)), actor=actor).id
+        if failure == "already_reversed":
+            journals.reverse_manual(entry_id, entry_date=date(2026, 4, 3), actor=actor)
+        elif failure == "locked_period":
+            setup.execute(sa.text("UPDATE period_lock SET lock_date = '2026-03-31' WHERE id = 1"))
+        else:
+            setup.execute(
+                sa.text("UPDATE account SET is_active = false WHERE id = :id"), {"id": sales}
+            )
+        setup.commit()
+
+    expected = {
+        "locked_period": PeriodLockedError,
+        "inactive_account": InactiveAccountError,
+        "already_reversed": AlreadyReversedError,
+    }[failure]
+    day = date(2026, 3, 31) if failure == "locked_period" else date(2026, 4, 5)
+    db = Session(engine)  # deliberately neither closed nor rolled back before the check
+    try:
+        journals = JournalService(db)
+        actor = db.get(User, user_id)
+        with pytest.raises(expected):
+            if method == "create_manual":
+                journals.create_manual(_draft(cash, sales, day=day), actor=actor)
+            else:
+                getattr(journals, method)(entry_id, entry_date=day, actor=actor)
+        _assert_unlocked(engine, entry_id, (cash, sales))
+    finally:
+        db.close()
