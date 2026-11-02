@@ -1,5 +1,6 @@
 import logging
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
@@ -8,7 +9,15 @@ from payroll import app_settings
 from payroll.auth.permissions import require_reader
 from payroll.common.dependencies import get_session
 from payroll.common.middleware import LogRoute
-from payroll.reports.schemas import GeneralLedger, JournalReportEntry, Register, TrialBalance
+from payroll.reports.basis import DEFAULT_BASIS, Basis
+from payroll.reports.periods import company_today, resolve_period
+from payroll.reports.schemas import (
+    GeneralLedger,
+    JournalReportEntry,
+    Register,
+    Statement,
+    TrialBalance,
+)
 from payroll.reports.statements import ReportService
 
 logger = logging.getLogger(f"{app_settings.logger_name}.reports.router")
@@ -53,3 +62,35 @@ async def account_register(
     account_id: int, start: date, end: date, session: Session = Depends(get_session)
 ) -> Register:
     return ReportService(session).account_register(account_id, start, end)
+
+
+Comparison = Literal["previous_period", "previous_year"]
+
+
+@router.get("/profit-and-loss", response_model=Statement, summary="Profit and loss")
+async def profit_and_loss(
+    preset: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    basis: Basis = DEFAULT_BASIS,
+    compare: Comparison | None = None,
+    session: Session = Depends(get_session),
+) -> Statement:
+    """``preset`` defaults to ``custom`` when ``start``/``end`` are given, else ``this_month``."""
+    if preset is None:
+        preset = "custom" if start is not None or end is not None else "this_month"
+    period = resolve_period(preset, company_today(), start=start, end=end)
+    return ReportService(session).profit_and_loss(period, basis=basis, compare=compare)
+
+
+@router.get("/balance-sheet", response_model=Statement, summary="Balance sheet")
+async def balance_sheet(
+    as_of: date | None = Query(default=None, alias="asOf"),
+    basis: Basis = DEFAULT_BASIS,
+    compare: Comparison | None = None,
+    session: Session = Depends(get_session),
+) -> Statement:
+    """``asOf`` defaults to the company's today."""
+    return ReportService(session).balance_sheet(
+        as_of or company_today(), basis=basis, compare=compare
+    )

@@ -19,8 +19,22 @@ from sqlalchemy.sql import Select
 from sqlmodel import Session, col, select
 
 from payroll.ledger.models import NORMAL_DEBIT, Account, AccountType, JournalEntry, JournalLine
+from payroll.reports.basis import DEFAULT_BASIS, Basis, recognized_lines
 
 ZERO = Decimal("0.00")
+
+INCOME_STATEMENT_TYPES: frozenset[AccountType] = frozenset(
+    {
+        AccountType.INCOME,
+        AccountType.COGS,
+        AccountType.EXPENSE,
+        AccountType.OTHER_INCOME,
+        AccountType.OTHER_EXPENSE,
+    }
+)
+BALANCE_SHEET_TYPES: frozenset[AccountType] = frozenset(
+    {AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUITY}
+)
 
 # Deterministic report ordering: accounts by number (unnumbered last) then name;
 # lines by date, then source type and entry number (numbering is per source type).
@@ -40,12 +54,16 @@ def line_selection(
     start: date | None = None,
     end: date | None = None,
     account_id: int | None = None,
+    account_types: Iterable[AccountType] | None = None,
+    basis: Basis = DEFAULT_BASIS,
 ) -> Select:
     """The base selection of ledger lines every report is built on.
 
     Selects ``columns`` from ``journal_line`` joined to its entry and account.
     ``on_or_before`` / ``before`` / ``start`` / ``end`` restrict ``entry_date``
-    (``start`` and ``end`` inclusive); ``account_id`` restricts to one account.
+    (``start`` and ``end`` inclusive); ``account_id`` restricts to one account and
+    ``account_types`` to accounts of those types. ``basis`` applies
+    :func:`payroll.reports.basis.recognized_lines`, the one accounting-basis hook.
     """
     stmt = (
         select(*columns)
@@ -63,6 +81,11 @@ def line_selection(
         stmt = stmt.where(col(JournalEntry.entry_date) <= end)
     if account_id is not None:
         stmt = stmt.where(col(JournalLine.account_id) == account_id)
+    if account_types is not None:
+        stmt = stmt.where(col(Account.type).in_([AccountType(t).value for t in account_types]))
+    recognized = recognized_lines(basis)
+    if recognized is not None:
+        stmt = stmt.where(recognized)
     return stmt
 
 
@@ -93,6 +116,31 @@ def account_totals(session: Session, **window: Any) -> list[AccountTotals]:
         AccountTotals(account, debit or ZERO, credit or ZERO)
         for account, debit, credit in session.exec(stmt).all()
     ]
+
+
+def debit_credit_totals(session: Session, **window: Any) -> tuple[Decimal, Decimal]:
+    """Total debits and total credits of every line in the window (the trial-balance check)."""
+    debit, credit = session.exec(
+        line_selection(func.sum(JournalLine.debit), func.sum(JournalLine.credit), **window)
+    ).one()
+    return debit or ZERO, credit or ZERO
+
+
+def earnings(session: Session, **window: Any) -> Decimal:
+    """Net earnings of the window: Σ(credit − debit) over every income-statement line.
+
+    Equals income + other income − COGS − expenses − other expenses (natural
+    signs). A year-end close entry nets a closed year to zero here, because its
+    lines on the income-statement accounts offset that year's activity.
+    """
+    net = session.exec(
+        line_selection(
+            func.sum(JournalLine.credit - JournalLine.debit),
+            account_types=INCOME_STATEMENT_TYPES,
+            **window,
+        )
+    ).one()
+    return net or ZERO
 
 
 def opening_balances(

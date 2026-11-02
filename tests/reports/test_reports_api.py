@@ -96,3 +96,89 @@ def test_unknown_account_is_404(viewer_client, books):
 
 def test_missing_date_is_422(viewer_client):
     assert viewer_client.get(f"{URL}/trial-balance").status_code == 422
+
+
+@pytest.fixture
+def april_15(monkeypatch):
+    """Freeze the company's "today" at 2026-04-15 for preset resolution."""
+    from datetime import date
+
+    from payroll.reports import routers
+
+    monkeypatch.setattr(routers, "company_today", lambda: date(2026, 4, 15))
+
+
+def test_profit_and_loss_endpoint_preset_and_compare(viewer_client, books, april_15):
+    response = viewer_client.get(
+        f"{URL}/profit-and-loss?preset=last_quarter&basis=cash&compare=previous_period"
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["title"] == "Profit and Loss"
+    assert data["basis"] == "cash"
+    assert data["basisNote"].startswith("Cash and accrual agree")
+    assert data["columns"] == [
+        {"label": "2026-01-01 to 2026-03-31", "start": "2026-01-01", "end": "2026-03-31"},
+        {"label": "2025-10-01 to 2025-12-31", "start": "2025-10-01", "end": "2025-12-31"},
+    ]
+    net = data["rows"][-1]
+    assert net == {
+        "kind": "total",
+        "label": "Net Income",
+        "accountId": None,
+        "depth": 0,
+        "amounts": ["4999.25", "0.00"],
+        "change": "4999.25",
+        "pctChange": None,
+    }
+    revenue = next(r for r in data["rows"] if r["label"] == "Services Revenue")
+    assert revenue["accountId"] == books.chart["Services Revenue"].id
+    assert [i["name"] for i in data["invariants"]] == [
+        "assets_equal_liabilities_plus_equity",
+        "trial_balance_balanced",
+    ]
+    assert all(i["ok"] for i in data["invariants"])
+
+
+def test_profit_and_loss_endpoint_defaults_and_custom(viewer_client, books, april_15):
+    default = viewer_client.get(f"{URL}/profit-and-loss").json()
+    assert default["basis"] == "cash"
+    assert default["columns"][0]["start"] == "2026-04-01"  # this_month
+    custom = viewer_client.get(f"{URL}/profit-and-loss?{YEAR}&basis=accrual").json()
+    assert custom["basis"] == "accrual"
+    assert custom["rows"][-1]["amounts"] == ["4999.25"]
+    explicit = viewer_client.get(f"{URL}/profit-and-loss?preset=custom&{YEAR}").json()
+    assert explicit["rows"][-1]["amounts"] == ["4999.25"]
+
+
+def test_balance_sheet_endpoint(viewer_client, books, april_15):
+    response = viewer_client.get(f"{URL}/balance-sheet?asOf=2026-02-28&compare=previous_year")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert [c["label"] for c in data["columns"]] == ["As of 2026-02-28", "As of 2025-02-28"]
+    totals = {r["label"]: r["amounts"] for r in data["rows"]}
+    assert totals["Total Assets"] == ["14999.25", "0.00"]
+    assert totals["Liabilities + Equity"] == ["14999.25", "0.00"]
+    default = viewer_client.get(f"{URL}/balance-sheet").json()
+    assert default["columns"][0]["label"] == "As of 2026-04-15"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/profit-and-loss?preset=this_month&basis=modified_cash",
+        "/profit-and-loss?preset=this_month&compare=next_year",
+        "/profit-and-loss?preset=fortnight",
+        "/profit-and-loss?preset=custom&start=2026-01-01",
+        "/profit-and-loss?start=2026-03-01&end=2026-02-01",
+        "/balance-sheet?asOf=2026-12-31&basis=modified_cash",
+        "/balance-sheet?asOf=2026-12-31&compare=next_year",
+    ],
+)
+def test_statement_bad_params_are_422(viewer_client, books, path):
+    assert viewer_client.get(f"{URL}{path}").status_code == 422
+
+
+@pytest.mark.parametrize("path", ["/profit-and-loss", "/balance-sheet?asOf=2026-12-31"])
+def test_statements_anonymous_is_rejected(anon_client, path):
+    assert anon_client.get(f"{URL}{path}").status_code == 401

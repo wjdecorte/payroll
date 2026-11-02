@@ -7,7 +7,7 @@ import pytest
 from payroll.auth.models import User
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.default_chart import seed_default_chart
-from payroll.ledger.models import Account, JournalEntry, SourceType
+from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 
 
@@ -116,3 +116,42 @@ def books(session, owner_user, chart) -> Books:
     b.travel = b.post(date(2026, 2, 20), "Travel", chk, "99.99", "Flight")
     b.travel_reversal = posting.reverse(b.travel.id, entry_date=date(2026, 2, 21), actor=owner_user)
     return b
+
+
+@pytest.fixture
+def extra_accounts(session, owner_user, books) -> dict[str, Account]:
+    """Accounts the default chart lacks, added to ``books.chart`` (and returned).
+
+    * Materials (5000, cogs)
+    * Interest Income (7000, other_income)
+    * Penalties (8000, other_expense)
+    * Equipment (1500, asset) and Accumulated Depreciation (1510, asset, contra)
+    """
+    service = AccountService(session)
+    rows = [
+        ("Materials", AccountType.COGS, "5000"),
+        ("Interest Income", AccountType.OTHER_INCOME, "7000"),
+        ("Penalties", AccountType.OTHER_EXPENSE, "8000"),
+        ("Equipment", AccountType.ASSET, "1500"),
+        ("Accumulated Depreciation", AccountType.ASSET, "1510"),
+    ]
+    added = {
+        name: service.create(actor=owner_user, name=name, type=type_, number=number)
+        for name, type_, number in rows
+    }
+    books.chart.update(added)
+    return added
+
+
+@pytest.fixture
+def prior_year(books) -> Books:
+    """``books`` plus two 2025 entries and no year-end close.
+
+    * 2025-06-01 Business Checking / Services Revenue    3,000.00
+    * 2025-07-01 Office Expenses / Business Checking       500.00
+
+    2025 net income is 2,500.00; Business Checking at 2026-06-30 is 17,499.25.
+    """
+    books.post(date(2025, 6, 1), "Business Checking", "Services Revenue", "3000.00", "2025 sale")
+    books.post(date(2025, 7, 1), "Office Expenses", "Business Checking", "500.00", "2025 office")
+    return books

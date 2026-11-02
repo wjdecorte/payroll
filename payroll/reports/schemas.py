@@ -1,9 +1,11 @@
 from datetime import date
+from decimal import Decimal
 from typing import Literal
 
 from payroll.common.money import Money
 from payroll.common.schemas import AppBaseSchema
 from payroll.ledger.models import AccountType, SourceType
+from payroll.reports.basis import Basis
 
 
 class TrialBalanceRow(AppBaseSchema):
@@ -81,3 +83,43 @@ class JournalReportEntry(AppBaseSchema):
     total_debit: Money
     total_credit: Money
     lines: list[JournalReportLine]
+
+
+class ColumnHeader(AppBaseSchema):
+    """One amount column: the period it covers (a balance sheet's runs fiscal-year start to as-of)."""
+
+    label: str
+    start: date
+    end: date
+
+
+class StatementRow(AppBaseSchema):
+    """A statement line; ``amounts`` has one value per column (empty for a section heading).
+
+    ``change`` / ``pct_change`` compare the first column with the second and are
+    ``None`` without a comparison column; ``pct_change`` is also ``None`` when
+    the comparison amount is zero.
+    """
+
+    kind: Literal["section", "account", "subtotal", "total"]
+    label: str
+    account_id: int | None
+    depth: int
+    amounts: list[Money]
+    change: Money | None
+    pct_change: Decimal | None
+
+
+class Invariant(AppBaseSchema):
+    name: str
+    ok: bool
+    detail: str
+
+
+class Statement(AppBaseSchema):
+    title: str
+    basis: Basis
+    columns: list[ColumnHeader]
+    rows: list[StatementRow]
+    invariants: list[Invariant]
+    basis_note: str
