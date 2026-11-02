@@ -94,3 +94,14 @@ class JournalEntryRead(AppBaseSchema):
     total_debit: Money
     total_credit: Money
     lines: list[JournalLineRead]
+
+
+class PeriodLockRead(AppBaseSchema):
+    lock_date: date | None
+
+
+class PeriodLockSet(AppBaseSchema):
+    """Body of a lock-date change. ``lockDate`` is required; null clears the lock."""
+
+    lock_date: date | None
+    password: str = Field(min_length=1, repr=False, description="The signed-in owner's password")

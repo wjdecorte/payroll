@@ -61,3 +61,9 @@ class EntryNotFoundError(AppBaseError):
 class AlreadyReversedError(AppBaseError):
     message: str = "This journal entry has already been reversed"
     http_code: int = 409
+
+
+@dataclass
+class LockPasswordError(AppBaseError):
+    message: str = "The password was not correct"
+    http_code: int = 403

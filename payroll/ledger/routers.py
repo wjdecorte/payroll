@@ -1,8 +1,12 @@
 import logging
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from sqlmodel import Session
 
 from payroll import app_settings
@@ -12,6 +16,7 @@ from payroll.common.dependencies import get_session
 from payroll.common.middleware import LogRoute
 from payroll.ledger.accounts import AccountNode, AccountService
 from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
+from payroll.ledger.period_lock import PeriodLockService
 from payroll.ledger.schemas import (
     ZERO,
     AccountCreate,
@@ -21,6 +26,8 @@ from payroll.ledger.schemas import (
     JournalEntryAction,
     JournalEntryCreate,
     JournalEntryRead,
+    PeriodLockRead,
+    PeriodLockSet,
     SystemRoleBind,
 )
 from payroll.ledger.services import EntryDraft, JournalService, LineDraft
@@ -311,3 +318,63 @@ async def void_journal_entry(
         entry_id, entry_date=payload.entry_date, actor=actor, memo=payload.memo
     )
     return _entry_read(svc, reversal)
+
+
+# ----------------------------------------------------------------------
+# Period lock
+# ----------------------------------------------------------------------
+
+
+class SecretBodyRoute(APIRoute):
+    """A route whose request body holds a password.
+
+    Unlike ``LogRoute`` it never logs the body, and a validation failure answers
+    with the problem locations only: FastAPI's default 422 echoes each offending
+    ``input`` (here the whole body, password included).
+    """
+
+    def get_route_handler(self) -> Callable:
+        original_handler = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            try:
+                return await original_handler(request)
+            except RequestValidationError as exc:
+                errors = [
+                    {"type": e["type"], "loc": e["loc"], "msg": e["msg"]} for e in exc.errors()
+                ]
+                return JSONResponse(status_code=422, content={"detail": errors})
+
+        return handler
+
+
+period_lock_router = APIRouter(
+    tags=["ledger"],
+    route_class=SecretBodyRoute,
+    dependencies=[Depends(require_reader)],
+)
+
+
+@period_lock_router.get(
+    "/period-lock", response_model=PeriodLockRead, summary="The current period lock date"
+)
+async def get_period_lock(session: Session = Depends(get_session)) -> PeriodLockRead:
+    return PeriodLockRead(lock_date=PeriodLockService(session).get())
+
+
+@period_lock_router.put(
+    "/period-lock",
+    response_model=PeriodLockRead,
+    summary="Move or clear the period lock date (needs the owner's password)",
+)
+async def set_period_lock(
+    payload: PeriodLockSet,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+) -> PeriodLockRead:
+    svc = PeriodLockService(session)
+    svc.set(payload.lock_date, password=payload.password, actor=actor)
+    return PeriodLockRead(lock_date=svc.get())
+
+
+router.include_router(period_lock_router)
