@@ -4,7 +4,7 @@ import calendar
 from collections.abc import Iterable, Sequence
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from sqlmodel import Session, select
 
@@ -130,11 +130,13 @@ class ReportService:
         elif compare == "previous_year":
             windows.append(previous_year(period))
         per_column = [
+            # A year-end close inside the window would net every account to zero.
             self._natural_totals(
                 basis,
                 queries.INCOME_STATEMENT_TYPES,
                 start=window.start,
                 end=window.end,
+                exclude_sources=queries.PNL_EXCLUDED_SOURCES,
             )
             for window in windows
         ]
@@ -171,7 +173,7 @@ class ReportService:
                 for w in windows
             ],
             rows=rows,
-            invariants=self._invariants(ends, basis, assets, liabilities_equity),
+            invariants=self._invariants(ends, assets, liabilities_equity),
             basis_note=BASIS_NOTE,
         )
 
@@ -198,7 +200,7 @@ class ReportService:
                 for end in ends
             ],
             rows=rows,
-            invariants=self._invariants(ends, basis, assets, liabilities_equity),
+            invariants=self._invariants(ends, assets, liabilities_equity),
             basis_note=BASIS_NOTE,
         )
 
@@ -257,7 +259,7 @@ class ReportService:
         return rows, assets, liabilities_equity
 
     def _natural_totals(
-        self, basis: Basis, types: Iterable[AccountType], **window: date
+        self, basis: Basis, types: Iterable[AccountType], **window: Any
     ) -> dict[int, Decimal]:
         """Natural-sign net per account with lines in the window (presence = activity)."""
         return {
@@ -314,14 +316,22 @@ class ReportService:
         return [_row("section", label, []), *rows, _row(total_kind, total_label, total)], total
 
     def _invariants(
-        self, ends: list[date], basis: Basis, assets: Amounts, liabilities_equity: Amounts
+        self, ends: list[date], assets: Amounts, liabilities_equity: Amounts
     ) -> list[Invariant]:
-        """Report-level checks, computed every time and reported (never raised)."""
+        """Report-level checks, computed every time and reported (never raised).
+
+        The trial-balance check reads the ledger as posted (no basis predicate).
+        """
         balance = [
             (end, a, le) for end, a, le in zip(ends, assets, liabilities_equity, strict=True)
         ]
         trial = [
-            (end, *queries.debit_credit_totals(self.session, on_or_before=end, basis=basis))
+            (
+                end,
+                *queries.debit_credit_totals(
+                    self.session, on_or_before=end, basis=queries.LEDGER_BASIS
+                ),
+            )
             for end in ends
         ]
         return [
@@ -351,7 +361,9 @@ class ReportService:
         """Each account's net balance as of ``as_of`` in exactly one of debit / credit."""
         nets: dict[int, tuple[Account, Decimal]] = {
             t.account.id: (t.account, t.debit - t.credit)
-            for t in queries.account_totals(self.session, on_or_before=as_of)
+            for t in queries.account_totals(
+                self.session, on_or_before=as_of, basis=queries.LEDGER_BASIS
+            )
         }
         if include_zero:
             for account in AccountService(self.session).list(include_inactive=True):

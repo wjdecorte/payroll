@@ -168,8 +168,8 @@ def test_balance_sheet_year_two_includes_unclosed_prior_year_earnings(session, p
     assert all(i.ok for i in bs.invariants)
 
 
-def test_balance_sheet_balances_after_year_end_close_entry(session, prior_year):
-    books = prior_year
+def _close_2025(books) -> None:
+    """Post the 2025 year-end close of ``prior_year``: net income 2,500.00 to Retained Earnings."""
     chart = books.chart
     books.posting.post(
         EntryDraft(
@@ -184,6 +184,10 @@ def test_balance_sheet_balances_after_year_end_close_entry(session, prior_year):
         ),
         actor=books.owner,
     )
+
+
+def test_balance_sheet_balances_after_year_end_close_entry(session, prior_year):
+    _close_2025(prior_year)
     bs = ReportService(session).balance_sheet(date(2026, 6, 30))
     amounts = _amounts(bs)
     assert "Prior Years Earnings" not in amounts  # nets to zero once closed
@@ -330,21 +334,45 @@ def test_basis_default_is_cash_and_accrual_equal_in_m1(session, books):
     assert bs_cash.rows == bs_accrual.rows
 
 
-def test_line_selection_applies_the_basis_hook(session, books, monkeypatch):
-    """A predicate from the basis hook narrows every report query."""
+def test_cash_predicate_narrows_statements_but_not_ledger_reports(session, books, monkeypatch):
+    """The basis hook reaches the P&L and Balance Sheet; ledger-as-is reports ignore it."""
     from sqlmodel import col
 
     from payroll.ledger.models import JournalEntry
 
-    def only_january(basis):
-        return col(JournalEntry.entry_date) < date(2026, 2, 1)
+    service = ReportService(session)
+    chk = books.chart["Business Checking"].id
+    end = date(2026, 12, 31)
+    before = (
+        service.trial_balance(end),
+        service.account_register(chk, YEAR.start, YEAR.end),
+        service.general_ledger(YEAR.start, YEAR.end),
+        service.journal(YEAR.start, YEAR.end),
+        service.balance_sheet(end).invariants[1],
+    )
 
-    monkeypatch.setattr(queries, "recognized_lines", only_january)
-    pnl = ReportService(session).profit_and_loss(YEAR, basis=Basis.ACCRUAL)
-    assert _amounts(pnl)["Net Income"] == [D("2799.50")]
-    tb = ReportService(session).trial_balance(date(2026, 12, 31))
-    # Checking 12,799.50 + Software 1,200.50 (net per account)
-    assert tb.total_debit == D("14000.00")
+    def cash_only_january(basis):
+        if basis == Basis.CASH:
+            return col(JournalEntry.entry_date) < date(2026, 2, 1)
+        return None
+
+    monkeypatch.setattr(queries, "recognized_lines", cash_only_january)
+    assert _amounts(service.profit_and_loss(YEAR))["Net Income"] == [D("2799.50")]
+    assert _amounts(service.profit_and_loss(YEAR, basis=Basis.ACCRUAL))["Net Income"] == [
+        D("4999.25")
+    ]
+    bs = service.balance_sheet(end)
+    assert _amounts(bs)["Business Checking"] == [D("12799.50")]
+    after = (
+        service.trial_balance(end),
+        service.account_register(chk, YEAR.start, YEAR.end),
+        service.general_ledger(YEAR.start, YEAR.end),
+        service.journal(YEAR.start, YEAR.end),
+        bs.invariants[1],
+    )
+    assert after == before  # the A = L + E check follows the chosen basis; TB does not
+    assert bs.invariants[1].name == "trial_balance_balanced"
+    assert bs.invariants[1].detail == "As of 2026-12-31: debits 18200.73 = credits 18200.73"
 
 
 def test_invariant_failure_is_reported_not_raised(session, books, monkeypatch):
@@ -365,3 +393,36 @@ def test_invariant_failure_is_reported_not_raised(session, books, monkeypatch):
     assert "2026-12-31" in failed["trial_balance_balanced"].detail
     pnl = ReportService(session).profit_and_loss(YEAR)
     assert _invariants(pnl)["trial_balance_balanced"] is False
+
+
+# ----------------------------------------------------------------------
+# Year-end close
+# ----------------------------------------------------------------------
+
+
+def test_pnl_for_a_closed_year_ignores_the_close_entry(session, prior_year):
+    _close_2025(prior_year)
+    service = ReportService(session)
+    pnl = service.profit_and_loss(Period(date(2025, 1, 1), date(2025, 12, 31), "Last year"))
+    amounts = _amounts(pnl)
+    assert amounts["Services Revenue"] == [D("3000.00")]
+    assert amounts["Office Expenses"] == [D("500.00")]
+    assert amounts["Net Income"] == [D("2500.00")]
+    assert all(i.ok for i in pnl.invariants)
+    bs = service.balance_sheet(date(2025, 12, 31))
+    bs_amounts = _amounts(bs)
+    assert bs_amounts["Retained Earnings"] == [D("2500.00")]
+    assert "Net Income" not in bs_amounts  # closed into Retained Earnings on the same day
+    # Business Checking 3,000.00 - 500.00 (the opening balance is dated 2026)
+    assert bs_amounts["Total Assets"] == bs_amounts["Liabilities + Equity"] == [D("2500.00")]
+    assert all(i.ok for i in bs.invariants)
+
+
+def test_pnl_compare_previous_year_shows_the_closed_years_figures(session, prior_year):
+    _close_2025(prior_year)
+    pnl = ReportService(session).profit_and_loss(YEAR, compare="previous_year")
+    assert pnl.columns[1].label == "2025-01-01 to 2025-12-31"
+    rows = {r.label: (r.amounts, r.change, r.pct_change) for r in pnl.rows if r.amounts}
+    assert rows["Services Revenue"] == ([D("6500.00"), D("3000.00")], D("3500.00"), D("116.7"))
+    assert rows["Office Expenses"] == ([D("300.25"), D("500.00")], D("-199.75"), D("-40.0"))
+    assert rows["Net Income"] == ([D("4999.25"), D("2500.00")], D("2499.25"), D("100.0"))
