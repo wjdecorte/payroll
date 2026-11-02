@@ -39,7 +39,10 @@ router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader
 
 JOURNAL_PAGE_SIZE = 50
 BLANK_ROWS = 2
-_AMOUNT = re.compile(r"^\$?\s*(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?$")
+MAX_ROWS = 200
+MAX_PAGE = 100000
+MAX_ACCOUNT_ID = 2**31 - 1  # integer primary key range
+_AMOUNT = re.compile(r"^\$?\s*([0-9]{1,3}(,[0-9]{3})+|[0-9]+)(\.[0-9]{1,2})?$")
 ZERO = Decimal("0")
 
 
@@ -71,7 +74,7 @@ async def journal_list(
     page: int = 1,
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
-    page = max(page, 1)
+    page = min(max(page, 1), MAX_PAGE)
     service = JournalService(session)
     try:
         start_date = _parse_date(start, "Start")
@@ -188,17 +191,18 @@ def _build_draft(values: dict, rows: list[dict]) -> EntryDraft:
     lines: list[LineDraft] = []
     failed = False
     for number, row in enumerate(rows, start=1):
-        if not any((row["account"], row["debit"], row["credit"])):
-            continue  # a blank (or memo-only) row is ignored
         problem = None
         debit = credit = ZERO
         try:
             debit, credit = parse_amount(row["debit"]), parse_amount(row["credit"])
         except ValueError as exc:
             problem = str(exc)
+        if problem is None and not row["account"] and not debit and not credit:
+            continue  # no account and no amount (blank or zero; memo ignored): not a line
         account_id = None
         if problem is None:
-            if not row["account"].isdigit():
+            account = row["account"]
+            if not (account.isascii() and account.isdigit()) or int(account) > MAX_ACCOUNT_ID:
                 problem = "Choose an account"
             elif debit and credit:
                 problem = "Enter either a debit or a credit, not both"
@@ -226,6 +230,9 @@ async def journal_create(
     values = {"entry_date": _text(form.get("entry_date")), "memo": _text(form.get("memo"))}
     rows = _rows_from_form(form)
     try:
+        if len(rows) > MAX_ROWS:
+            rows = rows[:MAX_ROWS]
+            raise InvalidEntryError(message=f"An entry can have at most {MAX_ROWS} lines")
         draft = _build_draft(values, rows)
         entry = JournalService(session).create_manual(draft, actor=actor)
     except AppBaseError as exc:

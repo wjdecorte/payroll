@@ -265,3 +265,44 @@ def test_pages_are_csp_safe(owner_client, accts, session, owner_user):
             assert "style" not in attrs, (url, tag)
             if tag == "script":
                 assert attrs.get("src"), (url, attrs)
+
+
+def test_unicode_and_huge_inputs_never_500(owner_client, accts):
+    cash, rent, _ = accts
+    sup = _create(owner_client, accts, line_account=["²", str(cash.id)])
+    assert sup.status_code == 422 and "Choose an account" in sup.text
+    huge = _create(owner_client, accts, line_account=["9" * 25, str(cash.id)])
+    assert huge.status_code == 422 and "Choose an account" in huge.text
+    assert owner_client.get("/journal?page=99999999999999999999").status_code == 200
+    arabic = _create(owner_client, accts, line_debit=["١٠", ""])
+    assert arabic.status_code == 422 and "Line 1" in arabic.text
+    big = _create(
+        owner_client,
+        accts,
+        line_debit=["1000000000000.00", ""],
+        line_credit=["", "1000000000000.00"],
+    )
+    assert big.status_code == 422 and "too large" in big.text
+
+
+def test_too_many_rows_rejected_and_zero_row_ignored(owner_client, accts):
+    cash, rent, _ = accts
+    n = 201
+    many = _create(
+        owner_client,
+        accts,
+        line_account=[str(cash.id)] * n,
+        line_debit=["1"] * n,
+        line_credit=[""] * n,
+        line_memo=[""] * n,
+    )
+    assert many.status_code == 422 and "at most 200 lines" in many.text
+    zero = _create(
+        owner_client,
+        accts,
+        line_account=[str(rent.id), "", str(cash.id)],
+        line_debit=["100", "0", ""],
+        line_credit=["", "0.00", "100"],
+        line_memo=["", "", ""],
+    )
+    assert zero.status_code == 303
