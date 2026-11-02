@@ -7,7 +7,7 @@ force them with ``SET CONSTRAINTS ALL IMMEDIATE``, which runs the pending checks
 exactly as COMMIT would.
 """
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -54,6 +54,7 @@ def _line(session: Session, entry: JournalEntry, account: Account, n: int, debit
 
 def _commit(session: Session) -> None:
     session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+    session.execute(text("SET CONSTRAINTS ALL DEFERRED"))
 
 
 @pytest.fixture
@@ -134,7 +135,7 @@ def test_line_truncate_rejected(session, posted):
 
 
 def test_entry_update_other_than_void_rejected(session, posted):
-    with pytest.raises(DBAPIError, match="journal_entry"):
+    with pytest.raises(DBAPIError, match="immutable: UPDATE"):
         session.execute(
             text("UPDATE journal_entry SET memo = 'changed' WHERE id = :e"), {"e": posted.id}
         )
@@ -151,7 +152,7 @@ def test_entry_status_posted_to_void_allowed(session, posted):
 
 
 def test_void_with_other_change_rejected(session, posted):
-    with pytest.raises(DBAPIError, match="journal_entry"):
+    with pytest.raises(DBAPIError, match="immutable: UPDATE"):
         session.execute(
             text("UPDATE journal_entry SET status = 'void', memo = 'x' WHERE id = :e"),
             {"e": posted.id},
@@ -162,19 +163,19 @@ def test_entry_void_back_to_posted_rejected(session, posted):
     session.execute(
         text("UPDATE journal_entry SET status = 'void' WHERE id = :e"), {"e": posted.id}
     )
-    with pytest.raises(DBAPIError, match="journal_entry"):
+    with pytest.raises(DBAPIError, match="immutable: UPDATE"):
         session.execute(
             text("UPDATE journal_entry SET status = 'posted' WHERE id = :e"), {"e": posted.id}
         )
 
 
 def test_entry_delete_rejected(session, posted):
-    with pytest.raises(DBAPIError, match="journal_entry"):
+    with pytest.raises(DBAPIError, match="immutable: DELETE"):
         session.execute(text("DELETE FROM journal_entry WHERE id = :e"), {"e": posted.id})
 
 
 def test_entry_truncate_rejected(session, posted):
-    with pytest.raises(DBAPIError, match="journal_entry"):
+    with pytest.raises(DBAPIError, match="immutable: TRUNCATE"):
         session.execute(text("TRUNCATE journal_entry CASCADE"))
 
 
@@ -226,3 +227,22 @@ def test_account_with_lines_cannot_be_deleted(session, posted, cash):
 def test_period_lock_row_seeded(session):
     row = session.execute(text("SELECT id, lock_date FROM period_lock")).all()
     assert row == [(1, None)]
+
+
+def test_entry_without_lines_fails_at_commit(session, entry):
+    with pytest.raises(DBAPIError, match="at least 2 lines"):
+        session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+
+
+def test_void_through_orm_with_modify_date_succeeds(session, posted):
+    posted.status = "void"
+    posted.modify_date = datetime.utcnow()
+    session.flush()
+    session.refresh(posted)
+    assert posted.status == "void"
+
+
+def test_orm_memo_change_rejected(session, posted):
+    posted.memo = "changed"
+    with pytest.raises(DBAPIError, match="immutable: UPDATE"):
+        session.flush()

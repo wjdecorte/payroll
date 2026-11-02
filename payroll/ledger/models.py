@@ -114,6 +114,11 @@ class JournalEntry(AppBaseModel, table=True):
     )
     posted_at: datetime = Field(default_factory=utcnow, nullable=False)
     posted_by: int = Field(foreign_key="app_user.id", ondelete="RESTRICT")
+    # Stamped by a database trigger on insert (txid_current()); lets the database
+    # reject lines added to an entry after the transaction that created it.
+    created_txid: int | None = Field(
+        default=None, sa_column=sa.Column(sa.BigInteger, nullable=False)
+    )
 
 
 class JournalLine(AppBaseModel, table=True):

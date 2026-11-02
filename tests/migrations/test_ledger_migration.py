@@ -14,11 +14,16 @@ LEDGER_TRIGGERS = {
     "journal_line_no_truncate",
     "journal_entry_guard",
     "journal_entry_no_truncate",
+    "journal_entry_has_lines",
+    "journal_entry_stamp_txid",
+    "journal_line_entry_is_new",
 }
 LEDGER_FUNCTIONS = {
     "journal_line_check_balanced",
     "journal_line_reject_change",
     "journal_entry_guard_change",
+    "journal_entry_stamp_txid",
+    "journal_line_check_entry_new",
 }
 
 

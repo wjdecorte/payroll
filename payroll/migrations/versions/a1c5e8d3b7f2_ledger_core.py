@@ -7,8 +7,9 @@ Create Date: 2026-11-02 00:00:00.000000
 New tables only. Integrity is enforced in the database:
   * journal_line: one-sided positive amounts (CHECK); a deferred constraint trigger
     rejects, at COMMIT, any entry with fewer than 2 lines or debits != credits;
-    UPDATE, DELETE and TRUNCATE are rejected (append-only).
-  * journal_entry: only the status change posted -> void is allowed; DELETE and
+    UPDATE, DELETE and TRUNCATE are rejected (append-only); INSERT is allowed only in the
+    transaction that created the entry (created_txid).
+  * journal_entry: only the status change posted -> void (plus modify_date) is allowed; DELETE and
     TRUNCATE are rejected.
 The downgrade drops the triggers, the functions and then the tables (all ledger data).
 """
@@ -76,6 +77,7 @@ def upgrade() -> None:
         sa.Column("reverses_entry_id", sa.Integer(), nullable=True),
         sa.Column("posted_at", sa.DateTime(), nullable=False),
         sa.Column("posted_by", sa.Integer(), nullable=False),
+        sa.Column("created_txid", sa.BigInteger(), nullable=False),
         sa.CheckConstraint("status IN ('posted', 'void')", name="ck_journal_entry_status"),
         sa.ForeignKeyConstraint(["reverses_entry_id"], ["journal_entry.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["posted_by"], ["app_user.id"], ondelete="RESTRICT"),
@@ -134,19 +136,24 @@ def upgrade() -> None:
         """
         CREATE OR REPLACE FUNCTION journal_line_check_balanced() RETURNS trigger AS $$
         DECLARE
+            eid integer;
             n integer;
             d numeric;
             c numeric;
         BEGIN
+            IF TG_TABLE_NAME = 'journal_entry' THEN
+                eid := NEW.id;
+            ELSE
+                eid := NEW.entry_id;
+            END IF;
             SELECT count(*), coalesce(sum(debit), 0), coalesce(sum(credit), 0)
-              INTO n, d, c FROM journal_line WHERE entry_id = NEW.entry_id;
+              INTO n, d, c FROM journal_line WHERE entry_id = eid;
             IF n < 2 THEN
-                RAISE EXCEPTION 'journal entry % must have at least 2 lines (has %)',
-                    NEW.entry_id, n;
+                RAISE EXCEPTION 'journal entry % must have at least 2 lines (has %)', eid, n;
             END IF;
             IF d <> c THEN
                 RAISE EXCEPTION 'journal entry % is unbalanced: debits % <> credits %',
-                    NEW.entry_id, d, c;
+                    eid, d, c;
             END IF;
             RETURN NULL;
         END;
@@ -157,6 +164,48 @@ def upgrade() -> None:
         "CREATE CONSTRAINT TRIGGER journal_line_balanced AFTER INSERT ON journal_line "
         "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
         "EXECUTE FUNCTION journal_line_check_balanced()"
+    )
+    op.execute(
+        "CREATE CONSTRAINT TRIGGER journal_entry_has_lines AFTER INSERT ON journal_entry "
+        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
+        "EXECUTE FUNCTION journal_line_check_balanced()"
+    )
+    # Lines may only be added in the transaction that created their entry. created_txid
+    # is the top-level txid (64-bit, same inside savepoints), stamped by a trigger.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION journal_entry_stamp_txid() RETURNS trigger AS $$
+        BEGIN
+            NEW.created_txid := txid_current();
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER journal_entry_stamp_txid BEFORE INSERT ON journal_entry "
+        "FOR EACH ROW EXECUTE FUNCTION journal_entry_stamp_txid()"
+    )
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION journal_line_check_entry_new() RETURNS trigger AS $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM journal_entry
+                 WHERE id = NEW.entry_id AND created_txid = txid_current()
+            ) THEN
+                RAISE EXCEPTION
+                    'journal_line can only be added in the transaction that created entry %',
+                    NEW.entry_id;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER journal_line_entry_is_new BEFORE INSERT ON journal_line "
+        "FOR EACH ROW EXECUTE FUNCTION journal_line_check_entry_new()"
     )
 
     op.execute(
@@ -183,7 +232,7 @@ def upgrade() -> None:
         BEGIN
             IF TG_OP = 'UPDATE'
                AND OLD.status = 'posted' AND NEW.status = 'void'
-               AND (to_jsonb(NEW) - 'status') = (to_jsonb(OLD) - 'status') THEN
+               AND (to_jsonb(NEW) - 'status' - 'modify_date') = (to_jsonb(OLD) - 'status' - 'modify_date') THEN
                 RETURN NEW;
             END IF;
             RAISE EXCEPTION
@@ -204,6 +253,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER journal_line_entry_is_new ON journal_line")
+    op.execute("DROP FUNCTION journal_line_check_entry_new()")
+    op.execute("DROP TRIGGER journal_entry_stamp_txid ON journal_entry")
+    op.execute("DROP FUNCTION journal_entry_stamp_txid()")
+    op.execute("DROP TRIGGER journal_entry_has_lines ON journal_entry")
     op.execute("DROP TRIGGER journal_entry_no_truncate ON journal_entry")
     op.execute("DROP TRIGGER journal_entry_guard ON journal_entry")
     op.execute("DROP FUNCTION journal_entry_guard_change()")
