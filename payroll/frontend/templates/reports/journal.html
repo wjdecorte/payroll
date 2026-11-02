@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} Report · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary"><i class="bi bi-bar-chart me-2"></i>{{ title }}</div>
+    <div class="card-body">
+      {% include "reports/_picker.html" %}
+      {% if error %}
+      <div class="alert alert-danger" role="alert">{{ error }}</div>
+      {% else %}
+      <p class="text-muted small">{{ period.start }} to {{ period.end }}</p>
+      {% for e in entries %}
+      <table class="table table-sm align-middle{% if e.is_void %} text-muted{% endif %}">
+        <thead>
+          <tr class="table-light">
+            <th colspan="2">{{ e.entry_date }} · <a href="/journal/{{ e.id }}">#{{ e.entry_no }}</a> · {{ e.source_type.value | replace("_", " ") | capitalize }}
+              {% if e.is_void %}<span class="badge bg-secondary">Void</span>{% endif %}
+              {% if e.is_reversal %}<span class="badge bg-info">Reversal</span>{% endif %}
+              {% if e.memo %} · {{ e.memo }}{% endif %}</th>
+            <th class="num">Debit</th><th class="num">Credit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in e.lines %}
+          <tr>
+            <td><a href="/accounts/{{ line.account_id }}/register?start={{ period.start }}&amp;end={{ period.end }}">{{ line.account_number or "" }} {{ line.account_name }}</a></td>
+            <td>{{ line.memo or "" }}</td>
+            <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
+            <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><td colspan="2">Total</td><td class="num">{{ e.total_debit | currency }}</td><td class="num">{{ e.total_credit | currency }}</td></tr>
+        </tfoot>
+      </table>
+      {% else %}
+      <p class="text-muted">No entries in this period.</p>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
