@@ -306,3 +306,11 @@ def test_too_many_rows_rejected_and_zero_row_ignored(owner_client, accts):
         line_memo=["", "", ""],
     )
     assert zero.status_code == 303
+
+
+def test_enormous_digit_strings_are_form_errors(owner_client, accts):
+    cash, _, _ = accts
+    acct = _create(owner_client, accts, line_account=["7" * 5000, str(cash.id)])
+    assert acct.status_code == 422 and "Choose an account" in acct.text
+    amount = _create(owner_client, accts, line_debit=["1" * 5000, ""])
+    assert amount.status_code == 422 and "Line 1" in amount.text

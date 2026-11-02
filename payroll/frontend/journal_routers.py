@@ -55,7 +55,7 @@ def parse_amount(raw: str) -> Decimal:
     text = raw.strip()
     if not text:
         return ZERO
-    if not _AMOUNT.match(text):
+    if len(text) > 40 or not _AMOUNT.match(text):
         raise ValueError("Enter an amount like 1234.56 (at most 2 decimal places)")
     return Decimal(text.lstrip("$").strip().replace(",", ""))
 
@@ -202,7 +202,11 @@ def _build_draft(values: dict, rows: list[dict]) -> EntryDraft:
         account_id = None
         if problem is None:
             account = row["account"]
-            if not (account.isascii() and account.isdigit()) or int(account) > MAX_ACCOUNT_ID:
+            if (
+                len(account) > 10
+                or not (account.isascii() and account.isdigit())
+                or int(account) > MAX_ACCOUNT_ID
+            ):
                 problem = "Choose an account"
             elif debit and credit:
                 problem = "Enter either a debit or a credit, not both"
