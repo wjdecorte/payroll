@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Ledger Settings · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% if saved %}<div class="alert alert-success py-2" role="status">{{ saved }}</div>{% endif %}
+  <div class="row g-3">
+    <div class="col-lg-6">
+      <div class="card">
+        <div class="card-header bg-primary">System accounts</div>
+        <div class="card-body">
+          {% if role_error %}<div class="alert alert-danger py-2" role="alert">{{ role_error }}</div>{% endif %}
+          {% if is_owner %}
+          <form method="post" action="/settings/ledger/roles">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% for r in roles %}
+            <div class="mb-3">
+              <label class="form-label" for="role_{{ r.value }}">{{ r.label }}</label>
+              <select class="form-select" id="role_{{ r.value }}" name="role_{{ r.value }}">
+                <option value="">Not set</option>
+                {% for o in r.options %}
+                <option value="{{ o.id }}"{% if r.selected == o.id | string %} selected{% endif %}>{{ o.label }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">Needs a {{ r.type }} account.</div>
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-brand">Save system accounts</button>
+          </form>
+          {% else %}
+          <dl class="mb-0">
+            {% for r in roles %}
+            <dt>{{ r.label }}</dt>
+            <dd>{% for o in r.options if r.selected == o.id | string %}{{ o.label }}{% else %}Not set{% endfor %}</dd>
+            {% endfor %}
+          </dl>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="card">
+        <div class="card-header bg-primary">Period lock</div>
+        <div class="card-body">
+          <p>Entries dated on or before the lock date cannot be posted or voided.
+            Current lock date: <strong>{{ lock_date or "none" }}</strong></p>
+          {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+          {% if is_owner %}
+          <form method="post" action="/settings/ledger/lock" autocomplete="off">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mb-3">
+              <label class="form-label" for="lock_date">Lock date</label>
+              <input class="form-control" type="date" id="lock_date" name="lock_date" value="{{ lock_value }}">
+              <div class="form-text">Leave empty to remove the lock.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="password">Your password</label>
+              <input class="form-control" type="password" id="password" name="password" autocomplete="current-password" required maxlength="128">
+            </div>
+            <button type="submit" class="btn btn-brand">Save lock date</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
