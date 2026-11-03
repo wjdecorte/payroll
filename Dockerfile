@@ -17,7 +17,7 @@ WORKDIR /app
 # libpango-1.0-0 / libpangoft2-1.0-0 are WeasyPrint's native libraries (PDF export)
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends gcc build-essential curl \
-       libpango-1.0-0 libpangoft2-1.0-0 \
+       libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
