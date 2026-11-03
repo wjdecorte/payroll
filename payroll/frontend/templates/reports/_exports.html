@@ -1,0 +1,6 @@
+{# Download links for the report on screen: same query string, so the file equals the page. #}
+<p class="mb-2 no-print small">
+  Download:
+  <a href="{{ picker.action }}.csv{% if export_query %}?{{ export_query }}{% endif %}">CSV</a> ·
+  <a href="{{ picker.action }}.pdf{% if export_query %}?{{ export_query }}{% endif %}">PDF</a>
+</p>

@@ -9,6 +9,43 @@ from a single container, backed by PostgreSQL. Money is handled as `Decimal`
 (stored as `NUMERIC`), secrets at rest are encrypted with AES-256-GCM, and every
 state change is written to an append-only audit log.
 
+## Books (M1): ledger and reports
+
+Release 2.1.0 adds a double-entry ledger next to the payroll calculator. Money is
+`Decimal`/`NUMERIC` everywhere; balances are always computed from journal lines and
+never stored. Only the owner can change the books; accountants and viewers read
+everything, including every report.
+
+| Page | Purpose |
+|------|---------|
+| `/accounts` | Chart of accounts: add, edit, deactivate, per-account register |
+| `/journal` | Manual journal entries (post, reverse, void) and the entry detail |
+| `/reports` | Profit and Loss, Balance Sheet, Trial Balance, General Ledger, Journal, with presets (this/last month, quarter, year, YTD, trailing 12), custom ranges, comparison columns and drill-down |
+| `/settings/ledger` | System account roles and the period lock (changing it needs your password) |
+
+Every report has CSV and PDF export (`.csv` / `.pdf` on the report URL). PDFs are
+rendered by WeasyPrint, which needs the Pango native libraries (`libpango-1.0-0`,
+`libpangoft2-1.0-0`, `libharfbuzz-subset0`; installed in the Docker image and CI). On macOS:
+`brew install pango`. Without them the PDF routes fail but everything else works (the PDF
+tests skip).
+
+"Today" and period boundaries use `COMPANY_TIMEZONE` (default `America/New_York`).
+Reports default to cash basis with an accrual toggle; figures are identical until receivables exist (M2).
+
+### Ledger CLI
+
+```bash
+uv run python -m payroll.ledger.cli seed-chart --email you@example.com     # default chart, idempotent
+uv run python -m payroll.ledger.cli seed-demo --email you@example.com      # fictitious 2026 year
+# in Docker:
+docker compose exec api python -m payroll.ledger.cli seed-chart --email you@example.com
+```
+
+The actor is an existing owner (looked up by email; nothing is prompted). `seed-demo`
+posts about forty balanced 2026 entries (with reversals and a void) so the reports have
+something to show. It refuses to run when any journal entry exists unless `--force`, and
+even then only adds: never run it against real books.
+
 ## Authentication and roles
 
 Every page and API route needs a signed-in user; only `/login`, the MFA pages,
@@ -29,6 +66,9 @@ Every page and API route needs a signed-in user; only `/login`, the MFA pages,
 ## Quick start (local)
 
 You need Python 3.14, [uv](https://docs.astral.sh/uv/), Docker, and a Postgres database.
+PDF export uses WeasyPrint, which needs the native Pango libraries: `brew install pango` on macOS,
+`apt-get install libpango-1.0-0 libpangoft2-1.0-0` on Debian/Ubuntu (the Docker image and CI install them;
+without them the PDF tests skip and the CSV export is unaffected).
 
 ```bash
 uv sync
@@ -93,6 +133,7 @@ All settings come from environment variables or `.env` (see `.env.example`):
 | `TOTP_ISSUER` | `DCI Books` | Name shown in the authenticator app |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Larger request bodies get HTTP 413 |
 | `MAX_CONCURRENT_PASSWORD_HASHES` | `4` | Argon2 hashes/verifies at once per worker (~64 MiB each); extra logins queue |
+| `COMPANY_TIMEZONE` | `America/New_York` | IANA timezone that defines "today" and period boundaries for reports |
 | `DEBUG_MODE` | `false` | Enables debug logging, the API docs routes and SQL echo **with bound parameters** (hashes, tokens): never in production |
 | `API_LOG_TYPE` | `standard` | `standard` or `json` |
 | `WORKERS` | `2` | Gunicorn workers |
@@ -109,6 +150,8 @@ payroll/
 │   ├── audit/               Append-only audit log
 │   ├── common/              Shared infrastructure: money (Decimal), crypto, middleware, deps
 │   ├── frontend/            Web UI: templates, static files, in-process routes
+│   ├── ledger/              Chart of accounts, journal entries, period lock, ledger CLI
+│   ├── reports/             Trial balance, P&L, balance sheet, GL, journal; CSV/PDF export
 │   ├── tax/                 Pure calculation engine (no I/O)
 │   │   ├── constants.py     ← Update tax rates here each January
 │   │   └── engine.py        calc_payroll() — all withholding math
@@ -134,6 +177,10 @@ payroll/
 | `DELETE` | `/payroll/api/v1/payroll/runs/{id}` | Delete a saved run (owner) |
 | `GET` | `/payroll/api/v1/payroll/tax-constants` | View current tax year rates |
 | `GET` | `/payroll/api/v1/healthcheck` | Health check (public) |
+| `GET` `POST` `PATCH` | `/payroll/api/v1/ledger/accounts[...]` | Chart of accounts (writes: owner) |
+| `GET` `POST` | `/payroll/api/v1/ledger/journal-entries[...]` | Journal entries; `/reverse` and `/void` (writes: owner) |
+| `GET` `PUT` | `/payroll/api/v1/ledger/period-lock` | Period lock (PUT: owner, needs password) |
+| `GET` | `/payroll/api/v1/ledger/reports/{trial-balance,profit-and-loss,balance-sheet,general-ledger,journal}` | Reports as JSON; add `.csv` / `.pdf` for export |
 
 ## Development and tests
 

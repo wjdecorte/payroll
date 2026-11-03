@@ -47,7 +47,29 @@ ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
         ("POST", "/enroll"),
     }
 )
-MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 9
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26
+# The ledger (M1) mutating routes: all owner-only. The sweep test below checks this
+# list against the app's real routes, so a new ledger route cannot be left out.
+LEDGER = f"{PREFIX}/ledger"
+LEDGER_UNSAFE_ENDPOINTS = (
+    ("POST", f"{LEDGER}/accounts"),
+    ("PATCH", f"{LEDGER}/accounts/1"),
+    ("POST", f"{LEDGER}/accounts/1/deactivate"),
+    ("POST", f"{LEDGER}/accounts/1/activate"),
+    ("PUT", f"{LEDGER}/system-roles/1"),
+    ("POST", f"{LEDGER}/journal-entries"),
+    ("POST", f"{LEDGER}/journal-entries/1/reverse"),
+    ("POST", f"{LEDGER}/journal-entries/1/void"),
+    ("PUT", f"{LEDGER}/period-lock"),
+    ("POST", "/accounts/new"),
+    ("POST", "/accounts/1/edit"),
+    ("POST", "/accounts/1/active"),
+    ("POST", "/settings/ledger/roles"),
+    ("POST", "/settings/ledger/lock"),
+    ("POST", "/journal"),
+    ("POST", "/journal/1/reverse"),
+    ("POST", "/journal/1/void"),
+)
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
 _PATH_PARAM = re.compile(r"\{[^}]+\}")
@@ -157,6 +179,9 @@ def test_every_route_requires_auth(any_app):
         ("DELETE", f"{API}/runs/1"),
         ("PUT", f"{API}/config"),
         ("GET", "/account/password"),
+        ("GET", "/reports/profit-and-loss"),
+        ("GET", f"{LEDGER}/reports/balance-sheet.pdf"),
+        *LEDGER_UNSAFE_ENDPOINTS,
         *ANONYMOUS_ENDPOINTS,
     ]:
         assert known in endpoints, known
@@ -236,6 +261,67 @@ def test_every_unsafe_route_is_owner_only(request, role_client):
     client = request.getfixturevalue(role_client)
     checked = _assert_unsafe_routes_owner_only(app, client)
     assert checked >= MIN_OWNER_ONLY_UNSAFE_ENDPOINTS
+
+
+def _pdf_available() -> bool:
+    try:
+        import weasyprint  # noqa: F401
+    except OSError:  # WeasyPrint's native libraries (Pango) are not installed
+        return False
+    return True
+
+
+def _ledger_unsafe_routes() -> set[tuple[str, str]]:
+    ledger_paths = ("/accounts", "/settings/ledger", "/journal", f"{LEDGER}/")
+    return {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS and path.startswith(ledger_paths)
+    }
+
+
+def _readable_ledger_pages() -> list[str]:
+    """Every parameterless ledger/report GET page an accountant or viewer may open."""
+    found = []
+    for method, path in _endpoints(app):
+        if method != "GET" or path.endswith(("/1", "/1/edit", "/1/register", "/new")):
+            continue
+        if path.startswith(("/reports", f"{LEDGER}/reports/")) or path in (
+            "/accounts",
+            "/journal",
+            "/settings/ledger",
+        ):
+            found.append(path)
+    return found
+
+
+def test_ledger_route_list_matches_the_app():
+    assert _ledger_unsafe_routes() == set(LEDGER_UNSAFE_ENDPOINTS)
+    pages = _readable_ledger_pages()
+    assert "/reports/trial-balance" in pages and f"{LEDGER}/reports/journal.csv" in pages
+    assert len(pages) >= 20
+
+
+@pytest.mark.parametrize("role_client", ["viewer_client", "accountant_client"])
+def test_viewer_and_accountant_can_read_all_reports_but_cannot_mutate_ledger(
+    request, role_client, anon_client
+):
+    client = request.getfixturevalue(role_client)
+    for method, path in LEDGER_UNSAFE_ENDPOINTS:
+        response = client.request(method, path, follow_redirects=False)
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json()["errors"][0]["type"] == "PermissionDeniedError", (method, path)
+        anonymous = anon_client.request(method, path, follow_redirects=False)
+        _assert_refused_unauthenticated(anonymous, method, path)
+    window = "?asOf=2026-12-31&start=2026-01-01&end=2026-12-31"  # the required query parameters
+    for path in _readable_ledger_pages():
+        response = client.get(path + window)
+        if path.endswith(".pdf") and not _pdf_available():
+            assert response.status_code not in (401, 403), path  # authorized; no Pango here
+        else:
+            assert response.status_code == 200, (path, response.status_code)
+        anonymous = anon_client.get(path + window, follow_redirects=False)
+        assert anonymous.status_code in (401, 303), path
 
 
 def test_unsafe_route_enumeration_catches_a_missing_role_check(session, monkeypatch, viewer_user):

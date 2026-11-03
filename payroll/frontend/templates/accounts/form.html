@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit account" if account else "New account" }} · DCI Books{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card">
+    <div class="card-header bg-primary">{{ "Edit account" if account else "New account" }}</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="{{ '/accounts/%d/edit' % account.id if account else '/accounts/new' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="mb-3">
+          <label class="form-label" for="number">Number</label>
+          <input class="form-control" id="number" name="number" maxlength="20" value="{{ values.number }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="name">Name</label>
+          <input class="form-control" id="name" name="name" maxlength="200" required value="{{ values.name }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="type">Type</label>
+          <select class="form-select" id="type" name="type" required>
+            <option value="">Choose a type</option>
+            {% for t in types %}
+            <option value="{{ t.value }}"{% if values.type == t.value %} selected{% endif %}>{{ t.value | replace("_", " ") | title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="parent_id">Parent account</label>
+          <select class="form-select" id="parent_id" name="parent_id">
+            <option value="">None (top level)</option>
+            {% for p in parents %}
+            <option value="{{ p.id }}"{% if values.parent_id == p.id | string %} selected{% endif %}>{{ p.label }}</option>
+            {% endfor %}
+          </select>
+          <div class="form-text">A sub-account must have the same type as its parent.</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="detail_type">Detail type</label>
+          <input class="form-control" id="detail_type" name="detail_type" maxlength="100" value="{{ values.detail_type }}">
+        </div>
+        <button type="submit" class="btn btn-brand">Save</button>
+        <a class="btn btn-outline-secondary" href="/accounts">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

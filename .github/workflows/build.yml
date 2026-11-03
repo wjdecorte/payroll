@@ -34,6 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - name: Install WeasyPrint native libraries
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .

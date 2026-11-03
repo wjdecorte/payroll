@@ -1,0 +1,60 @@
+{# Plain GET form: works without JavaScript. Context: picker, presets, compares, bases, accounts #}
+<form method="get" action="{{ picker.action }}" class="row g-2 align-items-end mb-3 no-print">
+  {% if picker.period %}
+  <div class="col-auto">
+    <label class="form-label" for="preset">Period</label>
+    <select class="form-select" id="preset" name="preset">
+      {% for value, label in presets %}
+      <option value="{{ value }}"{% if picker.preset == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="start">From (custom)</label>
+    <input class="form-control" type="date" id="start" name="start" value="{{ picker.start }}">
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="end">To (custom)</label>
+    <input class="form-control" type="date" id="end" name="end" value="{{ picker.end }}">
+  </div>
+  {% endif %}
+  {% if picker.date %}
+  <div class="col-auto">
+    <label class="form-label" for="asOf">As of</label>
+    <input class="form-control" type="date" id="asOf" name="asOf" value="{{ picker.as_of }}">
+  </div>
+  {% endif %}
+  {% if picker.accounts %}
+  <div class="col-auto">
+    <label class="form-label" for="account">Account</label>
+    <select class="form-select" id="account" name="account">
+      <option value="">All accounts</option>
+      {% for a in accounts %}
+      <option value="{{ a.id }}"{% if picker.account == a.id %} selected{% endif %}>{{ a.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  {% if picker.comparison %}
+  <div class="col-auto">
+    <label class="form-label" for="compare">Compare to</label>
+    <select class="form-select" id="compare" name="compare">
+      {% for value, label in compares %}
+      <option value="{{ value }}"{% if picker.compare == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  {% if picker.basis_toggle %}
+  <div class="col-auto">
+    <span class="form-label d-block">Basis</span>
+    {% for value, label in bases %}
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="radio" name="basis" id="basis-{{ value }}" value="{{ value }}"{% if picker.basis == value %} checked{% endif %}>
+      <label class="form-check-label" for="basis-{{ value }}">{{ label }}</label>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <div class="col-auto"><button type="submit" class="btn btn-brand">Run report</button></div>
+</form>

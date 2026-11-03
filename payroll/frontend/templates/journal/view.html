@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Journal entry #{{ entry.entry_no }} · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-journal-text me-2"></i>{{ source_label }} entry #{{ entry.entry_no }}</span>
+      <a class="btn btn-sm btn-outline-light" href="/journal">Journal</a>
+    </div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <dl class="row mb-3">
+        <dt class="col-sm-2">Date</dt><dd class="col-sm-10">{{ entry.entry_date }}</dd>
+        <dt class="col-sm-2">Status</dt>
+        <dd class="col-sm-10">{% if entry.status == "void" %}<span class="badge bg-secondary">Void</span>{% else %}<span class="badge bg-success">Posted</span>{% endif %}</dd>
+        <dt class="col-sm-2">Memo</dt><dd class="col-sm-10">{{ entry.memo or "" }}</dd>
+        {% if links.reverses %}
+        <dt class="col-sm-2">Reverses</dt>
+        <dd class="col-sm-10"><a href="/journal/{{ links.reverses.id }}">Entry #{{ links.reverses.entry_no }}</a></dd>
+        {% endif %}
+        {% if links.reversed_by %}
+        <dt class="col-sm-2">Reversed by</dt>
+        <dd class="col-sm-10"><a href="/journal/{{ links.reversed_by.id }}">Entry #{{ links.reversed_by.entry_no }}</a></dd>
+        {% endif %}
+      </dl>
+      <table class="table table-sm align-middle">
+        <thead><tr><th>Account</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+        <tbody>
+          {% for line, account in lines %}
+          <tr>
+            <td>{{ account.number or "" }} <a href="/accounts/{{ account.id }}/register">{{ account.name }}</a></td>
+            <td>{{ line.memo or "" }}</td>
+            <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
+            <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><td colspan="2">Totals</td><td class="num">{{ total_debit | currency }}</td><td class="num">{{ total_credit | currency }}</td></tr>
+        </tfoot>
+      </table>
+      {% if is_owner and can_change %}
+      <div class="row g-3 no-print">
+        {% for action, label in (("reverse", "Reverse entry"), ("void", "Void entry")) %}
+        <form method="post" action="/journal/{{ entry.id }}/{{ action }}" class="col-md-6 d-flex gap-2 align-items-end">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div>
+            <label class="form-label" for="{{ action }}_date">{{ label }}: date</label>
+            <input class="form-control" type="date" id="{{ action }}_date" name="entry_date" required value="{{ action_date }}">
+          </div>
+          <div class="flex-grow-1">
+            <label class="form-label" for="{{ action }}_memo">Memo (optional)</label>
+            <input class="form-control" id="{{ action }}_memo" name="memo" maxlength="500">
+          </div>
+          <button type="submit" class="btn btn-outline-danger">{{ label }}</button>
+        </form>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

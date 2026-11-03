@@ -48,6 +48,14 @@
     .topbar .meta  { font-size: 0.75rem; opacity: .75; }
     .topbar .nav-link { color: rgba(255,255,255,.78); font-size: .82rem; padding: .2rem .55rem; }
     .topbar .nav-link:hover { color: #fff; }
+    .topbar .nav-link.active { color: #fff; font-weight: 700; background: rgba(255,255,255,.16); border-radius: 6px; }
+    .acct-inactive { color: #90a4ae; }
+    .acct-indent-1 { padding-left: 1.5rem !important; }
+    .acct-indent-2 { padding-left: 3rem !important; }
+    .acct-indent-3 { padding-left: 4.5rem !important; }
+    .acct-indent-4 { padding-left: 6rem !important; }
+    .acct-indent-5 { padding-left: 7.5rem !important; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
 
     /* ── Layout ────────────────────────────────────────────────── */
     .layout {
@@ -159,15 +167,22 @@
 
 <div class="topbar no-print">
   <div>
-    <a class="brand" href="/"><img src="/static/logo-icon.png" alt="" class="brand-logo">DCI Payroll</a>
+    <a class="brand" href="/"><img src="/static/logo-icon.png" alt="" class="brand-logo">DCI Books</a>
   </div>
   <div class="d-flex align-items-center gap-2">
     {% block nav %}
-    <a class="nav-link" href="/"><i class="bi bi-calculator me-1"></i>Calculator</a>
+    {% set path = request.url.path %}
+    <a class="nav-link{% if path == '/' %} active{% endif %}" href="/"{% if path == '/' %} aria-current="page"{% endif %}><i class="bi bi-calculator me-1"></i>Payroll</a>
+    <a class="nav-link{% if path.startswith('/accounts') %} active{% endif %}" href="/accounts"{% if path.startswith('/accounts') %} aria-current="page"{% endif %}><i class="bi bi-diagram-3 me-1"></i>Accounts</a>
+    <a class="nav-link{% if path.startswith('/journal') %} active{% endif %}" href="/journal"{% if path.startswith('/journal') %} aria-current="page"{% endif %}><i class="bi bi-journal-text me-1"></i>Journal</a>
+    <a class="nav-link{% if path.startswith('/reports') %} active{% endif %}" href="/reports"{% if path.startswith('/reports') %} aria-current="page"{% endif %}><i class="bi bi-bar-chart me-1"></i>Reports</a>
+    <a class="nav-link{% if path.startswith('/settings') %} active{% endif %}" href="/settings/ledger"{% if path.startswith('/settings') %} aria-current="page"{% endif %}><i class="bi bi-gear me-1"></i>Settings</a>
     {% if current_user and current_user.role == "owner" %}
-    <a class="nav-link" href="/admin"><i class="bi bi-sliders me-1"></i>Admin</a>
+    <a class="nav-link{% if path == '/admin' %} active{% endif %}" href="/admin"{% if path == '/admin' %} aria-current="page"{% endif %}><i class="bi bi-sliders me-1"></i>Admin</a>
     {% endif %}
+    {% if path in ('/', '/admin') %}
     <div class="meta d-none d-md-block">Georgia &nbsp;·&nbsp; Single Filing &nbsp;·&nbsp; Monthly &nbsp;·&nbsp; Tax Year 2026</div>
+    {% endif %}
     {% endblock %}
     <div class="meta" title="Running build">v{{ app_version }}{% if build_number %} · build {{ build_number }}{% endif %} · {{ build_sha }}</div>
     {# current_user is set on every signed-in page (by current_user / require_role). #}

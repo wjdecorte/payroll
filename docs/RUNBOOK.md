@@ -1,4 +1,4 @@
-# DCI Payroll runbook (v2.0.0)
+# DCI Payroll runbook (v2.1.0)
 
 Compose service names: `db` (Postgres 17) and `api` (the whole app, UI + API).
 Synology paths below assume the stack lives in `/volume1/docker/payroll`.
@@ -47,8 +47,8 @@ Watchtower stopped a plain `up -d` would reuse a stale local `:latest`):
    ```
 5. **Verify:** the schema is at the release's migration head:
    `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
-   must print `7c1f3a5e8b92` for v2.0.0 (the expected revision changes in future releases;
-   see `_HEAD_REVISION` in `payroll/migrations/alembic_runner.py`), and
+   must print `7c1f3a5e8b92` for v2.0.0 and `a1c5e8d3b7f2` for v2.1.0 (the expected revision
+   changes in future releases; see `_HEAD_REVISION` in `payroll/migrations/alembic_runner.py`), and
    `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
 6. Create the owner (see First run), then **re-enable Watchtower:**
    `docker compose -f compose.synology.yml start watchtower`
@@ -59,6 +59,60 @@ What changes for you:
 - API money values are JSON **strings** now. Scripts using the API must parse them as
   decimals (breaking change).
 - Every route requires sign-in with MFA. There is no API-only anonymous access.
+
+## Upgrading to v2.1.0 (ledger and reports, M1)
+
+The M1 migration is **additive**: it creates the ledger tables (accounts, journal entries and
+lines, period lock, system roles) and their integrity triggers, and converts or rewrites no
+existing data. Payroll runs, users and the audit log are untouched. A `pg_dump` first
+is still the rule before any upgrade. Rolling back means restoring that dump and pinning
+the previous image tag.
+
+Order matters (Watchtower would otherwise pull the new image as soon as the build finishes):
+
+1. **Before merging or pushing to `master`, pause Watchtower:**
+   `docker compose -f compose.synology.yml stop watchtower`
+2. **Back up the database:**
+   ```bash
+   docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_1_$(date +%F).dump
+   ```
+3. Merge/push, and let the image build (tests must pass first).
+4. Pull and start:
+   ```bash
+   docker compose -f compose.synology.yml pull
+   docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
+   ```
+5. **Verify:** the schema is at the release head,
+   `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+   prints `a1c5e8d3b7f2`, and
+   `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
+6. **Re-enable Watchtower:** `docker compose -f compose.synology.yml start watchtower`
+
+After the upgrade, as the owner:
+
+1. **Seed the chart of accounts** (idempotent, safe to repeat; creates only what is missing):
+   ```bash
+   docker compose -f compose.synology.yml exec api python -m payroll.ledger.cli seed-chart --email you@example.com
+   ```
+   (Outside Docker: `uv run python -m payroll.ledger.cli seed-chart --email you@example.com`.)
+   Rename or add accounts afterwards on the Accounts page; check Settings > Ledger that the
+   system roles (A/R, Undeposited Funds, Due to Owner, Retained Earnings, Opening Balance
+   Equity) point at the right accounts.
+2. **Do not run `seed-demo` against real books.** It posts a fictitious 2026 year; it refuses
+   when any journal entry exists, and exists only to explore the reports on a scratch database.
+3. Set `COMPANY_TIMEZONE` in `.env` if the company is not on Eastern time (default
+   `America/New_York`); it decides what "today" and "this month" mean in reports.
+
+### Locking a closed year
+
+The period lock (Settings > Ledger, or `PUT /payroll/api/v1/ledger/period-lock`) blocks
+posting into it and voiding entries dated in it; correct a locked entry with a reversal dated
+after the lock. Lock a year once it
+is final: after the CPA has the return figures, the year-end trial balance is saved
+(CSV/PDF from Reports), and any year-end close or adjusting entries are posted. Set the lock to
+the last day of that year (for example `2026-12-31`). Changing or clearing the lock needs the
+owner's password again and is audited. Dates must lie between 1900-01-01 and 2200-12-31. To
+correct a locked year, clear or move the lock back, post the correction, then lock again.
 
 ## ENCRYPTION_KEY
 

@@ -1,6 +1,7 @@
 import base64
 import binascii
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,7 +17,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "DCI Payroll"
-    app_version: str = "2.0.0"
+    app_version: str = "2.1.0"
     # Git commit the running image was built from; set via BUILD_SHA at image build time
     build_sha: str = "dev"
     # Monotonic CI run number; 0 for local runs
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
     # further login attempts wait for a slot instead of exhausting memory.
     max_concurrent_password_hashes: int = Field(default=4, ge=1)
 
+    # IANA timezone that defines "today" and period boundaries for reports
+    company_timezone: str = "America/New_York"
+
     # Logging — "standard" for human-readable, "json" for structured/production
     api_log_type: str = "standard"
 
@@ -73,6 +77,17 @@ class Settings(BaseSettings):
             raise ValueError("ENCRYPTION_KEY must be valid base64 encoding of 32 bytes") from exc
         if len(decoded) != 32:
             raise ValueError(f"ENCRYPTION_KEY must decode to exactly 32 bytes (got {len(decoded)})")
+        return value
+
+    @field_validator("company_timezone")
+    @classmethod
+    def _validate_company_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+            raise ValueError(
+                f"COMPANY_TIMEZONE must be a valid IANA timezone (got {value!r})"
+            ) from exc
         return value
 
     @property
