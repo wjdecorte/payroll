@@ -33,6 +33,12 @@ def get_logging_config() -> dict:
                 "level": log_level,
                 "propagate": False,
             },
+            # Migration progress at startup (env.py leaves logging to the app).
+            "alembic": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
             "uvicorn.access": {
                 "handlers": ["default"],
                 "level": log_level,

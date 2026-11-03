@@ -43,9 +43,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Put the virtualenv's executables on PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Create data directory for SQLite persistence
-RUN mkdir -p /app/data && chown appuser:0 /app/data
-
 # Commit SHA and CI run number of this build, shown in the UI and /info (declared late to keep earlier layers cached)
 ARG BUILD_SHA=dev
 ARG BUILD_NUMBER=0

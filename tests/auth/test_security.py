@@ -1,0 +1,517 @@
+"""Tests for the password, TOTP and recovery-code primitives in payroll.auth.security."""
+
+import hashlib
+import re
+import statistics
+import time
+import unicodedata
+from datetime import UTC, datetime, timedelta
+
+import pyotp
+import pytest
+from sqlmodel import select
+
+from payroll.auth import security
+from payroll.auth.models import RecoveryCode, User
+from payroll.auth.security import (
+    PasswordPolicyError,
+    consume_recovery_code,
+    generate_recovery_codes,
+    hash_password,
+    hash_recovery_code,
+    issue_recovery_codes,
+    new_totp_secret,
+    password_needs_rehash,
+    totp_uri,
+    validate_password_policy,
+    verify_password,
+    verify_totp,
+)
+from payroll.common.crypto import encrypt_secret
+
+GOOD_PASSWORD = "correct horse battery staple"
+NOW = datetime(2026, 10, 31, 12, 0, 10, tzinfo=UTC)
+NOW_STEP = int(NOW.timestamp()) // 30
+
+
+def _user(**overrides) -> User:
+    values = {
+        "email": "owner@example.com",
+        "display_name": "Owner",
+        "password_hash": "x",
+        "role": "owner",
+    }
+    return User(**(values | overrides))
+
+
+class _SpyHasher:
+    """Wraps the real hasher and records every password it is handed."""
+
+    def __init__(self, real):
+        self.real = real
+        self.hashed: list[str] = []
+        self.verified: list[str] = []
+
+    def hash(self, password):
+        self.hashed.append(password)
+        return self.real.hash(password)
+
+    def verify(self, password_hash, password):
+        self.verified.append(password)
+        return self.real.verify(password_hash, password)
+
+
+@pytest.fixture
+def spy_hasher(monkeypatch):
+    spy = _SpyHasher(security._hasher)
+    monkeypatch.setattr(security, "_hasher", spy)
+    return spy
+
+
+# ---------------------------------------------------------------------------
+# Password hashing
+# ---------------------------------------------------------------------------
+
+
+def test_hash_is_argon2id():
+    password_hash = hash_password(GOOD_PASSWORD)
+    assert password_hash.startswith("$argon2id$")
+    assert verify_password(GOOD_PASSWORD, password_hash) is True
+    assert verify_password(GOOD_PASSWORD + "!", password_hash) is False
+
+
+def test_hash_is_salted():
+    assert hash_password(GOOD_PASSWORD) != hash_password(GOOD_PASSWORD)
+
+
+def test_verify_unknown_user_hash_none_returns_false_and_takes_similar_time(spy_hasher):
+    """Review Focus 1: an unknown user (no hash) costs a full Argon2 verify."""
+    real_hash = security._hasher.real.hash(GOOD_PASSWORD)
+
+    def timed(password_hash) -> float:
+        start = time.perf_counter()
+        assert verify_password("wrong password!!", password_hash) is False
+        return time.perf_counter() - start
+
+    unknown = statistics.median(timed(None) for _ in range(5))
+    known = statistics.median(timed(real_hash) for _ in range(5))
+
+    # The dummy verify really ran against an Argon2 hash, every time.
+    assert len(spy_hasher.verified) == 10
+    assert security._DUMMY_HASH.startswith("$argon2id$")
+    # Within an order of magnitude of a real failed verify.
+    assert known / 10 < unknown < known * 10
+
+
+@pytest.mark.parametrize("bad_hash", ["", "not-a-hash", "$argon2id$v=19$m=1,t=1,p=1$bad"])
+def test_verify_malformed_hash_returns_false(bad_hash):
+    assert verify_password(GOOD_PASSWORD, bad_hash) is False
+
+
+SURROGATE = "\ud800aaaaaaaaaaa"  # lone surrogate: not encodable as UTF-8
+
+
+def test_verify_unencodable_password_returns_false(spy_hasher):
+    real_hash = security._hasher.real.hash(GOOD_PASSWORD)
+    assert verify_password(SURROGATE, real_hash) is False
+    assert verify_password(SURROGATE, None) is False
+    # Both went through the dummy verify, never handing the bad string to Argon2.
+    assert spy_hasher.verified == ["dummy-password-for-timing"] * 2
+
+
+def test_verify_non_ascii_stored_hash_returns_false():
+    assert verify_password(GOOD_PASSWORD, "$argon2id$v=19$m=65536,t=3,p=4$ü$ü") is False
+
+
+def test_unencodable_password_is_a_policy_error():
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy("\ud800" * 12)
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy(SURROGATE)
+    with pytest.raises(PasswordPolicyError):
+        hash_password(SURROGATE)
+
+
+def test_password_too_long_after_nfkc_expansion_is_rejected():
+    expanding = "\ufdfa" * 8  # 8 chars raw; each expands to 18 chars under NFKC
+    assert len(unicodedata.normalize("NFKC", expanding)) > security.MAX_PASSWORD_LENGTH
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy(expanding)
+    with pytest.raises(PasswordPolicyError):
+        hash_password(expanding)
+
+
+def test_password_needs_rehash():
+    from argon2 import PasswordHasher
+
+    assert password_needs_rehash(hash_password(GOOD_PASSWORD)) is False
+    weak = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(GOOD_PASSWORD)
+    assert password_needs_rehash(weak) is True
+
+
+def test_unicode_password_roundtrip():
+    password = "Grüße-秘密-パスワード-🔒-ünïcödé"
+    password_hash = hash_password(password)
+    assert verify_password(password, password_hash) is True
+    assert verify_password("Gruße-秘密-パスワード-🔒-ünïcödé", password_hash) is False
+
+
+def test_unicode_password_is_nfkc_normalized():
+    """Composed and decomposed forms of the same text are the same password."""
+    composed = unicodedata.normalize("NFC", "café-crème-brûlée")
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    password_hash = hash_password(composed)
+    assert verify_password(decomposed, password_hash) is True
+    # NFKC also folds compatibility forms (fullwidth letters -> ASCII).
+    assert verify_password("ｃａｆé-crème-brûlée", password_hash) is True
+
+
+# ---------------------------------------------------------------------------
+# Password policy
+# ---------------------------------------------------------------------------
+
+
+def test_policy_rejects_short_long_and_common(spy_hasher):
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy("a1b2c3d4e5f")  # 11 chars
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy("x" * 129)
+
+    # Review Focus 3: a 10 MB password is refused before it can reach Argon2.
+    giant = "x" * (10 * 1024 * 1024)
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy(giant)
+    with pytest.raises(PasswordPolicyError):
+        hash_password(giant)
+    assert verify_password(giant, security._hasher.real.hash(GOOD_PASSWORD)) is False
+    assert verify_password(giant, None) is False
+    assert spy_hasher.hashed == []
+    assert all(len(p) <= security.MAX_PASSWORD_LENGTH for p in spy_hasher.verified)
+
+    # Common passwords are rejected case-insensitively.
+    for common in ("unbelievable", "UNBELIEVABLE", "UnBelievable"):
+        with pytest.raises(PasswordPolicyError):
+            validate_password_policy(common)
+    with pytest.raises(PasswordPolicyError):
+        validate_password_policy("Password12345")  # >= 12 chars and on the list
+
+
+def test_policy_accepts_bounds():
+    validate_password_policy("q7#Lm2!vX9zR")  # exactly 12
+    validate_password_policy("q7#Lm2!vX9zR" * 10 + "abcdefgh")  # exactly 128
+    validate_password_policy(GOOD_PASSWORD)
+
+
+def test_policy_error_has_message():
+    with pytest.raises(PasswordPolicyError) as exc:
+        validate_password_policy("short")
+    assert "12" in str(exc.value)
+
+
+def test_common_password_list_is_vendored_10k():
+    assert len(security.COMMON_PASSWORDS) >= 10_000
+    assert "password" in security.COMMON_PASSWORDS
+    assert all(p == p.lower() for p in security.COMMON_PASSWORDS)
+
+
+@pytest.mark.parametrize(
+    "common", ["1qaz2wsx3edc", "QWERTY123456", "123qweasdzxc", "qazwsxedcrfv", "Password12345"]
+)
+def test_long_common_passwords_are_rejected(common):
+    """The list must matter at the 12-character minimum (SEC2), not just below it."""
+    with pytest.raises(PasswordPolicyError, match="too common"):
+        validate_password_policy(common)
+
+
+def test_common_password_list_covers_long_passwords():
+    long_entries = [p for p in security.COMMON_PASSWORDS if len(p) >= security.MIN_PASSWORD_LENGTH]
+    assert len(long_entries) >= 25_000
+    assert "" not in security.COMMON_PASSWORDS
+    # Under the pre-commit large-file limit (500 KB).
+    assert security._COMMON_PASSWORDS_FILE.stat().st_size <= 450_000
+
+
+def test_common_password_list_loads_quickly():
+    start = time.perf_counter()
+    loaded = security._load_common_passwords()
+    assert time.perf_counter() - start < 1.0
+    assert loaded == security.COMMON_PASSWORDS
+
+
+def test_common_password_loader_skips_blank_lines_and_normalizes(tmp_path, monkeypatch):
+    path = tmp_path / "list.txt"
+    path.write_text("\n  \nAbc\n\uff21\uff22\uff23def\n\n", encoding="utf-8")
+    monkeypatch.setattr(security, "_COMMON_PASSWORDS_FILE", path)
+    assert security._load_common_passwords() == frozenset({"abc", "abcdef"})
+
+
+# ---------------------------------------------------------------------------
+# TOTP
+# ---------------------------------------------------------------------------
+
+
+def _totp_user(secret: str, **overrides) -> User:
+    return _user(totp_secret_enc=encrypt_secret(secret), **overrides)
+
+
+def _code(secret: str, step: int) -> str:
+    return pyotp.TOTP(secret).at(step * 30)
+
+
+def test_new_totp_secret_is_base32_and_random():
+    secret = new_totp_secret()
+    assert re.fullmatch(r"[A-Z2-7]{32}", secret)
+    assert secret != new_totp_secret()
+
+
+def test_totp_uri_contains_issuer_and_email():
+    secret = new_totp_secret()
+    uri = totp_uri(secret, "owner@example.com")
+    assert uri.startswith("otpauth://totp/")
+    assert "owner%40example.com" in uri
+    assert f"secret={secret}" in uri
+    assert "issuer=DCI%20Books" in uri
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_totp_accepts_current_and_adjacent_step(offset):
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    assert verify_totp(user, _code(secret, NOW_STEP + offset), now=NOW) is True
+    assert user.totp_last_step == NOW_STEP + offset
+
+
+@pytest.mark.parametrize("offset", [-3, -2, 2, 3])
+def test_totp_rejects_steps_outside_window(offset):
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    assert verify_totp(user, _code(secret, NOW_STEP + offset), now=NOW) is False
+    assert user.totp_last_step is None
+
+
+def test_totp_rejects_replay():
+    """Review Focus 2: a code that already succeeded cannot be used again."""
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    code = _code(secret, NOW_STEP)
+    assert verify_totp(user, code, now=NOW) is True
+    assert verify_totp(user, code, now=NOW) is False
+    # Still rejected 30 s later, while the step is inside the ±1 window.
+    assert verify_totp(user, code, now=NOW + timedelta(seconds=30)) is False
+    assert user.totp_last_step == NOW_STEP
+
+
+def test_totp_rejects_old_step():
+    """Any step <= the last accepted step is rejected, even inside the window."""
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    assert verify_totp(user, _code(secret, NOW_STEP + 1), now=NOW) is True
+    assert verify_totp(user, _code(secret, NOW_STEP), now=NOW) is False
+    assert verify_totp(user, _code(secret, NOW_STEP - 1), now=NOW) is False
+    assert user.totp_last_step == NOW_STEP + 1
+
+
+def test_totp_rejects_step_equal_to_last_step_set_elsewhere():
+    secret = new_totp_secret()
+    user = _totp_user(secret, totp_last_step=NOW_STEP)
+    assert verify_totp(user, _code(secret, NOW_STEP), now=NOW) is False
+    assert verify_totp(user, _code(secret, NOW_STEP + 1), now=NOW) is True
+
+
+@pytest.mark.parametrize("bad", ["", "12345", "1234567", "abcdef", "12 34 5x"])
+def test_totp_rejects_malformed_codes(bad):
+    user = _totp_user(new_totp_secret())
+    assert verify_totp(user, bad, now=NOW) is False
+    assert user.totp_last_step is None
+
+
+def test_totp_wrong_code_does_not_move_last_step():
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    good = _code(secret, NOW_STEP)
+    wrong = f"{(int(good) + 1) % 1_000_000:06d}"
+    assert verify_totp(user, wrong, now=NOW) is False
+    assert user.totp_last_step is None
+
+
+def test_totp_tolerates_spaces_and_naive_utc_now():
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    code = _code(secret, NOW_STEP)
+    naive_now = NOW.replace(tzinfo=None)
+    assert verify_totp(user, f" {code[:3]} {code[3:]} ", now=naive_now) is True
+
+
+def test_totp_without_secret_is_false():
+    assert verify_totp(_user(), "123456", now=NOW) is False
+
+
+def test_totp_defaults_to_current_time():
+    secret = new_totp_secret()
+    user = _totp_user(secret)
+    assert verify_totp(user, pyotp.TOTP(secret).now()) is True
+
+
+# ---------------------------------------------------------------------------
+# Recovery codes
+# ---------------------------------------------------------------------------
+
+CODE_RE = re.compile(r"[a-z2-9]{5}-[a-z2-9]{5}")
+
+
+def test_generate_recovery_codes_format():
+    codes = generate_recovery_codes()
+    assert len(codes) == 10
+    assert len(set(codes)) == 10
+    for code in codes:
+        assert CODE_RE.fullmatch(code), code
+        assert not set(code) & set("01ilo")  # no ambiguous characters
+    assert len(generate_recovery_codes(3)) == 3
+
+
+def test_hash_recovery_code_is_keyed_per_user_and_normalized():
+    digest = hash_recovery_code("abcde-fghjk", user_id=1)
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert hash_recovery_code("  ABCDE-FGHJK\n", user_id=1) == digest
+    assert hash_recovery_code("abcde fghjk", user_id=1) == digest
+    assert hash_recovery_code("abcdefghjk", user_id=1) == digest
+    assert hash_recovery_code("abcde-fghjm", user_id=1) != digest
+    # The same code hashes differently per user, so one leaked table cannot be
+    # swept for every user at once.
+    assert hash_recovery_code("abcde-fghjk", user_id=2) != digest
+    # Keyed (HMAC with a server-derived key), not a plain sha256 of the code.
+    for plain in ("abcde-fghjk", "abcdefghjk", "1:abcdefghjk"):
+        assert digest != hashlib.sha256(plain.encode()).hexdigest()
+
+
+def _persist_user_with_codes(session, email: str) -> tuple[User, list[str]]:
+    user = _user(email=email)
+    session.add(user)
+    session.flush()
+    codes = issue_recovery_codes(session, user.id)
+    session.flush()
+    return user, codes
+
+
+def test_issue_recovery_codes_stores_keyed_hashes_and_replaces_old(session):
+    user, first = _persist_user_with_codes(session, "owner@example.com")
+    assert len(first) == 10
+    rows = session.exec(select(RecoveryCode).where(RecoveryCode.user_id == user.id)).all()
+    assert {r.code_hash for r in rows} == {hash_recovery_code(c, user.id) for c in first}
+
+    second = issue_recovery_codes(session, user.id)
+    session.flush()
+    rows = session.exec(select(RecoveryCode).where(RecoveryCode.user_id == user.id)).all()
+    assert len(rows) == 10
+    assert consume_recovery_code(session, user.id, first[0]) is False
+    assert consume_recovery_code(session, user.id, second[0]) is True
+
+
+def test_recovery_code_single_use(session):
+    user, codes = _persist_user_with_codes(session, "owner@example.com")
+
+    assert consume_recovery_code(session, user.id, codes[0]) is True
+    assert consume_recovery_code(session, user.id, codes[0]) is False
+
+    # Case, whitespace and dashes are normalized.
+    assert consume_recovery_code(session, user.id, f"  {codes[1].upper()} ") is True
+    assert consume_recovery_code(session, user.id, codes[1]) is False
+    assert consume_recovery_code(session, user.id, codes[2].replace("-", " ").upper()) is True
+
+    assert consume_recovery_code(session, user.id, "zzzzz-zzzzz") is False
+    assert consume_recovery_code(session, user.id, "") is False
+
+    rows = session.exec(select(RecoveryCode).where(RecoveryCode.user_id == user.id)).all()
+    used = [r for r in rows if r.used_at is not None]
+    assert len(used) == 3
+
+
+def test_recovery_code_is_scoped_to_its_user(session):
+    owner, owner_codes = _persist_user_with_codes(session, "owner@example.com")
+    other, _ = _persist_user_with_codes(session, "other@example.com")
+
+    assert consume_recovery_code(session, other.id, owner_codes[0]) is False
+    assert consume_recovery_code(session, owner.id, owner_codes[0]) is True
+
+
+# ---------------------------------------------------------------------------
+# Bounded Argon2 concurrency (final review I-2)
+# ---------------------------------------------------------------------------
+
+
+class _ConcurrencyHasher:
+    """Fake hasher that sleeps and records the peak number of concurrent calls."""
+
+    def __init__(self, fail: bool = False):
+        import threading
+
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak = 0
+        self.calls = 0
+        self.fail = fail
+
+    def _run(self):
+        with self._lock:
+            self.active += 1
+            self.calls += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(0.02)
+            if self.fail:
+                raise RuntimeError("hasher exploded")
+        finally:
+            with self._lock:
+                self.active -= 1
+
+    def hash(self, password):
+        self._run()
+        return "$argon2id$fake"
+
+    def verify(self, password_hash, password):
+        self._run()
+        return True
+
+
+def test_hash_slots_sized_from_settings():
+    from payroll import app_settings
+
+    assert app_settings.max_concurrent_password_hashes == 4
+    assert security._hash_slots._initial_value == app_settings.max_concurrent_password_hashes
+
+
+@pytest.mark.parametrize("cap", [1, 3])
+def test_concurrent_hashes_never_exceed_the_cap(monkeypatch, cap):
+    import threading
+
+    fake = _ConcurrencyHasher()
+    monkeypatch.setattr(security, "_hasher", fake)
+    monkeypatch.setattr(security, "_hash_slots", threading.BoundedSemaphore(cap))
+    calls = [
+        (lambda: hash_password(GOOD_PASSWORD)),
+        (lambda: verify_password(GOOD_PASSWORD, "$argon2id$x")),
+        (lambda: verify_password(GOOD_PASSWORD, None)),  # dummy verify counts too
+    ]
+    threads = [threading.Thread(target=calls[i % 3]) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert fake.calls == 12
+    assert fake.peak == cap
+
+
+def test_failing_hash_releases_its_slot(monkeypatch):
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(security, "_hash_slots", slots)
+    monkeypatch.setattr(security, "_hasher", _ConcurrencyHasher(fail=True))
+    for _ in range(3):  # would block forever on the second call if the slot leaked
+        with pytest.raises(RuntimeError, match="hasher exploded"):
+            hash_password(GOOD_PASSWORD)
+        with pytest.raises(RuntimeError, match="hasher exploded"):
+            verify_password(GOOD_PASSWORD, "$argon2id$x")
+    assert slots.acquire(blocking=False)
+    slots.release()

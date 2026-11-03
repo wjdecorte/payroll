@@ -7,12 +7,10 @@
   <link rel="icon" type="image/png" href="/static/favicon-32.png">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 
-  <!-- Bootstrap 5 -->
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Bootstrap Icons -->
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-  <!-- HTMX -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
+  <!-- Vendored assets (no CDN: the CSP only allows 'self'); see static/vendor/README.md -->
+  <link href="/static/vendor/bootstrap-5.3.3/css/bootstrap.min.css" rel="stylesheet">
+  <link href="/static/vendor/bootstrap-icons-1.11.3/bootstrap-icons.min.css" rel="stylesheet">
+  <script src="/static/vendor/htmx-2.0.3/htmx.min.js"></script>
 
   <style>
     :root {
@@ -142,6 +140,12 @@
     }
     .results-placeholder i { font-size: 3rem; margin-bottom: .5rem; }
 
+    /* ── Auth pages ─────────────────────────────────────────────── */
+    .auth-wrap { max-width: 440px; margin: 3rem auto; padding: 0 1rem; }
+    .auth-wrap .qr svg { display: block; margin: 0 auto; background: #fff; }
+    .auth-wrap .secret { font-family: var(--bs-font-monospace); letter-spacing: .05em; word-break: break-all; }
+    .recovery-codes { font-family: var(--bs-font-monospace); columns: 2; list-style: none; padding: 0; }
+
     @media print {
       .topbar, .no-print { display: none !important; }
       body { background: #fff; }
@@ -150,24 +154,40 @@
   </style>
   {% block head %}{% endblock %}
 </head>
-<body>
+{# Every HTMX request inherits this header, so all of them carry the CSRF token. #}
+<body hx-headers='{{ {"X-CSRF-Token": csrf_token} | tojson }}'>
 
 <div class="topbar no-print">
   <div>
     <a class="brand" href="/"><img src="/static/logo-icon.png" alt="" class="brand-logo">DCI Payroll</a>
   </div>
   <div class="d-flex align-items-center gap-2">
+    {% block nav %}
     <a class="nav-link" href="/"><i class="bi bi-calculator me-1"></i>Calculator</a>
+    {% if current_user and current_user.role == "owner" %}
     <a class="nav-link" href="/admin"><i class="bi bi-sliders me-1"></i>Admin</a>
+    {% endif %}
     <div class="meta d-none d-md-block">Georgia &nbsp;·&nbsp; Single Filing &nbsp;·&nbsp; Monthly &nbsp;·&nbsp; Tax Year 2026</div>
+    {% endblock %}
     <div class="meta" title="Running build">v{{ app_version }}{% if build_number %} · build {{ build_number }}{% endif %} · {{ build_sha }}</div>
+    {# current_user is set on every signed-in page (by current_user / require_role). #}
+    {% if current_user %}
+    <span class="meta" title="Signed in ({{ current_user.role }})"><i class="bi bi-person-circle me-1"></i>{{ current_user.display_name }}</span>
+    <a class="nav-link" href="/account/password" title="Change password">Account</a>
+    <form method="post" action="/logout" class="d-inline m-0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-sm btn-outline-light"><i class="bi bi-box-arrow-right me-1"></i>Sign out</button>
+    </form>
+    {% endif %}
   </div>
 </div>
 
 {% block content %}{% endblock %}
 
-<!-- Bootstrap JS -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="/static/vendor/bootstrap-5.3.3/js/bootstrap.bundle.min.js"></script>
+{# No inline JS (CSP script-src 'self'): behaviour lives in static/js and binds by data-* attributes. #}
+<script src="/static/js/app.js"></script>
+<script src="/static/js/qbo.js"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

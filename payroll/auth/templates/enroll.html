@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Set up two-step verification · DCI Payroll{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card">
+    <div class="card-header bg-primary">Set up two-step verification</div>
+    <div class="card-body">
+      {% include "_messages.html" %}
+      <p>Scan this QR code with your authenticator app, then enter the 6-digit code it shows.</p>
+      <div class="qr mb-3">{{ qr_svg | safe }}</div>
+      <p class="small mb-1">Can't scan it? Enter this key instead:</p>
+      <p class="secret mb-3">{{ secret }}</p>
+      <p class="small text-muted mb-3">Reloading this page creates a new QR code — scan the latest one.</p>
+      <form method="post" action="/enroll?next={{ next_path | urlencode }}" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ next_path }}">
+        <div class="mb-3">
+          <label class="form-label" for="code">Code</label>
+          <input class="form-control" type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus maxlength="10">
+        </div>
+        <button type="submit" class="btn btn-brand w-100">Turn on</button>
+      </form>
+      <form method="post" action="/logout" class="mt-3 text-center">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-link btn-sm">Cancel and sign out</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

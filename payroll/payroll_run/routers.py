@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlmodel import Session
 
 from payroll import app_settings
+from payroll.auth.models import User
+from payroll.auth.permissions import require_owner, require_reader
 from payroll.common.dependencies import get_session
 from payroll.common.middleware import LogRoute
 
@@ -14,10 +16,13 @@ from .services import PayrollRunService
 
 logger = logging.getLogger(f"{app_settings.logger_name}.payroll_run.router")
 
+# Every route needs a signed-in user with any role (read access); each mutating
+# route also depends on ``require_owner``, and the services re-check the role.
 router = APIRouter(
     prefix="/payroll",
     tags=["payroll"],
     route_class=LogRoute,
+    dependencies=[Depends(require_reader)],
 )
 
 
@@ -39,9 +44,10 @@ router = APIRouter(
 async def calculate_payroll(
     payload: PayrollInput,
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> PayrollResult:
     service = PayrollRunService(session)
-    return service.calculate(payload)
+    return service.calculate(payload, actor=actor)
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +102,10 @@ async def get_payroll_run(
 async def delete_payroll_run(
     run_id: int,
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> None:
     service = PayrollRunService(session)
-    service.delete_run(run_id)
+    service.delete_run(run_id, actor=actor)
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +152,10 @@ async def get_payroll_config(
 async def update_payroll_config(
     payload: PayrollConfigUpdate,
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> PayrollConfigRead:
     service = PayrollConfigService(session)
-    return service.update_config(payload)
+    return service.update_config(payload, actor=actor)
 
 
 @router.post(
@@ -160,6 +168,7 @@ async def update_payroll_config(
 async def increment_journal_no(
     count: int = Query(default=2, ge=1, le=100),
     session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
 ) -> PayrollConfigRead:
     service = PayrollConfigService(session)
-    return service.increment_journal_no(count)
+    return service.increment_journal_no(count, actor=actor)
