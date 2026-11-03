@@ -382,3 +382,27 @@ def test_manual_wrappers_commit_and_read_back(session, owner_user, chart):
 def test_rejects_unknown_source_type(session, owner_user, chart):
     with _raises(InvalidEntryError, "bogus"):
         LedgerPostingService(session).post(_draft(chart, source_type="bogus"), actor=owner_user)
+
+
+def test_voiding_the_reversal_of_a_void_is_refused(session, owner_user, chart):
+    svc = LedgerPostingService(session)
+    original = svc.post(_draft(chart), actor=owner_user)
+    reversal = svc.void(original.id, entry_date=JAN, actor=owner_user)
+    for action in (svc.void, svc.reverse):
+        with pytest.raises(AlreadyReversedError) as info:
+            action(reversal.id, entry_date=JAN, actor=owner_user)
+        assert "reversal created by voiding" in info.value.message
+    session.refresh(original)
+    assert original.status == "void"
+
+
+def test_void_of_entry_in_locked_period_is_refused_but_reverse_works(session, owner_user, chart):
+    svc = LedgerPostingService(session)
+    original = svc.post(_draft(chart), actor=owner_user)
+    session.execute(sql_text("UPDATE period_lock SET lock_date = '2026-01-31' WHERE id = 1"))
+    with pytest.raises(PeriodLockedError):
+        svc.void(original.id, entry_date=date(2026, 2, 5), actor=owner_user)
+    session.refresh(original)
+    assert original.status == "posted"
+    reversal = svc.reverse(original.id, entry_date=date(2026, 2, 5), actor=owner_user)
+    assert reversal.reverses_entry_id == original.id

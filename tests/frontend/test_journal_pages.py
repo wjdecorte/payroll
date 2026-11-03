@@ -314,3 +314,19 @@ def test_enormous_digit_strings_are_form_errors(owner_client, accts):
     assert acct.status_code == 422 and "Choose an account" in acct.text
     amount = _create(owner_client, accts, line_debit=["1" * 5000, ""])
     assert amount.status_code == 422 and "Line 1" in amount.text
+
+
+def test_void_reversal_page_hides_buttons_and_post_refused(
+    owner_client, accts, session, owner_user
+):
+    entry = _entry(session, owner_user, accts)
+    service = LedgerPostingService(session)
+    reversal = service.void(entry.id, entry_date=company_today(), actor=owner_user)
+    session.commit()
+    page = owner_client.get(f"/journal/{reversal.id}")
+    assert page.status_code == 200 and "Reverse entry" not in page.text
+    assert "Void entry" not in page.text
+    response = owner_client.post(
+        f"/journal/{reversal.id}/void", data={"entry_date": str(company_today())}
+    )
+    assert response.status_code == 409 and "reversal created by voiding" in response.text

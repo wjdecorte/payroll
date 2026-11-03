@@ -180,3 +180,31 @@ def test_list_filters_by_date_range_and_source_type(owner_client, owner_user, ch
     paged = owner_client.get(URL, params={"limit": 1, "offset": 1}).json()
     assert [e["entryDate"] for e in paged] == ["2026-02-10"]
     assert owner_client.get(URL, params={"limit": 0}).status_code == 422
+
+
+def test_voiding_a_voids_reversal_is_409(owner_client, chart):
+    original = owner_client.post(URL, json=_body(chart)).json()
+    reversal = owner_client.post(
+        f"{URL}/{original['id']}/void", json={"entryDate": "2026-01-16"}
+    ).json()
+    for action in ("void", "reverse"):
+        response = owner_client.post(
+            f"{URL}/{reversal['id']}/{action}", json={"entryDate": "2026-01-17"}
+        )
+        assert response.status_code == 409
+        assert response.json()["errors"][0]["type"] == "AlreadyReversedError"
+    assert owner_client.get(f"{URL}/{original['id']}").json()["status"] == "void"
+
+
+def test_void_of_locked_entry_is_409_but_reverse_after_lock_works(owner_client, chart, session):
+    original = owner_client.post(URL, json=_body(chart, entry_date="2026-03-02")).json()
+    session.execute(text("UPDATE period_lock SET lock_date = '2026-03-31' WHERE id = 1"))
+    session.commit()
+    voided = owner_client.post(f"{URL}/{original['id']}/void", json={"entryDate": "2026-04-02"})
+    assert voided.status_code == 409
+    assert voided.json()["errors"][0]["type"] == "PeriodLockedError"
+    assert owner_client.get(f"{URL}/{original['id']}").json()["status"] == "posted"
+    reversed_ = owner_client.post(
+        f"{URL}/{original['id']}/reverse", json={"entryDate": "2026-04-02"}
+    )
+    assert reversed_.status_code == 201

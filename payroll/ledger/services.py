@@ -115,7 +115,9 @@ class LedgerPostingService:
         self, entry_id: int, *, entry_date: date, actor: User, memo: str | None = None
     ) -> JournalEntry:
         """Reverse an entry and mark it ``void``; returns the reversing entry."""
-        original, reversal = self._reverse(entry_id, entry_date=entry_date, actor=actor, memo=memo)
+        original, reversal = self._reverse(
+            entry_id, entry_date=entry_date, actor=actor, memo=memo, voiding=True
+        )
         # status (and modify_date) are the only header columns the database lets change.
         original.status = "void"
         original.modify_date = utcnow_naive()
@@ -138,9 +140,28 @@ class LedgerPostingService:
         return f"Reversal of {SourceType(entry.source_type).value} #{entry.entry_no}"
 
     def _reverse(
-        self, entry_id: int, *, entry_date: date, actor: User, memo: str | None
+        self,
+        entry_id: int,
+        *,
+        entry_date: date,
+        actor: User,
+        memo: str | None,
+        voiding: bool = False,
     ) -> tuple[JournalEntry, JournalEntry]:
         original = self._lock_entry(entry_id)
+        if voiding:
+            # A void erases the entry from its own period, so the lock covers the original's
+            # date too (a plain reversal dated after the lock is the correction path).
+            # Same lock order as _post: entry row first, then the lock row FOR SHARE.
+            lock_date = self.session.exec(
+                select(PeriodLock.lock_date).where(PeriodLock.id == 1).with_for_update(read=True)
+            ).first()
+            if lock_date is not None and original.entry_date <= lock_date:
+                raise PeriodLockedError(
+                    message=f"The books are locked through {lock_date.isoformat()}; an entry "
+                    "dated in that period cannot be voided. Reverse it with a date after the "
+                    "lock instead."
+                )
         lines = self.session.exec(
             select(JournalLine)
             .where(JournalLine.entry_id == original.id)
@@ -325,6 +346,15 @@ class LedgerPostingService:
                 message=f"{SourceType(entry.source_type).value} #{entry.entry_no} "
                 "has already been reversed or voided"
             )
+        if entry.reverses_entry_id is not None:
+            original_status = self.session.exec(
+                select(JournalEntry.status).where(JournalEntry.id == entry.reverses_entry_id)
+            ).one()
+            if original_status == "void":
+                raise AlreadyReversedError(
+                    message=f"This entry is the reversal created by voiding #{entry.reverses_entry_id}"
+                    "; post a new entry instead"
+                )
         return entry
 
 

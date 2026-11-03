@@ -65,8 +65,28 @@ What changes for you:
 The M1 migration is **additive**: it creates the ledger tables (accounts, journal entries and
 lines, period lock, system roles) and their integrity triggers, and converts or rewrites no
 existing data. Payroll runs, users and the audit log are untouched. A `pg_dump` first
-(step 2 above, with a new file name) is still the rule before any upgrade. Rolling back
-means restoring that dump and pinning the previous image tag.
+is still the rule before any upgrade. Rolling back means restoring that dump and pinning
+the previous image tag.
+
+Order matters (Watchtower would otherwise pull the new image as soon as the build finishes):
+
+1. **Before merging or pushing to `master`, pause Watchtower:**
+   `docker compose -f compose.synology.yml stop watchtower`
+2. **Back up the database:**
+   ```bash
+   docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_1_$(date +%F).dump
+   ```
+3. Merge/push, and let the image build (tests must pass first).
+4. Pull and start:
+   ```bash
+   docker compose -f compose.synology.yml pull
+   docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
+   ```
+5. **Verify:** the schema is at the release head,
+   `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+   prints `a1c5e8d3b7f2`, and
+   `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
+6. **Re-enable Watchtower:** `docker compose -f compose.synology.yml start watchtower`
 
 After the upgrade, as the owner:
 
@@ -86,7 +106,8 @@ After the upgrade, as the owner:
 ### Locking a closed year
 
 The period lock (Settings > Ledger, or `PUT /payroll/api/v1/ledger/period-lock`) blocks
-posting, reversing and voiding any entry dated on or before the lock date. Lock a year once it
+posting into it and voiding entries dated in it; correct a locked entry with a reversal dated
+after the lock. Lock a year once it
 is final: after the CPA has the return figures, the year-end trial balance is saved
 (CSV/PDF from Reports), and any year-end close or adjusting entries are posted. Set the lock to
 the last day of that year (for example `2026-12-31`). Changing or clearing the lock needs the

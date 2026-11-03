@@ -285,7 +285,10 @@ def _entry_page(
             "total_credit": sum((line.credit for line, _ in lines), ZERO),
             "links": links,
             "source_label": _source_label(SourceType(entry.source_type).value),
-            "can_change": manual and entry.status == "posted" and reversed_by_id is None,
+            "can_change": manual
+            and entry.status == "posted"
+            and reversed_by_id is None
+            and not (links.get("reverses") and links["reverses"].status == "void"),
             "action_date": action_date or str(company_today()),
             "error": error,
         },
