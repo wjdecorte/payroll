@@ -66,8 +66,10 @@ def _to_decimal(value: object) -> Decimal:
 
 
 def _currency(value: object) -> str:
-    """``{{ v | currency }}`` -> ``$1,234.50``."""
-    return f"${round_money(_to_decimal(value)):,.2f}"
+    """``{{ v | currency }}`` -> ``$1,234.50`` (``-$12.50`` when negative)."""
+    amount = round_money(_to_decimal(value))
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,.2f}"
 
 
 def _amount(value: object) -> str:

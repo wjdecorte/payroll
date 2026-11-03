@@ -309,3 +309,19 @@ def test_journal_entry_form_and_service_reject_unsupported_date(owner_client, le
         ledger.posting.reverse(
             ledger.sale_jan.id, entry_date=date.fromisoformat(day), actor=ledger.owner
         )
+
+
+def test_banner_uses_readable_labels_and_brand_is_dci_books(owner_client, books):  # noqa: F811
+    page = owner_client.get("/reports/balance-sheet?asOf=2026-12-31")
+    assert "Assets = Liabilities + Equity" in page.text
+    assert "Debits = Credits" in page.text
+    assert "assets_equal_liabilities_plus_equity" not in page.text
+    assert "DCI Books</a>" in page.text
+    assert "Single Filing" not in page.text  # payroll-only line
+
+
+def test_payroll_meta_line_only_on_payroll_pages(owner_client):
+    assert "Single Filing" in owner_client.get("/").text
+    assert "Single Filing" in owner_client.get("/admin").text
+    for path in ("/accounts", "/journal", "/settings/ledger", "/reports"):
+        assert "Single Filing" not in owner_client.get(path).text, path

@@ -1,8 +1,9 @@
 {# Invariant banner. Context: invariants (list of name/ok/detail) #}
+{% set labels = {"assets_equal_liabilities_plus_equity": "Assets = Liabilities + Equity", "trial_balance_balanced": "Debits = Credits"} %}
 {% for inv in invariants %}
 {% if inv.ok %}
-<div class="alert alert-success py-2" role="status"><i class="bi bi-check-circle-fill me-1"></i><strong>Balanced</strong> · {{ inv.name }}: {{ inv.detail }}</div>
+<div class="alert alert-success py-2" role="status"><i class="bi bi-check-circle-fill me-1"></i><strong>Balanced</strong> · {{ labels.get(inv.name, inv.name) }}: {{ inv.detail }}</div>
 {% else %}
-<div class="alert alert-danger py-2" role="alert"><i class="bi bi-exclamation-triangle-fill me-1"></i><strong>Out of balance</strong> · {{ inv.name }}: {{ inv.detail }}</div>
+<div class="alert alert-danger py-2" role="alert"><i class="bi bi-exclamation-triangle-fill me-1"></i><strong>Out of balance</strong> · {{ labels.get(inv.name, inv.name) }}: {{ inv.detail }}</div>
 {% endif %}
 {% endfor %}

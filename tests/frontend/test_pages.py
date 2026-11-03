@@ -146,7 +146,7 @@ def test_admin_save_missing_fields_renders_error(owner_client):
         (0.1, "$0.10"),
         ("0.00", "$0.00"),
         (None, "$0.00"),
-        ("-12.50", "$-12.50"),
+        ("-12.50", "-$12.50"),
     ],
 )
 def test_currency_filter_accepts_str_decimal_int_float(value, expected):
