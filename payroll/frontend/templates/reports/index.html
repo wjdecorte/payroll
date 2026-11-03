@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Reports · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary"><i class="bi bi-bar-chart me-2"></i>Reports</div>
+    <div class="list-group list-group-flush">
+      {% for name, path, blurb in reports %}
+      <a class="list-group-item list-group-item-action" href="{{ path }}">
+        <strong>{{ name }}</strong>
+        <div class="text-muted small">{{ blurb }}</div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

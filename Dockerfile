@@ -14,8 +14,10 @@ ENV UV_LINK_MODE=copy
 
 WORKDIR /app
 
+# libpango-1.0-0 / libpangoft2-1.0-0 are WeasyPrint's native libraries (PDF export)
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends gcc build-essential curl \
+       libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -42,9 +44,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Put the virtualenv's executables on PATH
 ENV PATH="/app/.venv/bin:$PATH"
-
-# Create data directory for SQLite persistence
-RUN mkdir -p /app/data && chown appuser:0 /app/data
 
 # Commit SHA and CI run number of this build, shown in the UI and /info (declared late to keep earlier layers cached)
 ARG BUILD_SHA=dev

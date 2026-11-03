@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Register {{ register.name }} · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-journal-text me-2"></i>Register: {{ register.number or "" }} {{ register.name }}</span>
+      <a class="btn btn-sm btn-outline-light" href="/accounts">Chart of accounts</a>
+    </div>
+    <div class="card-body">
+      <form method="get" class="row g-2 align-items-end mb-3 no-print">
+        <div class="col-auto">
+          <label class="form-label" for="start">From</label>
+          <input class="form-control" type="date" id="start" name="start" value="{{ start }}">
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="end">To</label>
+          <input class="form-control" type="date" id="end" name="end" value="{{ end }}">
+        </div>
+        <div class="col-auto"><button type="submit" class="btn btn-brand">Show</button></div>
+      </form>
+      <table class="table table-sm table-hover align-middle">
+        <thead>
+          <tr><th>Date</th><th>Entry</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr>
+        </thead>
+        <tbody>
+          <tr class="table-light">
+            <td colspan="5">Opening balance</td>
+            <td class="num">{{ register.opening_balance | currency }}</td>
+          </tr>
+          {% for line in register.lines %}
+          <tr{% if line.is_void %} class="text-muted"{% endif %}>
+            <td>{{ line.entry_date }}</td>
+            <td><a href="/journal/{{ line.entry_id }}">#{{ line.entry_no }}</a>
+              {% if line.is_void %}<span class="badge bg-secondary">Void</span>{% endif %}
+              {% if line.is_reversal %}<span class="badge bg-info">Reversal</span>{% endif %}</td>
+            <td>{{ line.memo or "" }}</td>
+            <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
+            <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
+            <td class="num">{{ line.balance | currency }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold">
+            <td colspan="3">Totals / closing balance</td>
+            <td class="num">{{ register.total_debit | currency }}</td>
+            <td class="num">{{ register.total_credit | currency }}</td>
+            <td class="num">{{ register.closing_balance | currency }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

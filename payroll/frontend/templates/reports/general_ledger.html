@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary"><i class="bi bi-bar-chart me-2"></i>{{ title }}</div>
+    <div class="card-body">
+      {% include "reports/_picker.html" %}
+      {% if error %}
+      <div class="alert alert-danger" role="alert">{{ error }}</div>
+      {% else %}
+      {% include "reports/_exports.html" %}
+      <p class="text-muted small">{{ ledger.start }} to {{ ledger.end }}</p>
+      {% for reg in ledger.accounts %}
+      <h2 class="h6 mt-3"><a href="/accounts/{{ reg.account_id }}/register?start={{ ledger.start }}&amp;end={{ ledger.end }}">{{ reg.number or "" }} {{ reg.name }}</a></h2>
+      <table class="table table-sm table-hover align-middle">
+        <thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Memo</th><th scope="col" class="num">Debit</th><th scope="col" class="num">Credit</th><th scope="col" class="num">Balance</th></tr></thead>
+        <tbody>
+          <tr class="table-light"><td colspan="5">Opening balance</td><td class="num">{{ reg.opening_balance | currency }}</td></tr>
+          {% for line in reg.lines %}
+          <tr{% if line.is_void %} class="text-muted"{% endif %}>
+            <td>{{ line.entry_date }}</td>
+            <td><a href="/journal/{{ line.entry_id }}">#{{ line.entry_no }}</a>
+              {% if line.is_void %}<span class="badge bg-secondary">Void</span>{% endif %}
+              {% if line.is_reversal %}<span class="badge bg-info">Reversal</span>{% endif %}</td>
+            <td>{{ line.memo or "" }}</td>
+            <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
+            <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
+            <td class="num">{{ line.balance | currency }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><td colspan="3">Totals / closing balance</td><td class="num">{{ reg.total_debit | currency }}</td><td class="num">{{ reg.total_credit | currency }}</td><td class="num">{{ reg.closing_balance | currency }}</td></tr>
+        </tfoot>
+      </table>
+      {% else %}
+      <p class="text-muted">No activity in this period.</p>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

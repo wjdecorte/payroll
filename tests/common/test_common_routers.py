@@ -12,23 +12,23 @@ class TestHealthCheck:
 
 
 class TestInfo:
-    def test_returns_200(self, client):
-        response = client.get(f"{PREFIX}/info")
+    def test_returns_200(self, owner_client):
+        response = owner_client.get(f"{PREFIX}/info")
         assert response.status_code == 200
 
-    def test_returns_app_name(self, client):
-        data = client.get(f"{PREFIX}/info").json()
+    def test_returns_app_name(self, owner_client):
+        data = owner_client.get(f"{PREFIX}/info").json()
         assert data["appName"] == "DCI Payroll"
 
-    def test_returns_version(self, client):
-        data = client.get(f"{PREFIX}/info").json()
+    def test_returns_version(self, owner_client):
+        data = owner_client.get(f"{PREFIX}/info").json()
         assert "version" in data
 
-    def test_returns_build(self, client):
-        data = client.get(f"{PREFIX}/info").json()
+    def test_returns_build(self, owner_client):
+        data = owner_client.get(f"{PREFIX}/info").json()
         assert data["build"] == "dev"
         assert data["buildNumber"] == 0
 
-    def test_returns_debug_mode(self, client):
-        data = client.get(f"{PREFIX}/info").json()
+    def test_returns_debug_mode(self, owner_client):
+        data = owner_client.get(f"{PREFIX}/info").json()
         assert "debugMode" in data

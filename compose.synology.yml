@@ -1,16 +1,20 @@
+# Synology deployment. The database is NOT published on the host (internal network only).
+# Reverse-proxy HTTPS (DSM Login Portal > Advanced > Reverse Proxy) to http://localhost:8070.
+# The app port is bound to 127.0.0.1 only: plain-http LAN access to :8070 is intentionally impossible.
+# ENCRYPTION_KEY is required (see docs/RUNBOOK.md); put it in a .env file next to this file.
 services:
   db:
     image: postgres:17
     environment:
       POSTGRES_USER: payroll
-      POSTGRES_PASSWORD: payroll
+      POSTGRES_PASSWORD: payroll   # internal-only DB; change it (and DATABASE_URL below) per docs/RUNBOOK.md
       POSTGRES_DB: payroll
-    ports:
-      - "5433:5432"
     volumes:
       # Bind mount so DB data lives in a visible Synology folder.
       # Back this up with Hyper Backup or DSM Snapshot Replication.
       - /volume1/docker/payroll/pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payroll"]
@@ -20,20 +24,26 @@ services:
       start_period: 10s
 
   api:
-    # Image is built by GitHub Actions and pushed to GHCR on every push to master.
+    # Image is built by GitHub Actions and pushed to GHCR on every push to master (after tests pass).
     image: ghcr.io/wjdecorte/payroll:latest
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     ports:
-      - "9000:9000"
+      # Host 8070 is the port the old UI was published on; the app listens on 9000 in the container.
+      # Loopback only: reachable by the DSM reverse proxy (localhost:8070), not from the LAN.
+      - "127.0.0.1:8070:9000"
     environment:
       DATABASE_URL: postgresql://payroll:payroll@db:5432/payroll
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env (see docs/RUNBOOK.md)}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       WORKERS: 2
       API_LOG_TYPE: standard
       DEBUG_MODE: "false"
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/payroll/api/v1/healthcheck"]
@@ -42,24 +52,9 @@ services:
       retries: 3
       start_period: 10s
 
-  frontend:
-    image: ghcr.io/wjdecorte/payroll:latest
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-    command: ["uvicorn", "payroll.frontend.app:app", "--host", "0.0.0.0", "--port", "8080"]
-    ports:
-      - "8070:8080"
-    environment:
-      API_BASE_URL: http://api:9000/payroll/api/v1
-      FRONTEND_PORT: "8080"
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
-
   # ── Watchtower: auto-update containers when a new image is pushed ──
   # Checks GHCR every 5 minutes and restarts only the services labelled
-  # com.centurylinklabs.watchtower.enable=true (api, frontend), leaving
+  # com.centurylinklabs.watchtower.enable=true (api), leaving
   # the Postgres container alone.
   #
   # If the GHCR package is ever made private, mount a config.json with
@@ -76,3 +71,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 300 --cleanup --label-enable
     restart: unless-stopped
+
+networks:
+  internal:

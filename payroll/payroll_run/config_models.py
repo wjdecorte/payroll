@@ -1,6 +1,8 @@
+from decimal import Decimal
+
 from sqlmodel import Field
 
-from payroll.common.models import AppBaseModel
+from payroll.common.models import AppBaseModel, money_field
 
 
 class PayrollConfig(AppBaseModel, table=True):
@@ -8,9 +10,9 @@ class PayrollConfig(AppBaseModel, table=True):
 
     __tablename__ = "payroll_config"
 
-    default_gross_salary: float = Field(default=0.0, ge=0)
-    default_health_insurance: float = Field(default=0.0, ge=0)
-    default_hsa_contribution: float = Field(default=0.0, ge=0)
+    default_gross_salary: Decimal = money_field(ge=0)
+    default_health_insurance: Decimal = money_field(ge=0)
+    default_hsa_contribution: Decimal = money_field(ge=0)
     default_health_in_income_tax: bool = Field(default=True)
     default_hsa_in_income_tax: bool = Field(default=False)
     default_use_previous_ytd_fica: bool = Field(default=True)

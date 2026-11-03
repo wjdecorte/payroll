@@ -11,15 +11,22 @@ from alembic import context
 from sqlmodel import SQLModel
 
 # Import all models to register them with SQLModel metadata
+import payroll.audit.models  # noqa: F401
+import payroll.auth.models  # noqa: F401
+import payroll.ledger.models  # noqa: F401
 import payroll.payroll_run.config_models  # noqa: F401
 import payroll.payroll_run.models  # noqa: F401
 
 # Alembic Config object — gives access to values in alembic.ini
 config = context.config
 
-# Set up Python logging from the alembic.ini [loggers] section
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Set up Python logging from the alembic.ini [loggers] section, but only for a
+# standalone ``alembic`` run. When the app (lifespan, in every worker) or the
+# runner calls Alembic, it sets ``configure_logger=False``: fileConfig would
+# otherwise replace the root handlers and, with the default
+# disable_existing_loggers=True, silence every payroll.* and uvicorn.* logger.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # SQLModel's metadata contains all registered table models
 target_metadata = SQLModel.metadata
@@ -38,7 +45,6 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,  # Required for SQLite ALTER TABLE support
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -50,18 +56,18 @@ def run_migrations_online() -> None:
     """
     from sqlalchemy import create_engine
 
-    url = config.get_main_option("sqlalchemy.url")
-    connect_args = {"check_same_thread": False} if url and url.startswith("sqlite") else {}
-    connectable = create_engine(url, connect_args=connect_args)
+    connectable = create_engine(config.get_main_option("sqlalchemy.url"))
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            render_as_batch=True,  # Required for SQLite ALTER TABLE support
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()  # do not leave pooled connections behind for the GC
 
 
 if context.is_offline_mode():

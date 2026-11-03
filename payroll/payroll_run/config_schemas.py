@@ -1,14 +1,17 @@
+from decimal import Decimal
+
 from pydantic import Field
 
+from payroll.common.money import Money
 from payroll.common.schemas import AppBaseSchema
 
 
 class PayrollConfigBase(AppBaseSchema):
     """Editable payroll defaults and QuickBooks journal account names."""
 
-    default_gross_salary: float = Field(default=0.0, ge=0)
-    default_health_insurance: float = Field(default=0.0, ge=0)
-    default_hsa_contribution: float = Field(default=0.0, ge=0)
+    default_gross_salary: Money = Field(default=Decimal("0.00"), ge=0)
+    default_health_insurance: Money = Field(default=Decimal("0.00"), ge=0)
+    default_hsa_contribution: Money = Field(default=Decimal("0.00"), ge=0)
     default_health_in_income_tax: bool = True
     default_hsa_in_income_tax: bool = False
     default_use_previous_ytd_fica: bool = True

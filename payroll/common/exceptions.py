@@ -13,3 +13,9 @@ class ResourceNotFoundError(AppBaseError):
 class ValidationError(AppBaseError):
     message: str = "Validation error"
     http_code: int = 422
+
+
+@dataclass
+class PermissionDeniedError(AppBaseError):
+    message: str = "You do not have permission to perform this action"
+    http_code: int = 403

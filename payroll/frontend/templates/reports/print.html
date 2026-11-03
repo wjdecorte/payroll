@@ -1,0 +1,133 @@
+{# Standalone print layout for the PDF export; rendered to a string and given only to WeasyPrint,
+   never served to a browser, so the inline <style> is fine. Everything is autoescaped. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  @page { size: Letter; margin: 0.7in 0.6in; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #666; } }
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 9pt; color: #111; }
+  h1 { font-size: 16pt; margin: 0 0 2pt; }
+  h2 { font-size: 11pt; margin: 14pt 0 4pt; }
+  .sub { color: #555; margin: 0 0 10pt; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 6pt; }
+  th, td { padding: 2pt 4pt; text-align: left; vertical-align: top; }
+  th { border-bottom: 1px solid #333; }
+  td { border-bottom: 1px solid #ddd; }
+  .num { text-align: right; white-space: nowrap; }
+  tr.strong td, tr.strong th, tfoot td { font-weight: bold; }
+  tr.section td { font-weight: bold; background: #f0f0f0; }
+  .muted { color: #777; }
+  .ok { color: #1a6b2f; } .bad { color: #a11; font-weight: bold; }
+  tr { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+<h1>{{ title }}</h1>
+{% if statement %}
+<p class="sub">Basis: {{ statement.basis.value | capitalize }}. {{ statement.basis_note }}</p>
+{% set columns = statement.columns %}
+{% set compared = columns | length > 1 %}
+<table>
+  <thead>
+    <tr>
+      <th>{{ statement.title }}</th>
+      {% for col in columns %}<th class="num">{{ col.label }}</th>{% endfor %}
+      {% if compared %}<th class="num">Change</th><th class="num">% change</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in statement.rows %}
+    <tr{% if row.kind in ("subtotal", "total") %} class="strong"{% elif row.kind == "section" %} class="section"{% endif %}>
+      <td style="padding-left: {{ 4 + ([row.depth, 5] | min) * 10 }}pt">{{ row.label }}</td>
+      {% if row.kind == "section" %}
+      <td colspan="{{ columns | length + (2 if compared else 0) }}"></td>
+      {% else %}
+      {% for amount in row.amounts %}<td class="num">{{ amount | currency }}</td>{% endfor %}
+      {% if compared %}
+      <td class="num">{{ row.change | currency if row.change is not none else "" }}</td>
+      <td class="num">{{ row.pct_change ~ "%" if row.pct_change is not none else "n/a" }}</td>
+      {% endif %}
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% elif trial %}
+<p class="sub">As of {{ trial.as_of }}</p>
+<table>
+  <thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+  <tbody>
+    {% for row in trial.rows %}
+    <tr>
+      <td>{{ row.number or "" }} {{ row.name }}</td>
+      <td class="num">{{ row.debit | currency if row.debit | nonzero else "" }}</td>
+      <td class="num">{{ row.credit | currency if row.credit | nonzero else "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><td>Total</td><td class="num">{{ trial.total_debit | currency }}</td><td class="num">{{ trial.total_credit | currency }}</td></tr></tfoot>
+</table>
+{% elif ledger %}
+<p class="sub">{{ ledger.start }} to {{ ledger.end }}</p>
+{% for reg in ledger.accounts %}
+<h2>{{ reg.number or "" }} {{ reg.name }}</h2>
+<table>
+  <thead><tr><th>Date</th><th>Entry</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+  <tbody>
+    <tr class="muted"><td colspan="5">Opening balance</td><td class="num">{{ reg.opening_balance | currency }}</td></tr>
+    {% for line in reg.lines %}
+    <tr{% if line.is_void %} class="muted"{% endif %}>
+      <td>{{ line.entry_date }}</td>
+      <td>#{{ line.entry_no }}{% if line.is_void %} (void){% endif %}{% if line.is_reversal %} (reversal){% endif %}</td>
+      <td>{{ line.memo or "" }}</td>
+      <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
+      <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
+      <td class="num">{{ line.balance | currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><td colspan="3">Totals / closing balance</td><td class="num">{{ reg.total_debit | currency }}</td><td class="num">{{ reg.total_credit | currency }}</td><td class="num">{{ reg.closing_balance | currency }}</td></tr></tfoot>
+</table>
+{% else %}
+<p class="muted">No activity in this period.</p>
+{% endfor %}
+{% elif journal %}
+<p class="sub">{{ journal.start }} to {{ journal.end }}</p>
+{% for e in journal.entries %}
+<table{% if e.is_void %} class="muted"{% endif %}>
+  <thead>
+    <tr>
+      <th colspan="2">{{ e.entry_date }} &middot; #{{ e.entry_no }} &middot; {{ e.source_type.value | replace("_", " ") | capitalize }}{% if e.is_void %} (void){% endif %}{% if e.is_reversal %} (reversal){% endif %}{% if e.memo %} &middot; {{ e.memo }}{% endif %}</th>
+      <th class="num">Debit</th><th class="num">Credit</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for line in e.lines %}
+    <tr>
+      <td>{{ line.account_number or "" }} {{ line.account_name }}</td>
+      <td>{{ line.memo or "" }}</td>
+      <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
+      <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><td colspan="2">Total</td><td class="num">{{ e.total_debit | currency }}</td><td class="num">{{ e.total_credit | currency }}</td></tr></tfoot>
+</table>
+{% else %}
+<p class="muted">No entries in this period.</p>
+{% endfor %}
+{% endif %}
+{% if invariants %}
+<h2>Checks</h2>
+<table>
+  <tbody>
+    {% for i in invariants %}
+    <tr><td>{{ i.name }}</td><td class="{{ 'ok' if i.ok else 'bad' }}">{{ "OK" if i.ok else "FAILED" }}</td><td>{{ i.detail }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+</body>
+</html>

@@ -1,6 +1,6 @@
 [project]
 name = "payroll"
-version = "1.2.0"
+version = "2.1.0"
 description = "S-Corp owner payroll calculator with QuickBooks journal entries"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -16,6 +16,11 @@ dependencies = [
     "httpx==0.*",
     "jinja2==3.*",
     "psycopg2-binary==2.*",
+    "cryptography>=50.0.2",
+    "argon2-cffi>=25.1.0",
+    "pyotp>=2.10.0",
+    "segno>=1.6.6",
+    "weasyprint>=70.0",
 ]
 
 [build-system]
@@ -24,6 +29,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.14",
     "pytest==8.*",
     "pytest-cov==6.*",
     "ruff>=0.8.0",
@@ -34,7 +40,7 @@ dev = [
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short --cov=payroll --cov-report=term-missing"
+addopts = "-v --tb=short --cov=payroll --cov-report=term-missing --cov-fail-under=96"
 
 [tool.coverage.run]
 omit = [

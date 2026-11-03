@@ -5,16 +5,11 @@ from sqlmodel import Session
 
 from payroll import app_settings
 
-# Build connect_args based on database type.
-# SQLite requires check_same_thread=False for use with FastAPI's async workers.
-_connect_args: dict = (
-    {"check_same_thread": False} if app_settings.database_url.startswith("sqlite") else {}
-)
-
+# A lock wait fails after 10 s instead of holding a request (and its worker) forever.
 engine = create_engine(
     app_settings.database_url,
-    connect_args=_connect_args,
     echo=app_settings.debug_mode,
+    connect_args={"options": "-c lock_timeout=10000"},
 )
 
 

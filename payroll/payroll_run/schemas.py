@@ -1,7 +1,9 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import Field, computed_field
 
+from payroll.common.money import Money
 from payroll.common.schemas import AppBaseSchema
 from payroll.tax.schemas import TaxConstantsSchema
 
@@ -15,15 +17,15 @@ class JournalLine(AppBaseSchema):
 
     account: str
     memo: str = ""
-    debit: float = 0.0
-    credit: float = 0.0
+    debit: Money = Decimal("0.00")
+    credit: Money = Decimal("0.00")
 
 
 class JournalEntry(AppBaseSchema):
     """
     A complete double-entry journal entry ready for manual entry in QBO.
 
-    ``dr_total`` and ``cr_total`` must be equal (balanced entry).
+    ``dr_total`` and ``cr_total`` must be exactly equal (balanced entry).
     """
 
     title: str
@@ -32,18 +34,18 @@ class JournalEntry(AppBaseSchema):
 
     @computed_field  # type: ignore[misc]
     @property
-    def dr_total(self) -> float:
-        return round(sum(ln.debit for ln in self.lines), 2)
+    def dr_total(self) -> Decimal:
+        return sum((ln.debit for ln in self.lines), Decimal("0.00"))
 
     @computed_field  # type: ignore[misc]
     @property
-    def cr_total(self) -> float:
-        return round(sum(ln.credit for ln in self.lines), 2)
+    def cr_total(self) -> Decimal:
+        return sum((ln.credit for ln in self.lines), Decimal("0.00"))
 
     @computed_field  # type: ignore[misc]
     @property
     def is_balanced(self) -> bool:
-        return abs(self.dr_total - self.cr_total) < 0.02
+        return self.dr_total == self.cr_total
 
 
 # ---------------------------------------------------------------------------
@@ -54,11 +56,11 @@ class JournalEntry(AppBaseSchema):
 class TaxPaymentSummary(AppBaseSchema):
     """Amounts the S-Corp must remit to tax authorities after each payroll."""
 
-    federal_income_tax: float
-    social_security_total: float  # EE + ER combined
-    medicare_total: float  # EE (incl. additional) + ER combined
-    total_federal_eftps: float
-    georgia_income_tax: float
+    federal_income_tax: Money
+    social_security_total: Money  # EE + ER combined
+    medicare_total: Money  # EE (incl. additional) + ER combined
+    total_federal_eftps: Money
+    georgia_income_tax: Money
     federal_due_date_note: str = (
         "Deposit via EFTPS by the 15th of the following month (monthly depositor)."
     )
@@ -81,12 +83,12 @@ class PayrollInput(AppBaseSchema):
         description="Pay period in YYYY-MM format",
         examples=["2026-01"],
     )
-    gross_salary: float = Field(..., gt=0, description="Monthly gross cash salary")
-    health_insurance: float = Field(
-        default=0.0, ge=0, description="Monthly S-Corp health insurance premium"
+    gross_salary: Money = Field(..., gt=0, description="Monthly gross cash salary")
+    health_insurance: Money = Field(
+        default=Decimal("0.00"), ge=0, description="Monthly S-Corp health insurance premium"
     )
-    hsa_contribution: float = Field(
-        default=0.0, ge=0, description="Monthly HSA employer contribution"
+    hsa_contribution: Money = Field(
+        default=Decimal("0.00"), ge=0, description="Monthly HSA employer contribution"
     )
     health_in_income_tax: bool = Field(
         default=True,
@@ -99,8 +101,8 @@ class PayrollInput(AppBaseSchema):
         default=False,
         description="Include HSA in income-tax wages. Consult your CPA.",
     )
-    ytd_fica_wages: float = Field(
-        default=0.0,
+    ytd_fica_wages: Money = Field(
+        default=Decimal("0.00"),
         ge=0,
         description="Year-to-date FICA wages *before* this payroll run. Ignored when use_previous_ytd_fica is true.",
     )
@@ -122,36 +124,38 @@ class TaxDetail(AppBaseSchema):
     """Full breakdown of all calculated amounts for a payroll run."""
 
     # Wage bases
-    fica_wages: float
-    income_tax_wages: float
-    annual_income_tax_wages: float
+    fica_wages: Money
+    income_tax_wages: Money
+    annual_income_tax_wages: Money
 
     # Social Security
-    ss_taxable_wages: float
-    ss_ee: float
-    ss_er: float
+    ss_taxable_wages: Money
+    ss_ee: Money
+    ss_er: Money
     ss_cap_hit: bool
 
     # Medicare
-    medicare_ee: float
-    additional_medicare: float
-    total_medicare_ee: float
-    medicare_er: float
+    medicare_ee: Money
+    additional_medicare: Money
+    total_medicare_ee: Money
+    medicare_er: Money
 
     # Income Tax
-    annual_fed_tax: float
-    federal_withholding: float
-    ga_annual_taxable: float
-    annual_ga_tax: float
-    ga_withholding: float
+    # Annual projections are not stored on a saved run, so they are None when a
+    # run is loaded from history (only stored amounts are ever shown for it).
+    annual_fed_tax: Money | None = None
+    federal_withholding: Money
+    ga_annual_taxable: Money | None = None
+    annual_ga_tax: Money | None = None
+    ga_withholding: Money
 
     # Totals
-    total_employee_deductions: float
-    net_pay: float
-    total_employer_taxes: float
-    total_employer_cost: float
-    ytd_fica_before: float
-    ytd_fica_after: float
+    total_employee_deductions: Money
+    net_pay: Money
+    total_employer_taxes: Money
+    total_employer_cost: Money
+    ytd_fica_before: Money
+    ytd_fica_after: Money
 
 
 class PayrollResult(AppBaseSchema):
@@ -159,9 +163,9 @@ class PayrollResult(AppBaseSchema):
 
     id: int | None = None
     pay_period: str
-    gross_salary: float
-    health_insurance: float
-    hsa_contribution: float
+    gross_salary: Money
+    health_insurance: Money
+    hsa_contribution: Money
     health_in_income_tax: bool
     hsa_in_income_tax: bool
     notes: str | None
@@ -179,11 +183,11 @@ class PayrollRunSummary(AppBaseSchema):
 
     id: int
     pay_period: str
-    gross_salary: float
-    net_pay: float
-    federal_withholding: float
-    ga_withholding: float
-    total_employer_cost: float
+    gross_salary: Money
+    net_pay: Money
+    federal_withholding: Money
+    ga_withholding: Money
+    total_employer_cost: Money
     tax_year: int
     notes: str | None
     create_date: datetime

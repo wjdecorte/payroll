@@ -1,5 +1,9 @@
+import base64
+import binascii
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,11 +12,12 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     # Application
     app_name: str = "DCI Payroll"
-    app_version: str = "1.2.0"
+    app_version: str = "2.1.0"
     # Git commit the running image was built from; set via BUILD_SHA at image build time
     build_sha: str = "dev"
     # Monotonic CI run number; 0 for local runs
@@ -21,8 +26,29 @@ class Settings(BaseSettings):
     base_url_prefix: str = "/payroll/api/v1"
     debug_mode: bool = False
 
-    # Database — defaults to local SQLite; override with PostgreSQL URL in production
-    database_url: str = "sqlite:///./payroll.db"
+    # Database — PostgreSQL only; the default targets the local dev database (compose.yml)
+    database_url: str = "postgresql://payroll:payroll@localhost:5432/payroll"
+
+    # Secrets at rest — base64-encoded 32 random bytes (AES-256-GCM); required, no default.
+    # Generate: python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+    encryption_key: str = Field(repr=False)
+
+    # Sessions / login hardening
+    session_cookie_name: str = "dci_session"
+    session_cookie_secure: bool = True
+    session_idle_minutes: int = 30
+    session_absolute_hours: int = 12
+    max_failed_logins: int = 5
+    lockout_minutes: int = 15
+    totp_issuer: str = "DCI Books"
+    # Largest request body accepted (bytes); bigger requests get 413 before parsing.
+    max_request_body_bytes: int = 1_048_576
+    # Argon2 hashes/verifies allowed at once per process (each needs ~64 MiB);
+    # further login attempts wait for a slot instead of exhausting memory.
+    max_concurrent_password_hashes: int = Field(default=4, ge=1)
+
+    # IANA timezone that defines "today" and period boundaries for reports
+    company_timezone: str = "America/New_York"
 
     # Logging — "standard" for human-readable, "json" for structured/production
     api_log_type: str = "standard"
@@ -41,6 +67,28 @@ class Settings(BaseSettings):
     acct_health_ins_payable: str = "Payroll Liabilities:S-Corp Health Insurance"
     acct_hsa_payable: str = "Payroll Liabilities:Co. HSA"
     acct_checking: str = "Business Checking"
+
+    @field_validator("encryption_key")
+    @classmethod
+    def _validate_encryption_key(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("ENCRYPTION_KEY must be valid base64 encoding of 32 bytes") from exc
+        if len(decoded) != 32:
+            raise ValueError(f"ENCRYPTION_KEY must decode to exactly 32 bytes (got {len(decoded)})")
+        return value
+
+    @field_validator("company_timezone")
+    @classmethod
+    def _validate_company_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+            raise ValueError(
+                f"COMPANY_TIMEZONE must be a valid IANA timezone (got {value!r})"
+            ) from exc
+        return value
 
     @property
     def accounts(self) -> dict[str, str]:

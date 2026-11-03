@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}New journal entry · DCI Books{% endblock %}
+{% macro row_fields(row, accounts, number) %}
+<td>
+  <select class="form-select form-select-sm{% if row.error %} is-invalid{% endif %}" name="line_account" aria-label="Account">
+    <option value="">Choose an account</option>
+    {% for a in accounts %}
+    <option value="{{ a.id }}"{% if row.account == a.id %} selected{% endif %}>{{ a.label }}</option>
+    {% endfor %}
+  </select>
+  {% if row.error %}<div class="invalid-feedback d-block">{{ row.error }}</div>{% endif %}
+</td>
+<td><input class="form-control form-control-sm num{% if row.error %} is-invalid{% endif %}" name="line_debit" inputmode="decimal" autocomplete="off" aria-label="Debit" value="{{ row.debit }}"></td>
+<td><input class="form-control form-control-sm num{% if row.error %} is-invalid{% endif %}" name="line_credit" inputmode="decimal" autocomplete="off" aria-label="Credit" value="{{ row.credit }}"></td>
+<td><input class="form-control form-control-sm" name="line_memo" maxlength="500" aria-label="Line memo" value="{{ row.memo }}"></td>
+<td class="text-end"><button type="button" class="btn btn-sm btn-outline-secondary" data-je-remove aria-label="Remove line"><i class="bi bi-x-lg"></i></button></td>
+{% endmacro %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary">New journal entry</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/journal" id="je-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label class="form-label" for="entry_date">Date</label>
+            <input class="form-control" type="date" id="entry_date" name="entry_date" required value="{{ values.entry_date }}">
+          </div>
+          <div class="col-md-9">
+            <label class="form-label" for="memo">Memo</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th><th>Memo</th><th></th></tr>
+          </thead>
+          <tbody id="je-rows">
+            {% for row in rows %}
+            <tr data-je-row>{{ row_fields(row, accounts, loop.index) }}</tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr class="fw-bold">
+              <td>Totals</td>
+              <td class="num" id="je-total-debit">&nbsp;</td>
+              <td class="num" id="je-total-credit">&nbsp;</td>
+              <td colspan="2">Difference: <span id="je-difference">&nbsp;</span></td>
+            </tr>
+          </tfoot>
+        </table>
+        <template id="je-row-template">
+          <tr data-je-row>{{ row_fields(blank, accounts, 0) }}</tr>
+        </template>
+        <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="je-add"><i class="bi bi-plus-lg me-1"></i>Add line</button>
+        <div>
+          <button type="submit" class="btn btn-brand" id="je-submit">Post entry</button>
+          <a class="btn btn-outline-secondary" href="/journal">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/journal.js"></script>{% endblock %}

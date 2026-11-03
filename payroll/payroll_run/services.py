@@ -9,15 +9,23 @@ Flow for a calculation request:
   3. Build QuickBooks journal entries
   4. Optionally persist a PayrollRun record
   5. Return a PayrollResult
+
+All money is exact ``Decimal``. A saved run is always rebuilt from its STORED
+amounts, never recalculated: the stored figures are what was booked in
+QuickBooks, and a recalculation can differ (e.g. rounding-rule changes).
 """
 
 import logging
 import re
 from datetime import datetime
+from decimal import Decimal
 
 from sqlmodel import Session, select
 
 from payroll import app_settings
+from payroll.audit.services import record as record_audit
+from payroll.auth.models import User
+from payroll.auth.permissions import OWNER, ensure_role
 from payroll.tax import constants as tax
 from payroll.tax.engine import calc_payroll
 from payroll.tax.schemas import PayrollCalculation, TaxConstantsSchema
@@ -55,15 +63,21 @@ class PayrollRunService:
     # Public API
     # ------------------------------------------------------------------
 
-    def calculate(self, payload: PayrollInput) -> PayrollResult:
+    def calculate(self, payload: PayrollInput, *, actor: User) -> PayrollResult:
         """
-        Calculate a payroll run and optionally save it.
+        Calculate a payroll run and optionally save it. Saving needs an ``owner``
+        ``actor`` (recorded as the audit row's ``user_id``); a calculation that is
+        not saved changes nothing and is open to any role.
 
         Raises:
+            PermissionDeniedError: If save_run=True and ``actor`` is not an owner.
             InvalidPayPeriodError: If pay_period is not in YYYY-MM format.
             PayrollRunAlreadyExistsError: If a run for this period already exists
                                           and save_run=True.
         """
+        if payload.save_run:
+            ensure_role(actor, OWNER)
+
         self._validate_pay_period(payload.pay_period)
 
         if payload.save_run:
@@ -77,7 +91,7 @@ class PayrollRunService:
         # Resolve YTD FICA wages from the most recent saved run if requested
         if payload.use_previous_ytd_fica:
             payload.ytd_fica_wages = self._get_previous_ytd_fica(payload.pay_period)
-            logger.info("Resolved YTD FICA from previous run: %.2f", payload.ytd_fica_wages)
+            logger.info("Resolved YTD FICA from previous run: %s", payload.ytd_fica_wages)
 
         calc = calc_payroll(
             gross_salary=payload.gross_salary,
@@ -89,7 +103,7 @@ class PayrollRunService:
         )
 
         logger.info(
-            "Calculated payroll for period=%s gross=%.2f net=%.2f",
+            "Calculated payroll for period=%s gross=%s net=%s",
             payload.pay_period,
             payload.gross_salary,
             calc.net_pay,
@@ -97,36 +111,21 @@ class PayrollRunService:
 
         saved_run: PayrollRun | None = None
         if payload.save_run:
-            saved_run = self._persist(payload, calc)
+            saved_run = self._persist(payload, calc, actor)
             logger.info("Saved payroll run id=%d", saved_run.id)
 
-        return self._build_result(payload, calc, saved_run)
+        tax_detail = self._tax_detail_from_calc(calc, payload.ytd_fica_wages)
+        return self._build_result(payload, tax_detail, saved_run)
 
     def get_run(self, run_id: int) -> PayrollResult:
-        """Retrieve a saved payroll run by ID and rebuild its full result."""
+        """Retrieve a saved payroll run by ID and rebuild its full result.
+
+        Every amount comes from the stored columns — the run is never
+        recalculated. Journal entries are rebuilt from those stored amounts so
+        they reflect any account-name changes made since the run was saved.
+        """
         run = self._get_or_raise(run_id)
-        # Re-derive the full result from the saved inputs so journal entries
-        # reflect any account-name changes made since the run was saved.
-        payload = PayrollInput(
-            pay_period=run.pay_period,
-            gross_salary=run.gross_salary,
-            health_insurance=run.health_insurance,
-            hsa_contribution=run.hsa_contribution,
-            health_in_income_tax=run.health_in_income_tax,
-            hsa_in_income_tax=run.hsa_in_income_tax,
-            ytd_fica_wages=run.ytd_fica_before,
-            save_run=False,
-            notes=run.notes,
-        )
-        calc = calc_payroll(
-            gross_salary=run.gross_salary,
-            health_insurance=run.health_insurance,
-            hsa_contribution=run.hsa_contribution,
-            health_in_income_tax=run.health_in_income_tax,
-            hsa_in_income_tax=run.hsa_in_income_tax,
-            ytd_fica_wages=run.ytd_fica_before,
-        )
-        return self._build_result(payload, calc, run)
+        return self._build_result(run, self._tax_detail_from_run(run), run)
 
     def list_runs(self, limit: int = 50, offset: int = 0) -> list[PayrollRunSummary]:
         """Return a paginated list of saved payroll runs, newest first."""
@@ -139,9 +138,19 @@ class PayrollRunService:
         runs = self.session.exec(statement).all()
         return [PayrollRunSummary.model_validate(r) for r in runs]
 
-    def delete_run(self, run_id: int) -> None:
-        """Delete a payroll run by ID."""
+    def delete_run(self, run_id: int, *, actor: User) -> None:
+        """Delete a payroll run by ID. ``actor`` must be an owner (checked first)."""
+        ensure_role(actor, OWNER)
         run = self._get_or_raise(run_id)
+        # Audited in the same transaction as the delete (committed together below).
+        record_audit(
+            self.session,
+            action="payroll_run.delete",
+            user_id=actor.id,
+            entity="payroll_run",
+            entity_id=str(run.id),
+            before=self._audit_snapshot(run),
+        )
         self.session.delete(run)
         self.session.commit()
         logger.info("Deleted payroll run id=%d", run_id)
@@ -161,11 +170,11 @@ class PayrollRunService:
             select(PayrollRun).where(PayrollRun.pay_period == pay_period)
         ).first()
 
-    def _get_previous_ytd_fica(self, pay_period: str) -> float:
+    def _get_previous_ytd_fica(self, pay_period: str) -> Decimal:
         """Return ytd_fica_after from the most recent saved run before this period.
 
         Only considers runs in the same calendar year (YTD resets each January).
-        Returns 0.0 when no prior run exists.
+        Returns 0.00 when no prior run exists.
         """
         year = pay_period[:4]
         run = self.session.exec(
@@ -177,7 +186,7 @@ class PayrollRunService:
             .order_by(PayrollRun.pay_period.desc())  # type: ignore[attr-defined]
             .limit(1)
         ).first()
-        return run.ytd_fica_after if run else 0.0
+        return run.ytd_fica_after if run else Decimal("0.00")
 
     def _get_or_raise(self, run_id: int) -> PayrollRun:
         run = self.session.get(PayrollRun, run_id)
@@ -185,7 +194,7 @@ class PayrollRunService:
             raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
         return run
 
-    def _persist(self, payload: PayrollInput, calc: PayrollCalculation) -> PayrollRun:
+    def _persist(self, payload: PayrollInput, calc: PayrollCalculation, actor: User) -> PayrollRun:
         run = PayrollRun(
             pay_period=payload.pay_period,
             gross_salary=payload.gross_salary,
@@ -215,61 +224,114 @@ class PayrollRunService:
             ytd_fica_after=calc.ytd_fica_after,
         )
         self.session.add(run)
+        self.session.flush()  # assign run.id for the audit row
+        # Audited in the same transaction as the save (committed together below).
+        record_audit(
+            self.session,
+            action="payroll_run.save",
+            user_id=actor.id,
+            entity="payroll_run",
+            entity_id=str(run.id),
+            after=self._audit_snapshot(run),
+        )
         self.session.commit()
         self.session.refresh(run)
         return run
 
+    @staticmethod
+    def _audit_snapshot(run: PayrollRun) -> dict[str, object]:
+        """The key fields of a run recorded in the audit log."""
+        return {
+            "pay_period": run.pay_period,
+            "gross_salary": run.gross_salary,
+            "net_pay": run.net_pay,
+        }
+
+    @staticmethod
+    def _tax_detail_from_calc(calc: PayrollCalculation, ytd_fica_before: Decimal) -> TaxDetail:
+        return TaxDetail(
+            fica_wages=calc.fica_wages,
+            income_tax_wages=calc.income_tax_wages,
+            annual_income_tax_wages=calc.annual_income_tax_wages,
+            ss_taxable_wages=calc.ss_taxable_wages,
+            ss_ee=calc.ss_ee,
+            ss_er=calc.ss_er,
+            ss_cap_hit=calc.ss_cap_hit,
+            medicare_ee=calc.medicare_ee,
+            additional_medicare=calc.additional_medicare,
+            total_medicare_ee=calc.total_medicare_ee,
+            medicare_er=calc.medicare_er,
+            annual_fed_tax=calc.annual_fed_tax,
+            federal_withholding=calc.federal_withholding,
+            ga_annual_taxable=calc.ga_annual_taxable,
+            annual_ga_tax=calc.annual_ga_tax,
+            ga_withholding=calc.ga_withholding,
+            total_employee_deductions=calc.total_employee_deductions,
+            net_pay=calc.net_pay,
+            total_employer_taxes=calc.total_employer_taxes,
+            total_employer_cost=calc.total_employer_cost,
+            ytd_fica_before=ytd_fica_before,
+            ytd_fica_after=calc.ytd_fica_after,
+        )
+
+    @staticmethod
+    def _tax_detail_from_run(run: PayrollRun) -> TaxDetail:
+        """Build the tax detail from a saved run's stored amounts (no recalculation).
+
+        ``annual_income_tax_wages`` and ``ss_cap_hit`` are derived directly from
+        stored columns; the annual tax projections are not stored, so they are None.
+        """
+        return TaxDetail(
+            fica_wages=run.fica_wages,
+            income_tax_wages=run.income_tax_wages,
+            annual_income_tax_wages=run.income_tax_wages * tax.PAY_PERIODS_PER_YEAR,
+            ss_taxable_wages=run.ss_taxable_wages,
+            ss_ee=run.ss_ee,
+            ss_er=run.ss_er,
+            ss_cap_hit=(run.ytd_fica_before + run.fica_wages) >= tax.SS_WAGE_BASE,
+            medicare_ee=run.medicare_ee,
+            additional_medicare=run.additional_medicare,
+            total_medicare_ee=run.total_medicare_ee,
+            medicare_er=run.medicare_er,
+            federal_withholding=run.federal_withholding,
+            ga_withholding=run.ga_withholding,
+            total_employee_deductions=run.total_employee_deductions,
+            net_pay=run.net_pay,
+            total_employer_taxes=run.total_employer_taxes,
+            total_employer_cost=run.total_employer_cost,
+            ytd_fica_before=run.ytd_fica_before,
+            ytd_fica_after=run.ytd_fica_after,
+        )
+
     def _build_result(
         self,
-        payload: PayrollInput,
-        calc: PayrollCalculation,
+        source: PayrollInput | PayrollRun,
+        td: TaxDetail,
         run: PayrollRun | None,
     ) -> PayrollResult:
+        """Assemble the API result from the inputs (payload or saved run) and amounts."""
         acct = self.config_service.get_accounts()
-        gross = payload.gross_salary
-        health = payload.health_insurance
-        hsa = payload.hsa_contribution
-        health_in_it = payload.health_in_income_tax
+        gross = source.gross_salary
+        health = source.health_insurance
+        hsa = source.hsa_contribution
+        health_in_it = source.health_in_income_tax
 
-        journal_entries = self._build_journal_entries(acct, calc, gross, health, hsa, health_in_it)
-        tax_payment = self._build_tax_payment_summary(calc)
+        journal_entries = self._build_journal_entries(acct, td, gross, health, hsa, health_in_it)
+        tax_payment = self._build_tax_payment_summary(td)
 
         return PayrollResult(
             id=run.id if run else None,
-            pay_period=payload.pay_period,
+            pay_period=source.pay_period,
             gross_salary=gross,
             health_insurance=health,
             hsa_contribution=hsa,
             health_in_income_tax=health_in_it,
-            hsa_in_income_tax=payload.hsa_in_income_tax,
-            notes=payload.notes,
+            hsa_in_income_tax=source.hsa_in_income_tax,
+            notes=source.notes,
             saved=run is not None,
-            tax_year=tax.TAX_YEAR,
+            tax_year=run.tax_year if run else tax.TAX_YEAR,
             tax_constants=TaxConstantsSchema(),
-            tax_detail=TaxDetail(
-                fica_wages=calc.fica_wages,
-                income_tax_wages=calc.income_tax_wages,
-                annual_income_tax_wages=calc.annual_income_tax_wages,
-                ss_taxable_wages=calc.ss_taxable_wages,
-                ss_ee=calc.ss_ee,
-                ss_er=calc.ss_er,
-                ss_cap_hit=calc.ss_cap_hit,
-                medicare_ee=calc.medicare_ee,
-                additional_medicare=calc.additional_medicare,
-                total_medicare_ee=calc.total_medicare_ee,
-                medicare_er=calc.medicare_er,
-                annual_fed_tax=calc.annual_fed_tax,
-                federal_withholding=calc.federal_withholding,
-                ga_annual_taxable=calc.ga_annual_taxable,
-                annual_ga_tax=calc.annual_ga_tax,
-                ga_withholding=calc.ga_withholding,
-                total_employee_deductions=calc.total_employee_deductions,
-                net_pay=calc.net_pay,
-                total_employer_taxes=calc.total_employer_taxes,
-                total_employer_cost=calc.total_employer_cost,
-                ytd_fica_before=payload.ytd_fica_wages,
-                ytd_fica_after=calc.ytd_fica_after,
-            ),
+            tax_detail=td,
             journal_entries=journal_entries,
             tax_payment_summary=tax_payment,
             create_date=run.create_date if run else datetime.utcnow(),
@@ -282,10 +344,10 @@ class PayrollRunService:
     def _build_journal_entries(
         self,
         acct: dict[str, str],
-        calc: PayrollCalculation,
-        gross: float,
-        health: float,
-        hsa: float,
+        calc: TaxDetail,
+        gross: Decimal,
+        health: Decimal,
+        hsa: Decimal,
         health_in_it: bool,
     ) -> list[JournalEntry]:
         entries: list[JournalEntry] = []
@@ -293,10 +355,11 @@ class PayrollRunService:
         # ---- Entry 1: Gross payroll wages and withholdings ----
         # DR Officer Compensation = gross + health W-2 addback (if in income tax) + HSA.
         # HSA is always included here because it flows through payroll as officer comp.
-        dr_compensation = round(
-            gross + (health if health_in_it and health > 0 else 0.0) + (hsa if hsa > 0 else 0.0),
-            2,
-        )
+        dr_compensation = gross
+        if health_in_it and health > 0:
+            dr_compensation += health
+        if hsa > 0:
+            dr_compensation += hsa
 
         comp_memo = f"Gross salary ${gross:,.2f}"
         if health_in_it and health > 0:
@@ -468,13 +531,12 @@ class PayrollRunService:
             entry_num += 1
 
         # ---- Federal Tax Payment (EFTPS) ----
-        fed_total = round(
+        fed_total = (
             calc.federal_withholding
             + calc.ss_ee
             + calc.ss_er
             + calc.total_medicare_ee
-            + calc.medicare_er,
-            2,
+            + calc.medicare_er
         )
         entries.append(
             JournalEntry(
@@ -555,10 +617,10 @@ class PayrollRunService:
             )
         return kept
 
-    def _build_tax_payment_summary(self, calc: PayrollCalculation) -> TaxPaymentSummary:
-        ss_total = round(calc.ss_ee + calc.ss_er, 2)
-        med_total = round(calc.total_medicare_ee + calc.medicare_er, 2)
-        total_eftps = round(calc.federal_withholding + ss_total + med_total, 2)
+    def _build_tax_payment_summary(self, calc: TaxDetail) -> TaxPaymentSummary:
+        ss_total = calc.ss_ee + calc.ss_er
+        med_total = calc.total_medicare_ee + calc.medicare_er
+        total_eftps = calc.federal_withholding + ss_total + med_total
 
         federal_due_note, georgia_due_note = self.config_service.get_due_date_notes()
         return TaxPaymentSummary(
