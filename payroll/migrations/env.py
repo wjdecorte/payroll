@@ -58,13 +58,16 @@ def run_migrations_online() -> None:
 
     connectable = create_engine(config.get_main_option("sqlalchemy.url"))
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()  # do not leave pooled connections behind for the GC
 
 
 if context.is_offline_mode():

@@ -10,7 +10,7 @@ from payroll import app_settings
 from payroll.audit.models import AuditLog
 from payroll.auth.security import hash_password
 from payroll.common.exceptions import PermissionDeniedError
-from payroll.ledger.exceptions import LockPasswordError, PeriodLockedError
+from payroll.ledger.exceptions import InvalidEntryError, LockPasswordError, PeriodLockedError
 from payroll.ledger.period_lock import PeriodLockService
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from tests.conftest import make_user
@@ -207,3 +207,27 @@ def test_put_does_not_log_password(owner_api, app_log):
     owner_api.put(f"{PREFIX}/period-lock", json={"lockDate": "2026-03-31", "password": PASSWORD})
     assert PASSWORD not in caplog.text
     assert PASSWORD not in _logged(caplog)
+
+
+@pytest.mark.parametrize("bad", [date(9999, 12, 31), date(1899, 12, 31), date(2201, 1, 1)])
+def test_lock_date_outside_supported_range_is_422(session, owner, bad):
+    svc = PeriodLockService(session)
+    with pytest.raises(InvalidEntryError) as info:
+        svc.set(bad, password=PASSWORD, actor=owner)
+    assert info.value.http_code == 422
+    assert svc.get() is None
+    assert _audit(session, "ledger.lock.set") == []
+
+
+def test_lock_api_and_form_reject_unsupported_date(owner_client, owner_user, session):
+    owner_user.password_hash = hash_password(PASSWORD)
+    session.flush()
+    resp = owner_client.put(
+        f"{PREFIX}/period-lock", json={"lock_date": "9999-12-31", "password": PASSWORD}
+    )
+    assert resp.status_code == 422
+    form = owner_client.post(
+        "/settings/ledger/lock", data={"lock_date": "9999-12-31", "password": PASSWORD}
+    )
+    assert form.status_code == 422
+    assert PeriodLockService(session).get() is None

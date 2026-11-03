@@ -17,8 +17,9 @@ from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.auth.security import verify_password
+from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.ledger.accounts import utcnow_naive
-from payroll.ledger.exceptions import LockPasswordError
+from payroll.ledger.exceptions import InvalidEntryError, LockPasswordError
 from payroll.ledger.models import PeriodLock
 
 logger = logging.getLogger(f"{app_settings.logger_name}.ledger.period_lock")
@@ -34,6 +35,10 @@ class PeriodLockService:
     def set(self, lock_date: date | None, *, password: str, actor: User) -> None:
         """Move (or clear, with ``None``) the lock date after re-checking the password."""
         ensure_role(actor, OWNER)
+        if lock_date is not None and not is_supported_date(lock_date):
+            raise InvalidEntryError(
+                message=f"The lock date must be within {supported_range_text()}"
+            )
         self._commit(lambda: self._set(lock_date, password=password, actor=actor))
 
     def _set(self, lock_date: date | None, *, password: str, actor: User) -> None:
