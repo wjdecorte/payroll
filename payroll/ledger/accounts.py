@@ -2,8 +2,8 @@
 
 import functools
 import logging
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -16,6 +16,7 @@ from payroll import app_settings
 from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
+from payroll.exceptions import AppBaseError
 from payroll.ledger.exceptions import (
     AccountConflictError,
     AccountInUseError,
@@ -62,6 +63,22 @@ def _conflict_safe[**P, R](method: Callable[P, R]) -> Callable[P, R]:
             ) from exc
 
     return wrapper
+
+
+@dataclass(frozen=True)
+class NewAccount:
+    """One account for :meth:`AccountService.create_batch`.
+
+    The parent is either an existing account (``parent_id``) or an earlier entry of the
+    same batch (``parent_index``, a position in the batch list).
+    """
+
+    name: str
+    type: AccountType
+    number: str | None = None
+    detail_type: str | None = None
+    parent_id: int | None = None
+    parent_index: int | None = None
 
 
 @dataclass
@@ -139,13 +156,55 @@ class AccountService:
         detail_type: str | None = None,
     ) -> Account:
         ensure_role(actor, OWNER)
-        name = name.strip()
-        number = (number or "").strip() or None
-        if parent_id is not None:
-            self._check_parent(None, parent_id, type)
-        self._check_unique(None, name, number, parent_id)
+        account = self._insert(
+            actor,
+            NewAccount(
+                name=name, type=type, number=number, parent_id=parent_id, detail_type=detail_type
+            ),
+        )
+        self.session.commit()
+        logger.info("Created account id=%s", account.id)
+        return account
+
+    @_conflict_safe
+    def create_batch(self, *, actor: User, specs: Sequence[NewAccount]) -> list[Account]:
+        """Create every account in ``specs`` in one transaction: all of them or none."""
+        ensure_role(actor, OWNER)
+        created: list[Account] = []
+        try:
+            for spec in specs:
+                if spec.parent_index is not None:
+                    if not 0 <= spec.parent_index < len(created):
+                        raise InvalidAccountError(message="A parent must come before its children")
+                    spec = replace(spec, parent_id=created[spec.parent_index].id)
+                created.append(self._insert(actor, spec))
+            record_audit(
+                self.session,
+                action="account.import",
+                user_id=actor.id,
+                entity="account",
+                after={"created": len(created), "account_ids": [a.id for a in created]},
+            )
+            self.session.commit()
+        except AppBaseError:
+            self.session.rollback()
+            raise
+        logger.info("Created %s accounts in one batch", len(created))
+        return created
+
+    def _insert(self, actor: User, spec: NewAccount) -> Account:
+        """Validate and add one account plus its audit row; the caller commits."""
+        name = spec.name.strip()
+        number = (spec.number or "").strip() or None
+        if spec.parent_id is not None:
+            self._check_parent(None, spec.parent_id, spec.type)
+        self._check_unique(None, name, number, spec.parent_id)
         account = Account(
-            name=name, number=number, parent_id=parent_id, type=type, detail_type=detail_type
+            name=name,
+            number=number,
+            parent_id=spec.parent_id,
+            type=spec.type,
+            detail_type=spec.detail_type,
         )
         self.session.add(account)
         self.session.flush()
@@ -157,8 +216,6 @@ class AccountService:
             entity_id=str(account.id),
             after=self._snapshot(account),
         )
-        self.session.commit()
-        logger.info("Created account id=%s", account.id)
         return account
 
     @_conflict_safe

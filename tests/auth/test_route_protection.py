@@ -62,6 +62,8 @@ LEDGER_UNSAFE_ENDPOINTS = (
     ("POST", f"{LEDGER}/journal-entries/1/void"),
     ("PUT", f"{LEDGER}/period-lock"),
     ("POST", "/accounts/new"),
+    ("POST", "/accounts/import"),
+    ("POST", "/accounts/import/confirm"),
     ("POST", "/accounts/1/edit"),
     ("POST", "/accounts/1/active"),
     ("POST", "/settings/ledger/roles"),

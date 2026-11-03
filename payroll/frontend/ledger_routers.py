@@ -4,6 +4,9 @@ Frontend pages for the ledger: chart of accounts, account register, ledger setti
 Full-page routes (not in the OpenAPI schema):
   GET  /accounts                    -> chart of accounts (``?inactive=1`` shows inactive)
   GET  /accounts/new                -> new-account form            (owner)
+  GET  /accounts/import             -> QBO chart upload form       (owner)
+  POST /accounts/import             -> previews the import         (owner)
+  POST /accounts/import/confirm     -> creates the new accounts    (owner)
   POST /accounts/new                -> creates the account         (owner)
   GET  /accounts/{id}/edit          -> edit form                   (owner)
   POST /accounts/{id}/edit          -> saves the account           (owner)
@@ -23,6 +26,7 @@ password is read from the form and passed straight to the service: never echoed.
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session
+from starlette.datastructures import UploadFile
 
 from payroll.auth.models import User
 from payroll.auth.permissions import require_owner, require_reader
@@ -33,6 +37,7 @@ from payroll.ledger.accounts import ROLE_TYPES, AccountService
 from payroll.ledger.exceptions import InvalidAccountError, LockPasswordError
 from payroll.ledger.models import Account, AccountType, SystemRole
 from payroll.ledger.period_lock import PeriodLockService
+from payroll.ledger.qbo_import import MAX_BYTES, decode_upload, parse_qbo_csv, plan_import
 from payroll.reports.periods import company_today
 from payroll.reports.periods import parse_date as _parse_date
 from payroll.reports.statements import ReportService, fiscal_year_start
@@ -64,6 +69,7 @@ def _account_list(
     *,
     inactive: bool,
     error: str | None = None,
+    notice: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     today = company_today()
@@ -88,6 +94,7 @@ def _account_list(
             "inactive": inactive,
             "as_of": today,
             "error": error,
+            "notice": notice,
             "role_labels": ROLE_LABELS,
         },
         status_code=status_code,
@@ -96,9 +103,86 @@ def _account_list(
 
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_list(
-    request: Request, inactive: int = 0, session: Session = Depends(get_session)
+    request: Request,
+    inactive: int = 0,
+    imported: int | None = None,
+    session: Session = Depends(get_session),
 ) -> HTMLResponse:
-    return _account_list(request, session, inactive=bool(inactive))
+    notice = None
+    if imported is not None and 0 <= imported <= 100_000:
+        notice = (
+            f"Imported {imported} new account{'' if imported == 1 else 's'} from QuickBooks."
+            if imported
+            else "Nothing to import: every account in the file is already in the chart."
+        )
+    return _account_list(request, session, inactive=bool(inactive), notice=notice)
+
+
+# ---------------------------------------------------------------------------
+# Import a chart of accounts exported from QuickBooks Online
+# ---------------------------------------------------------------------------
+
+
+def _import_page(
+    request: Request,
+    *,
+    plan=None,
+    csv_text: str = "",
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "accounts/import.html",
+        {"plan": plan, "csv_text": csv_text, "error": error, "max_kb": MAX_BYTES // 1024},
+        status_code=status_code,
+    )
+
+
+@router.get("/accounts/import", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
+async def accounts_import_form(request: Request) -> HTMLResponse:
+    return _import_page(request)
+
+
+@router.post("/accounts/import", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
+async def accounts_import_preview(
+    request: Request, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    upload = (await request.form()).get("file")
+    if not isinstance(upload, UploadFile) or not upload.filename:
+        return _import_page(
+            request, error="Choose the CSV file exported from QuickBooks", status_code=422
+        )
+    try:
+        text = decode_upload(await upload.read(MAX_BYTES + 1))
+        plan = plan_import(session, parse_qbo_csv(text))
+    except AppBaseError as exc:
+        return _import_page(request, error=exc.message, status_code=422)
+    return _import_page(request, plan=plan, csv_text=text)
+
+
+@router.post("/accounts/import/confirm", response_class=HTMLResponse)
+async def accounts_import_confirm(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    """Plans again from the same file text (the preview is never trusted) and creates it."""
+    text = _text((await request.form()).get("csv_text"))
+    try:
+        plan = plan_import(session, parse_qbo_csv(text))
+        if plan.has_errors:
+            return _import_page(
+                request,
+                plan=plan,
+                csv_text=text,
+                error="Fix the rows marked Error first",
+                status_code=422,
+            )
+        created = AccountService(session).create_batch(actor=actor, specs=plan.new_accounts)
+    except AppBaseError as exc:
+        return _import_page(request, csv_text=text, error=exc.message, status_code=exc.http_code)
+    return RedirectResponse(f"/accounts?imported={len(created)}", status_code=303)
 
 
 def _parent_choices(session: Session, exclude: Account | None) -> list[dict]:
