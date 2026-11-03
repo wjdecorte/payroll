@@ -262,3 +262,47 @@ def test_pages_are_no_store_and_csp_safe(owner_client):
         response = owner_client.get(path)
         assert response.headers["cache-control"] == "no-store"
         _assert_csp_safe(response.text)
+
+
+def test_settings_roles_partial_failure_reports_what_was_saved(owner_client, owner_user, session):
+    service = AccountService(session)
+    cash = service.create(actor=owner_user, name="Cash", type=AccountType.ASSET)
+    response = owner_client.post(
+        "/settings/ledger/roles",
+        data={"role_accounts_receivable": str(cash.id), "role_due_to_owner": "abc"},
+    )
+    assert response.status_code == 422
+    assert "Due to owner" in response.text and "Choose a valid account" in response.text
+    assert "Saved before the error: Accounts receivable" in response.text
+    # Honest: the first binding really is stored.
+    assert service.account_by_role(SystemRole.ACCOUNTS_RECEIVABLE).id == cash.id
+
+
+def test_blocking_routes_are_threadpool_functions_and_engine_has_lock_timeout():
+    import inspect
+
+    from sqlalchemy import text
+
+    from payroll.app import app
+    from payroll.common.dependencies import engine
+
+    heavy = [
+        route
+        for route in app.routes
+        if getattr(route, "endpoint", None) is not None
+        and (
+            route.path.endswith((".pdf", ".csv"))
+            or (
+                route.path.endswith(("/period-lock", "/settings/ledger/lock"))
+                and "GET" not in route.methods
+            )
+        )
+    ]
+    paths = {r.path for r in heavy}
+    assert "/settings/ledger/lock" in paths and "/reports/profit-and-loss.pdf" in paths
+    assert any(p.endswith("/period-lock") for p in paths)
+    assert len(heavy) == 22  # 20 export routes, the lock form and the lock PUT
+    for route in heavy:
+        assert not inspect.iscoroutinefunction(route.endpoint), route.path
+    with engine.connect() as conn:
+        assert conn.execute(text("SHOW lock_timeout")).scalar() == "10s"

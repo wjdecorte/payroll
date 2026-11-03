@@ -367,7 +367,7 @@ async def get_period_lock(session: Session = Depends(get_session)) -> PeriodLock
     response_model=PeriodLockRead,
     summary="Move or clear the period lock date (needs the owner's password)",
 )
-async def set_period_lock(
+def set_period_lock(
     payload: PeriodLockSet,
     session: Session = Depends(get_session),
     actor: User = Depends(require_owner),

@@ -5,7 +5,12 @@ from sqlmodel import Session
 
 from payroll import app_settings
 
-engine = create_engine(app_settings.database_url, echo=app_settings.debug_mode)
+# A lock wait fails after 10 s instead of holding a request (and its worker) forever.
+engine = create_engine(
+    app_settings.database_url,
+    echo=app_settings.debug_mode,
+    connect_args={"options": "-c lock_timeout=10000"},
+)
 
 
 def get_session() -> Generator[Session]:

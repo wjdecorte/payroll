@@ -20,7 +20,7 @@ the typed values and status 422; a wrong lock password re-renders with 403. The
 password is read from the form and passed straight to the service: never echoed.
 """
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session
 
@@ -340,36 +340,46 @@ async def ledger_roles_save(
     form = await request.form()
     selected = {role.value: _text(form.get(f"role_{role.value}")) for role in ROLE_TYPES}
     service = AccountService(session)
+    saved_roles: list[str] = []
+    failed = None
     try:
-        for role in ROLE_TYPES:
-            raw = selected[role.value]
+        for failed in ROLE_TYPES:
+            raw = selected[failed.value]
             try:
                 account_id = int(raw) if raw else None
             except ValueError as exc:
                 raise InvalidAccountError(message="Choose a valid account") from exc
-            current = service.account_by_role(role)
+            current = service.account_by_role(failed)
             if (current.id if current else None) != account_id:
-                service.bind_role(role, account_id, actor=actor)
+                # bind_role commits each binding, so earlier roles stay saved on a failure.
+                service.bind_role(failed, account_id, actor=actor)
+                saved_roles.append(ROLE_LABELS[failed])
     except AppBaseError as exc:
+        session.rollback()
+        notice = f"Saved before the error: {', '.join(saved_roles)}." if saved_roles else None
         return _settings_page(
-            request, session, role_error=exc.message, selected=selected, status_code=422
+            request,
+            session,
+            role_error=f"{ROLE_LABELS[failed]}: {exc.message}",
+            saved=notice,
+            status_code=422,
         )
     return _settings_page(request, session, saved="System roles saved.")
 
 
 @router.post("/settings/ledger/lock", response_class=HTMLResponse)
-async def ledger_lock_save(
+def ledger_lock_save(
     request: Request,
+    lock_date: str = Form(""),
+    password: str = Form(""),
     session: Session = Depends(get_session),
     actor: User = Depends(require_owner),
 ):
-    form = await request.form()
-    raw_date = _text(form.get("lock_date"))
-    password = form.get("password")
-    password = password if isinstance(password, str) else ""
+    # A plain ``def``: the Argon2 check runs in the threadpool, not on the event loop.
+    raw_date = _text(lock_date)
     try:
-        lock_date = _parse_date(raw_date, "Lock date")
-        PeriodLockService(session).set(lock_date, password=password, actor=actor)
+        parsed = _parse_date(raw_date, "Lock date")
+        PeriodLockService(session).set(parsed, password=password, actor=actor)
     except LockPasswordError as exc:
         return _settings_page(
             request, session, error=exc.message, lock_value=raw_date, status_code=exc.http_code

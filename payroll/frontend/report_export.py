@@ -84,7 +84,7 @@ def add_export_routes(router: APIRouter, base: str) -> None:
 
 
 def _endpoint(runner, fmt: str):
-    async def export(
+    def export(
         request: Request,
         session: Session = Depends(get_session),
         user: User = Depends(require_reader),
