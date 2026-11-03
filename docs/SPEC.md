@@ -249,7 +249,7 @@ network.
 | # | Milestone | Done when |
 |---|---|---|
 | M0 | Foundation | Auth + MFA, single-app structure, Postgres-only, Decimal money, audit log, CI green. |
-| M1 | Ledger & reports | **Done (v2.1.0).** Chart of accounts, manual journals, Trial Balance, Balance Sheet, P&L (all presets and custom), GL, CSV/PDF export. Reports are accrual basis only: cash and accrual differ only once receivables exist, so the cash-basis view arrives with M2. |
+| M1 | Ledger & reports | **Done (v2.1.0).** Chart of accounts, manual journals, Trial Balance, Balance Sheet, P&L (all presets and custom), GL, CSV/PDF export. Cash (default) and accrual toggle are in place; figures are identical until receivables exist (M2). |
 | M2 | Receivables | Customers, items, invoices, payments, deposits, A/R aging. |
 | M3 | Expenses | Expenses, receipts, owner-paid and reimbursement flow. |
 | M4 | Payroll to ledger | Existing calculator posts to the ledger; payroll liabilities and tax payments. |

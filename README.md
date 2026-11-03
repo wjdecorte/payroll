@@ -30,7 +30,7 @@ rendered by WeasyPrint, which needs the Pango native libraries (`libpango-1.0-0`
 tests skip).
 
 "Today" and period boundaries use `COMPANY_TIMEZONE` (default `America/New_York`).
-Reports are accrual basis for now; cash-basis differences arrive with M2 (receivables).
+Reports default to cash basis with an accrual toggle; figures are identical until receivables exist (M2).
 
 ### Ledger CLI
 
