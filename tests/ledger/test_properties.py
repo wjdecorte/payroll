@@ -105,9 +105,7 @@ def _draft(accounts: list[Account], raw, source=SourceType.MANUAL) -> EntryDraft
         lines.append(LineDraft(balancing.id, credit=_cents(net)))
     elif net < 0:
         lines.append(LineDraft(balancing.id, debit=_cents(-net)))
-    else:  # already balanced; a single line cannot post, so mirror the first line
-        first = lines[0]
-        lines.append(LineDraft(first.account_id, debit=first.credit, credit=first.debit))
+    # net == 0: the random lines already balance (and there are at least two of them)
     return EntryDraft(START + timedelta(days=offset), lines, source_type=source)
 
 
