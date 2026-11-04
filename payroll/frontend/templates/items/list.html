@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Items · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-box-seam me-2"></i>Items</span>
+      <span class="d-flex gap-2 align-items-center">
+        {% if inactive %}
+        <a class="btn btn-sm btn-outline-light" href="/items">Hide inactive</a>
+        {% else %}
+        <a class="btn btn-sm btn-outline-light" href="/items?inactive=1">Show inactive</a>
+        {% endif %}
+        {% if is_owner %}
+        <a class="btn btn-sm btn-light" href="/items/new"><i class="bi bi-plus-lg me-1"></i>New item</a>
+        {% endif %}
+      </span>
+    </div>
+    <div class="card-body p-0">
+      {% if error %}<div class="alert alert-danger m-3 py-2" role="alert">{{ error }}</div>{% endif %}
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr><th>Name</th><th>Description</th><th>Income account</th><th class="num">Unit price</th><th>Status</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for i in items %}
+          <tr class="{% if not i.is_active %}acct-inactive{% endif %}">
+            <td>{{ i.name }}</td>
+            <td>{{ i.description or "" }}</td>
+            <td>{{ accounts[i.income_account_id].name }}</td>
+            <td class="num">{{ i.unit_price | currency }}</td>
+            <td>{{ "Active" if i.is_active else "Inactive" }}</td>
+            <td class="no-print text-end">
+              {% if is_owner %}
+              <a class="btn btn-sm btn-outline-secondary" href="/items/{{ i.id }}/edit">Edit</a>
+              <form method="post" action="/items/{{ i.id }}/active" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="active" value="{{ 0 if i.is_active else 1 }}">
+                <button type="submit" class="btn btn-sm btn-outline-secondary">{{ "Deactivate" if i.is_active else "Reactivate" }}</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-4">No items yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

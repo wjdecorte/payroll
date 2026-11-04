@@ -72,6 +72,17 @@ LEDGER_UNSAFE_ENDPOINTS = (
     ("POST", "/journal/1/reverse"),
     ("POST", "/journal/1/void"),
 )
+# The receivables (M2) mutating page routes: all owner-only.
+RECEIVABLES_UNSAFE_ENDPOINTS = (
+    ("POST", "/customers/new"),
+    ("POST", "/customers/1/edit"),
+    ("POST", "/customers/1/active"),
+    ("POST", "/items/new"),
+    ("POST", "/items/1/edit"),
+    ("POST", "/items/1/active"),
+    ("POST", "/settings/receivables/number"),
+    ("POST", "/settings/receivables/company"),
+)
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
 _PATH_PARAM = re.compile(r"\{[^}]+\}")
@@ -184,6 +195,7 @@ def test_every_route_requires_auth(any_app):
         ("GET", "/reports/profit-and-loss"),
         ("GET", f"{LEDGER}/reports/balance-sheet.pdf"),
         *LEDGER_UNSAFE_ENDPOINTS,
+        *RECEIVABLES_UNSAFE_ENDPOINTS,
         *ANONYMOUS_ENDPOINTS,
     ]:
         assert known in endpoints, known
@@ -295,6 +307,19 @@ def _readable_ledger_pages() -> list[str]:
         ):
             found.append(path)
     return found
+
+
+def _receivables_unsafe_routes() -> set[tuple[str, str]]:
+    prefixes = ("/customers", "/items", "/settings/receivables")
+    return {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS and path.startswith(prefixes)
+    }
+
+
+def test_receivables_route_list_matches_the_app():
+    assert _receivables_unsafe_routes() == set(RECEIVABLES_UNSAFE_ENDPOINTS)
 
 
 def test_ledger_route_list_matches_the_app():

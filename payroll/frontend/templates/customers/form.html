@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit customer" if customer else "New customer" }} · DCI Books{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card">
+    <div class="card-header bg-primary">{{ "Edit customer" if customer else "New customer" }}</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="{{ '/customers/%d/edit' % customer.id if customer else '/customers/new' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="mb-3">
+          <label class="form-label" for="name">Name</label>
+          <input class="form-control" id="name" name="name" maxlength="200" required value="{{ values.name }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="email">Email</label>
+          <input class="form-control" id="email" name="email" maxlength="200" value="{{ values.email }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="phone">Phone</label>
+          <input class="form-control" id="phone" name="phone" maxlength="50" value="{{ values.phone }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="billing_address">Billing address</label>
+          <textarea class="form-control" id="billing_address" name="billing_address" rows="3" maxlength="500">{{ values.billing_address }}</textarea>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="terms_days">Payment terms (net days)</label>
+          <input class="form-control" id="terms_days" name="terms_days" inputmode="numeric" maxlength="3" required value="{{ values.terms_days }}">
+          <div class="form-text">0 to 365. The due date is the invoice date plus these days.</div>
+        </div>
+        <button type="submit" class="btn btn-brand">Save</button>
+        <a class="btn btn-outline-secondary" href="/customers">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
