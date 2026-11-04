@@ -16,6 +16,7 @@ descriptions are ignored (opening balances arrive with the general ledger import
 import csv
 import io
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -84,6 +85,12 @@ class PlannedRow:
     reason: str = ""
     account_type: AccountType | None = None
     warning: str = ""
+    selected: bool = True  # only meaningful for rows that would be created
+
+    @property
+    def key(self) -> str:
+        """Lower-cased ``parent:child`` path; the preview uses it to tick children with parents."""
+        return ":".join(p.lower() for p in _split(self.row.full_name))
 
 
 @dataclass
@@ -97,6 +104,10 @@ class ImportPlan:
     @property
     def has_errors(self) -> bool:
         return self.count("error") > 0
+
+    @property
+    def selected_count(self) -> int:
+        return len(self.new_accounts)
 
 
 def decode_upload(data: bytes) -> str:
@@ -168,7 +179,16 @@ def _split(full_name: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in full_name.split(":"))
 
 
-def plan_import(session: Session, rows: list[RawRow]) -> ImportPlan:
+def plan_import(
+    session: Session, rows: list[RawRow], selected: Collection[int] | None = None
+) -> ImportPlan:
+    """Plan the import of ``rows``.
+
+    ``selected`` holds the file lines the owner ticked; ``None`` selects every row that
+    would be created. Only rows that would be created can be selected, and a selected
+    sub-account needs its parent in the chart or selected too (otherwise
+    :class:`InvalidAccountError`).
+    """
     existing = AccountService(session).tree(include_inactive=True)
     by_path = {
         tuple(p.strip().lower() for p in n.full_name.split(":")): n.account for n in existing
@@ -208,7 +228,7 @@ def plan_import(session: Session, rows: list[RawRow]) -> ImportPlan:
         if item.action == "create" and row.number and not _PLAIN_NUMBER.match(row.number):
             item.warning = "Unusual account number, kept as exported; edit it afterwards"
 
-    return _finish(planned, by_path)
+    return _finish(planned, by_path, None if selected is None else set(selected))
 
 
 def _depth(item: PlannedRow) -> int:
@@ -258,11 +278,19 @@ def _fail(item: PlannedRow, reason: str) -> PlannedRow:
     return item
 
 
-def _finish(planned: list[PlannedRow], by_path: dict[tuple[str, ...], Account]) -> ImportPlan:
+def _finish(
+    planned: list[PlannedRow], by_path: dict[tuple[str, ...], Account], selected: set[int] | None
+) -> ImportPlan:
+    creatable = {it.row.line for it in planned if it.action == "create"}
+    if selected is not None and (stray := sorted(selected - creatable)):
+        raise InvalidAccountError(message=f"Line {stray[0]} cannot be imported")
     plan = ImportPlan(rows=sorted(planned, key=lambda it: it.row.line))
     index_of: dict[tuple[str, ...], int] = {}
     for item in planned:  # shallowest first, so a created parent already has an index
         if item.action != "create" or item.account_type is None:
+            continue
+        item.selected = selected is None or item.row.line in selected
+        if not item.selected:
             continue
         parts = _split(item.row.full_name)
         path = tuple(p.lower() for p in parts)
@@ -270,8 +298,15 @@ def _finish(planned: list[PlannedRow], by_path: dict[tuple[str, ...], Account]) 
         if len(parts) > 1:
             if path[:-1] in index_of:
                 parent_index = index_of[path[:-1]]
-            else:
+            elif path[:-1] in by_path:
                 parent_id = by_path[path[:-1]].id
+            else:
+                raise InvalidAccountError(
+                    message=(
+                        f"'{item.row.full_name}' needs its parent "
+                        f"'{':'.join(parts[:-1])}', which is not selected"
+                    )
+                )
         index_of[path] = len(plan.new_accounts)
         plan.new_accounts.append(
             NewAccount(

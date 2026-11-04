@@ -1,5 +1,7 @@
 """Import a QBO chart of accounts: upload, preview and confirm pages."""
 
+import html
+
 import pytest
 from sqlmodel import select
 
@@ -24,8 +26,12 @@ def _upload(client, text=CSV, name="chart.csv"):
     )
 
 
-def _confirm(client, text=CSV):
-    return client.post("/accounts/import/confirm", data={"csv_text": text}, follow_redirects=False)
+def _confirm(client, text=CSV, lines=None):
+    """Confirm the import; by default every data line of the file is ticked."""
+    if lines is None:
+        lines = range(2, text.count("\n") + 1)
+    data = {"csv_text": text, "line": [str(n) for n in lines]}
+    return client.post("/accounts/import/confirm", data=data, follow_redirects=False)
 
 
 def _names(session) -> set[str]:
@@ -48,9 +54,12 @@ def test_accounts_page_links_to_the_import_for_the_owner_only(owner_client, view
 def test_preview_lists_every_row_and_creates_nothing(owner_client, session):
     response = _upload(owner_client)
     assert response.status_code == 200
-    assert "4 to create" in response.text
+    assert "4 can be created" in response.text
     assert "Payroll Expenses:Wages" in response.text
     assert "Import 4 accounts" in response.text
+    assert response.text.count('name="line"') == 4
+    assert response.text.count(" checked>") == 4
+    assert "/static/js/account_import.js" in response.text
     assert _names(session) == set()
 
 
@@ -72,25 +81,78 @@ def test_confirm_creates_the_accounts_and_shows_a_notice(owner_client, session):
 def test_importing_the_same_file_again_changes_nothing(owner_client, session):
     _confirm(owner_client)
     again = _upload(owner_client)
-    assert "0 to create" in again.text
+    assert "0 can be created" in again.text
     assert "4 already in the chart" in again.text
-    assert "disabled" in again.text
-    follow = _confirm(owner_client)
-    assert follow.headers["location"] == "/accounts?imported=0"
-    assert "Nothing to import" in owner_client.get(follow.headers["location"]).text
+    assert 'name="line"' not in again.text  # nothing left to tick
+    assert "Import 0 accounts" in again.text
+    assert _confirm(owner_client, lines=[]).status_code == 422
     assert len(_names(session)) == 4
 
 
-def test_errors_block_the_import(owner_client, session):
+def test_only_the_ticked_accounts_are_created(owner_client, session):
+    response = _confirm(owner_client, lines=[2, 5])  # Business Checking, Service Revenue
+    assert response.headers["location"] == "/accounts?imported=2"
+    assert _names(session) == {"Business Checking", "Service Revenue"}
+
+
+def test_the_rest_can_be_imported_later(owner_client, session):
+    _confirm(owner_client, lines=[2])
+    assert _names(session) == {"Business Checking"}
+    again = _upload(owner_client)
+    assert "3 can be created" in again.text
+    assert "1 already in the chart" in again.text
+    _confirm(owner_client, lines=[3, 4, 5])
+    assert len(_names(session)) == 4
+
+
+def test_error_rows_are_shown_but_do_not_block_the_rest(owner_client, session):
     bad = CSV + ",Mystery,Spaceship,\n"
     page = _upload(owner_client, bad)
     assert page.status_code == 200
     assert "1 with errors" in page.text
     assert "Unknown account type" in page.text
-    response = _confirm(owner_client, bad)
+    assert page.text.count('name="line"') == 4  # the error row has no checkbox
+    assert "Rows marked Error will not be imported" in page.text
+    response = _confirm(owner_client, bad, lines=[2, 3, 4, 5])
+    assert response.status_code == 303
+    assert "Mystery" not in _names(session)
+    assert len(_names(session)) == 4
+
+
+def test_ticking_an_error_row_is_refused(owner_client, session):
+    bad = CSV + ",Mystery,Spaceship,\n"
+    response = _confirm(owner_client, bad, lines=[2, 6])
     assert response.status_code == 422
-    assert "Fix the rows marked Error" in response.text
+    assert "Line 6 cannot be imported" in response.text
     assert _names(session) == set()
+
+
+def test_a_child_without_its_parent_is_refused_and_the_ticks_are_kept(owner_client, session):
+    response = _confirm(owner_client, lines=[2, 4])  # Business Checking and Wages, no parent
+    assert response.status_code == 422
+    assert "needs its parent 'Payroll Expenses', which is not selected" in html.unescape(
+        response.text
+    )
+    assert response.text.count(" checked>") == 2
+    assert _names(session) == set()
+
+
+@pytest.mark.parametrize("lines", [[], ["abc"], ["\u00b2"], ["999"], ["-1"], ["2.0"]])
+def test_nothing_or_nonsense_ticked_creates_nothing(owner_client, session, lines):
+    response = owner_client.post(
+        "/accounts/import/confirm",
+        data={"csv_text": CSV, "line": lines},
+        follow_redirects=False,
+    )
+    assert response.status_code == 422
+    assert _names(session) == set()
+
+
+def test_nothing_ticked_says_so(owner_client):
+    response = _confirm(owner_client, lines=[])
+    assert response.status_code == 422
+    assert "Tick at least one account" in response.text
+    assert "Import 0 accounts" in response.text
 
 
 @pytest.mark.parametrize(

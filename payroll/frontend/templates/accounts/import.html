@@ -29,19 +29,31 @@
 
       {% else %}
       {% set creates = plan.count("create") %}
-      <p class="mb-3">
-        <span class="badge bg-success">{{ creates }} to create</span>
+      <p class="mb-2">
+        <span class="badge bg-success">{{ creates }} can be created</span>
         <span class="badge bg-secondary">{{ plan.count("exists") }} already in the chart</span>
         {% if plan.count("error") %}<span class="badge bg-danger">{{ plan.count("error") }} with errors</span>{% endif %}
       </p>
+      {% if creates %}
+      <p class="small mb-2">Untick any account you do not want to import. Sub-accounts stay with their parent.
+        <button type="button" id="select-all" class="btn btn-link btn-sm p-0 ms-2 align-baseline">Select all</button> ·
+        <button type="button" id="select-none" class="btn btn-link btn-sm p-0 align-baseline">Select none</button>
+      </p>
+      {% endif %}
       <div class="table-responsive mb-3">
         <table class="table table-sm align-middle mb-0">
           <thead>
-            <tr><th>Line</th><th>Number</th><th>Account</th><th>QBO type</th><th>Becomes</th><th>Result</th></tr>
+            <tr><th><span class="visually-hidden">Import</span></th><th>Line</th><th>Number</th><th>Account</th><th>QBO type</th><th>Becomes</th><th>Result</th></tr>
           </thead>
           <tbody>
             {% for item in plan.rows %}
-            <tr class="{% if item.action == 'error' %}table-danger{% elif item.action == 'exists' %}text-muted{% endif %}">
+            <tr class="{% if item.action == 'error' %}table-danger{% elif item.action == 'exists' or (item.action == 'create' and not item.selected) %}text-muted{% endif %}">
+              <td>
+                {% if item.action == "create" %}
+                <input class="form-check-input" type="checkbox" name="line" value="{{ item.row.line }}" form="import-form"
+                       data-key="{{ item.key }}" aria-label="Import {{ item.row.full_name }}"{% if item.selected %} checked{% endif %}>
+                {% endif %}
+              </td>
               <td>{{ item.row.line }}</td>
               <td>{{ item.row.number }}</td>
               <td>{{ item.row.full_name }}</td>
@@ -59,19 +71,20 @@
           </tbody>
         </table>
       </div>
-      <form method="post" action="/accounts/import/confirm" class="d-flex gap-2">
+      <form method="post" action="/accounts/import/confirm" id="import-form" class="d-flex gap-2">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <textarea name="csv_text" hidden>{{ csv_text }}</textarea>
-        <button type="submit" class="btn btn-brand"{% if plan.has_errors or not creates %} disabled{% endif %}>
-          Import {{ creates }} account{{ "" if creates == 1 else "s" }}
+        <button type="submit" id="import-button" class="btn btn-brand"{% if not selected_n %} disabled{% endif %}>
+          Import {{ selected_n }} account{{ "" if selected_n == 1 else "s" }}
         </button>
         <a class="btn btn-outline-secondary" href="/accounts/import">Choose another file</a>
       </form>
       {% if plan.has_errors %}
-      <p class="small text-muted mt-2">Fix the rows marked Error in QuickBooks or in the file, then upload it again. Nothing is imported until every row is valid.</p>
+      <p class="small text-muted mt-2">Rows marked Error will not be imported. Fix them in QuickBooks or in the file and import again to add them later; the rest can be imported now.</p>
       {% endif %}
       {% endif %}
     </div>
   </div>
 </div>
 {% endblock %}
+{% block scripts %}<script src="/static/js/account_import.js"></script>{% endblock %}

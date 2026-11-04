@@ -128,6 +128,7 @@ def test_page_without_session_still_renders_a_token(client):
         "/static/vendor/bootstrap-icons-1.11.3/fonts/bootstrap-icons.woff2",
         "/static/js/app.js",
         "/static/js/qbo.js",
+        "/static/js/account_import.js",
     ],
 )
 def test_vendored_and_app_assets_served(client, path):
