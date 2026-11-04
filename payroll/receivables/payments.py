@@ -40,6 +40,7 @@ from payroll.ledger.models import (
 )
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.receivables._common import utcnow_naive
+from payroll.receivables.credits import min_credit_from
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
     DepositError,
@@ -285,8 +286,7 @@ class PaymentService:
                 deposit = self.session.get(Deposit, payment.deposit_id)
                 if deposit is not None and deposit.status == "posted":
                     raise DepositError(message="Void the deposit first")
-            left = unapplied(self.session, payment.id)  # type: ignore[arg-type]
-            if left > self._customer_credit(payment.customer_id):
+            if self._void_makes_credit_negative(payment, void_date):
                 raise PaymentStateError(
                     message="Part of this payment was refunded; void the refund first"
                 )
@@ -356,11 +356,18 @@ class PaymentService:
             raise PaymentNotFoundError()
         return payment
 
-    def _customer_credit(self, customer_id: int) -> Decimal:
-        # imported here: credits.py imports this module (check_amount, METHODS)
-        from payroll.receivables.credits import customer_credits
+    def _void_makes_credit_negative(self, payment: Payment, void_date: date) -> bool:
+        """Would voiding on ``void_date`` push the customer's credit below zero on any date?
 
-        return customer_credits(self.session, None, customer_id).get(customer_id, ZERO)
+        From the void date on the payment no longer counts, so credit loses its amount less
+        the applications recognized by then (those that come later stop counting at
+        their own recognized dates).
+        """
+        start = max(void_date, payment.received_date)
+        deltas = [(start, payment.amount)]
+        for app in self.applications(payment.id):  # type: ignore[arg-type]
+            deltas.append((max(app.recognized_date, start), -app.amount))
+        return min_credit_from(self.session, payment.customer_id, start, deltas) < 0
 
     def _deposit_account(self, account_id: int, ar: Account) -> Account:
         account = self.session.get(Account, account_id) if isinstance(account_id, int) else None
@@ -410,11 +417,19 @@ class PaymentService:
         wanted = sum((i.amount for i in items), ZERO)
         if wanted > available:
             raise OverApplicationError(message=f"Only {available} of this payment is left to apply")
-        credit = self._customer_credit(payment.customer_id)
-        if wanted > credit:
-            raise OverApplicationError(
-                message=f"Only {max(credit, ZERO)} of credit is left to apply (the rest was refunded)"
-            )
+        deltas = [
+            (max(payment.received_date, invoices[i.invoice_id].invoice_date), i.amount)
+            for i in items
+            if i.invoice_id in invoices
+        ]
+        if deltas:
+            from_date = min(d for d, _ in deltas)
+            headroom = min_credit_from(self.session, payment.customer_id, from_date)
+            if min_credit_from(self.session, payment.customer_id, from_date, deltas) < 0:
+                raise OverApplicationError(
+                    message=f"Only {max(headroom, ZERO)} of credit is left to apply "
+                    "(the rest was refunded or applied on earlier dates)"
+                )
         existing = set(
             self.session.exec(
                 select(PaymentApplication.invoice_id).where(

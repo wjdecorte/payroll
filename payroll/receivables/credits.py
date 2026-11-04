@@ -13,6 +13,7 @@ payment apply or void from changing the credit between the check and the post.
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -35,7 +36,6 @@ from payroll.receivables.exceptions import (
     RefundStateError,
 )
 from payroll.receivables.models import Customer, CustomerRefund, Payment, PaymentApplication
-from payroll.receivables.payments import METHODS, check_amount
 
 logger = logging.getLogger(f"{app_settings.logger_name}.receivables.credits")
 
@@ -102,6 +102,43 @@ def customer_credits(
     return {cid: amount for cid, amount in credit.items() if amount != 0}
 
 
+def min_credit_from(
+    session: Session,
+    customer_id: int,
+    from_date: date,
+    deltas: Sequence[tuple[date, Decimal]] = (),
+) -> Decimal:
+    """The lowest ``customer_credits`` balance for a customer on any date from ``from_date`` on.
+
+    Credit only changes on event dates (a payment received or voided, an application
+    recognized, a refund made or voided), so the minimum is found by evaluating
+    ``customer_credits`` on ``from_date`` and on every later event date. ``deltas`` are
+    hypothetical changes not yet stored: each ``(date, amount)`` lowers the credit by
+    ``amount`` on and after ``date`` (negative amounts raise it). A document whose
+    effective date is ``from_date`` is allowed only if this stays at or above zero.
+    """
+    dates: set[date] = {from_date}
+    queries = (
+        select(Payment.received_date).where(Payment.customer_id == customer_id),
+        select(Payment.void_date).where(Payment.customer_id == customer_id),
+        select(PaymentApplication.recognized_date)
+        .join(Payment, col(Payment.id) == col(PaymentApplication.payment_id))
+        .where(Payment.customer_id == customer_id),
+        select(CustomerRefund.refund_date).where(CustomerRefund.customer_id == customer_id),
+        select(CustomerRefund.void_date).where(CustomerRefund.customer_id == customer_id),
+    )
+    for query in queries:
+        dates.update(d for d in session.exec(query).all() if d is not None and d >= from_date)
+    dates.update(d for d, _ in deltas if d >= from_date)
+    lowest: Decimal | None = None
+    for day in sorted(dates):
+        level = customer_credits(session, day, customer_id).get(customer_id, ZERO)
+        level -= sum((a for d, a in deltas if d <= day), ZERO)
+        if lowest is None or level < lowest:
+            lowest = level
+    return lowest  # type: ignore[return-value]  # dates always holds from_date
+
+
 class RefundService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -142,6 +179,8 @@ class RefundService:
         memo: str | None = None,
     ) -> CustomerRefund:
         ensure_role(actor, OWNER)
+        # imported here: payments.py imports this module (min_credit_from)
+        from payroll.receivables.payments import METHODS, check_amount
 
         def work() -> CustomerRefund:
             ar = locked_role_account(
@@ -173,15 +212,7 @@ class RefundService:
             bank = self._bank(bank_account_id, ar)
 
             self._lock_customer_payments(customer.id)  # type: ignore[arg-type]
-            on_date = customer_credits(self.session, refund_date, customer.id).get(
-                customer.id,  # type: ignore[arg-type]
-                ZERO,
-            )
-            now = customer_credits(self.session, None, customer.id).get(
-                customer.id,  # type: ignore[arg-type]
-                ZERO,
-            )
-            available = min(on_date, now)
+            available = min_credit_from(self.session, customer.id, refund_date)  # type: ignore[arg-type]
             if available <= 0:
                 raise _invalid("The customer has no credit to refund")
             if amount_ok > available:

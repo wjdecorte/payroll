@@ -24,7 +24,7 @@ from payroll.receivables.exceptions import (
     RefundStateError,
 )
 from payroll.receivables.invoices import InvoiceLineInput, InvoiceService
-from payroll.receivables.models import Customer, CustomerRefund
+from payroll.receivables.models import Customer, CustomerRefund, PaymentApplication
 from payroll.receivables.payments import ApplicationInput, PaymentService
 from tests.conftest import make_user
 from tests.ledger.conftest import chart  # noqa: F401
@@ -54,12 +54,12 @@ def _pay(session, owner_user, customer, chart, amount="100.00", day=PAY_DAY, app
     )
 
 
-def _invoice(session, owner_user, customer, item, price="100.00"):
+def _invoice(session, owner_user, customer, item, price="100.00", day=INVOICE_DAY):
     service = InvoiceService(session)
     draft = service.create_draft(
         actor=owner_user,
         customer_id=customer.id,
-        invoice_date=INVOICE_DAY,
+        invoice_date=day,
         lines=[InvoiceLineInput(item.id, "Work", D("1"), D(price))],
     )
     return service.issue(draft.id, actor=owner_user)
@@ -443,3 +443,88 @@ def test_void_payment_refused_while_its_credit_was_refunded(session, owner_user,
     RefundService(session).void(refund.id, actor=owner_user, void_date=REFUND_DAY)
     PaymentService(session).void(payment.id, actor=owner_user, void_date=REFUND_DAY)
     assert _credit(session, customer) == D("0.00")
+
+
+# --- back-dated documents may not make credit negative on ANY date -----------------------
+
+
+def _counts(session):
+    session.expire_all()
+    return (
+        _entry_count(session),
+        session.exec(select(func.count()).select_from(PaymentApplication)).one(),
+        session.exec(select(func.count()).select_from(CustomerRefund)).one(),
+    )
+
+
+def test_backdated_refund_refused_when_a_later_application_would_go_negative(
+    session, owner_user, customer, item, chart
+):
+    p1 = _pay(session, owner_user, customer, chart, "100.00", day=date(2026, 3, 10))
+    invoice = _invoice(session, owner_user, customer, item, day=date(2026, 4, 1))
+    PaymentService(session).apply(
+        p1.id, actor=owner_user, applications=[ApplicationInput(invoice.id, D("100.00"))]
+    )
+    _pay(session, owner_user, customer, chart, "100.00", day=date(2026, 5, 1))
+    # credit: 100 on 03-10, 0 from 04-01 (applied), 100 from 05-01; "now" and 03-15 both show 100
+    assert _credit(session, customer, date(2026, 3, 15)) == D("100.00")
+    assert _credit(session, customer) == D("100.00")
+    before = _counts(session)
+    with pytest.raises(InvalidRefundError):
+        _refund(session, owner_user, customer, chart, "100.00", day=date(2026, 3, 15))
+    assert _counts(session) == before
+    # a refund that fits under the lowest point is fine
+    _refund(session, owner_user, customer, chart, "100.00", day=date(2026, 5, 2))
+
+
+def test_backdated_refund_allowed_when_credit_never_dips(session, owner_user, customer, chart):
+    _pay(session, owner_user, customer, chart, "100.00", day=date(2026, 3, 10))
+    _pay(session, owner_user, customer, chart, "100.00", day=date(2026, 5, 1))
+    _refund(session, owner_user, customer, chart, "100.00", day=date(2026, 3, 15))
+    assert _credit(session, customer, date(2026, 3, 15)) == D("0.00")
+    assert _credit(session, customer) == D("100.00")
+
+
+@pytest.fixture
+def refunded_then_topped_up(session, owner_user, customer, chart):
+    """P1 100 on 03-10, a refund of 100 on 03-20, P2 100 on 04-01 (credit 100, 0, 100)."""
+    p1 = _pay(session, owner_user, customer, chart, "100.00", day=date(2026, 3, 10))
+    _refund(session, owner_user, customer, chart, "100.00", day=date(2026, 3, 20))
+    _pay(session, owner_user, customer, chart, "100.00", day=date(2026, 4, 1))
+    return p1
+
+
+def test_backdated_application_refused_when_past_credit_would_go_negative(
+    session, owner_user, customer, item, chart, refunded_then_topped_up
+):
+    p1 = refunded_then_topped_up
+    early = _invoice(session, owner_user, customer, item, day=date(2026, 3, 1))  # recognized 03-10
+    before = _counts(session)
+    with pytest.raises(OverApplicationError):
+        PaymentService(session).apply(
+            p1.id, actor=owner_user, applications=[ApplicationInput(early.id, D("100.00"))]
+        )
+    assert _counts(session) == before
+    # an invoice dated after P2 arrived: recognized 04-05, credit never dips below zero
+    late = _invoice(session, owner_user, customer, item, day=date(2026, 4, 5))
+    PaymentService(session).apply(
+        p1.id, actor=owner_user, applications=[ApplicationInput(late.id, D("100.00"))]
+    )
+    assert _credit(session, customer) == D("0.00")
+    assert _credit(session, customer, date(2026, 3, 25)) == D("0.00")
+
+
+def test_backdated_payment_void_refused_when_past_credit_would_go_negative(
+    session, owner_user, customer, chart, refunded_then_topped_up
+):
+    p1 = refunded_then_topped_up
+    before = _counts(session)
+    with pytest.raises(PaymentStateError):
+        PaymentService(session).void(p1.id, actor=owner_user, void_date=date(2026, 3, 15))
+    assert _counts(session) == before
+    session.refresh(p1)
+    assert p1.status == "posted"
+    # voided once P2 has arrived the credit never dips below zero
+    PaymentService(session).void(p1.id, actor=owner_user, void_date=date(2026, 4, 5))
+    assert _credit(session, customer) == D("0.00")
+    assert _credit(session, customer, date(2026, 3, 25)) == D("0.00")
