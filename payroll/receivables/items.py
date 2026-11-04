@@ -1,14 +1,10 @@
 """Items (products and services): each posts to one income account."""
 
-import functools
 import logging
-from collections.abc import Callable
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
 from payroll import app_settings
@@ -16,6 +12,7 @@ from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.ledger.models import Account, AccountType
+from payroll.receivables._common import conflict_safe, utcnow_naive
 from payroll.receivables.exceptions import (
     InvalidItemError,
     ItemConflictError,
@@ -30,24 +27,6 @@ MAX_DESCRIPTION = 500
 MAX_PRICE = Decimal("999999999999.99")
 CENT = Decimal("0.01")
 INCOME_TYPES = (AccountType.INCOME, AccountType.OTHER_INCOME)
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)  # AppBaseModel stores naive UTC
-
-
-def _conflict_safe[**P, R](method: Callable[P, R]) -> Callable[P, R]:
-    """Turn a unique-index violation from a racing writer into ItemConflictError."""
-
-    @functools.wraps(method)
-    def wrapper(self, *args: P.args, **kwargs: P.kwargs) -> R:  # type: ignore[no-untyped-def]
-        try:
-            return method(self, *args, **kwargs)
-        except IntegrityError as exc:
-            self.session.rollback()
-            raise ItemConflictError() from exc
-
-    return wrapper
 
 
 def check_unit_price(value: Decimal) -> Decimal:
@@ -79,7 +58,7 @@ class ItemService:
 
     # ------------------------------------------------------------------
 
-    @_conflict_safe
+    @conflict_safe(ItemConflictError)
     def create(
         self,
         *,
@@ -106,7 +85,7 @@ class ItemService:
         logger.info("Created item id=%s", item.id)
         return item
 
-    @_conflict_safe
+    @conflict_safe(ItemConflictError)
     def update(
         self,
         item_id: int,
@@ -123,7 +102,7 @@ class ItemService:
         fields = self._clean(item, name, income_account_id, unit_price, description)
         for key, value in fields.items():
             setattr(item, key, value)
-        item.modify_date = _utcnow_naive()
+        item.modify_date = utcnow_naive()
         self.session.add(item)
         self.session.flush()
         record_audit(
@@ -143,7 +122,7 @@ class ItemService:
         item = self.get(item_id)
         before = self._snapshot(item)
         item.is_active = active
-        item.modify_date = _utcnow_naive()
+        item.modify_date = utcnow_naive()
         self.session.add(item)
         self.session.flush()
         record_audit(

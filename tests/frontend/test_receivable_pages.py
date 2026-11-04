@@ -200,9 +200,10 @@ def test_settings_page_owner_only_for_posts(
     for client in (viewer_client, accountant_client):
         read = client.get("/settings/receivables")
         assert read.status_code == 200 and "DCI LLC" in read.text
-        assert (
-            "Save number" not in read.text and "<form" not in read.text.split("</header>")[-1][:0]
-        )
+        assert "Save number" not in read.text
+        assert "Save company details" not in read.text
+        assert 'name="next_invoice_no"' not in read.text
+        assert 'name="company_name"' not in read.text
         assert (
             client.post("/settings/receivables/number", data={"next_invoice_no": "5"}).status_code
             == 403

@@ -1,19 +1,16 @@
 """Customers: create, edit and deactivate. Mutations are owner-only and audited."""
 
-import functools
 import logging
-from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
 from payroll import app_settings
 from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
+from payroll.receivables._common import conflict_safe, utcnow_naive
 from payroll.receivables.exceptions import (
     CustomerConflictError,
     CustomerNotFoundError,
@@ -28,24 +25,6 @@ MAX_EMAIL = 200
 MAX_PHONE = 50
 MAX_ADDRESS = 500
 MAX_TERMS_DAYS = 365
-
-
-def _utcnow_naive() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)  # AppBaseModel stores naive UTC
-
-
-def _conflict_safe[**P, R](method: Callable[P, R]) -> Callable[P, R]:
-    """Turn a unique-index violation from a racing writer into CustomerConflictError."""
-
-    @functools.wraps(method)
-    def wrapper(self, *args: P.args, **kwargs: P.kwargs) -> R:  # type: ignore[no-untyped-def]
-        try:
-            return method(self, *args, **kwargs)
-        except IntegrityError as exc:
-            self.session.rollback()
-            raise CustomerConflictError() from exc
-
-    return wrapper
 
 
 def _optional(value: str | None, label: str, limit: int) -> str | None:
@@ -73,7 +52,7 @@ class CustomerService:
 
     # ------------------------------------------------------------------
 
-    @_conflict_safe
+    @conflict_safe(CustomerConflictError)
     def create(
         self,
         *,
@@ -101,7 +80,7 @@ class CustomerService:
         logger.info("Created customer id=%s", customer.id)
         return customer
 
-    @_conflict_safe
+    @conflict_safe(CustomerConflictError)
     def update(
         self,
         customer_id: int,
@@ -119,7 +98,7 @@ class CustomerService:
         fields = self._clean(customer, name, email, phone, billing_address, terms_days)
         for key, value in fields.items():
             setattr(customer, key, value)
-        customer.modify_date = _utcnow_naive()
+        customer.modify_date = utcnow_naive()
         self.session.add(customer)
         self.session.flush()
         record_audit(
@@ -139,7 +118,7 @@ class CustomerService:
         customer = self.get(customer_id)
         before = self._snapshot(customer)
         customer.is_active = active
-        customer.modify_date = _utcnow_naive()
+        customer.modify_date = utcnow_naive()
         self.session.add(customer)
         self.session.flush()
         record_audit(
