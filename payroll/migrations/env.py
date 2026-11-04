@@ -16,6 +16,7 @@ import payroll.auth.models  # noqa: F401
 import payroll.ledger.models  # noqa: F401
 import payroll.payroll_run.config_models  # noqa: F401
 import payroll.payroll_run.models  # noqa: F401
+import payroll.receivables.models  # noqa: F401
 
 # Alembic Config object — gives access to values in alembic.ini
 config = context.config
