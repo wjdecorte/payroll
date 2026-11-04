@@ -395,6 +395,7 @@ def test_print_html_renders_every_report(owner_client, ledger, session):
         "trial-balance": ("Trial Balance", "$16,500.00"),
         "general-ledger": ("General Ledger", "Opening balance"),
         "journal": ("Journal", "Business Checking"),
+        "ar-aging": ("A/R Aging", "Open invoices"),
     }
     for name, runner in RUNNERS.items():
         query = {"preset": "this_year", "asOf": "2026-12-31", "compare": "previous_period"}

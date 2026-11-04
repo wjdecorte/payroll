@@ -11,7 +11,8 @@ Full-page routes (not in the OpenAPI schema):
   GET  /customers/{id}              -> customer page: open invoices, payments, credit, refunds
   POST /customers/{id}/refund       -> refunds unapplied credit     (owner)
   GET/POST /items ...               -> the same set for items
-  GET  /invoices                    -> invoice list (``?status=`` and ``?customer_id=`` filters)
+  GET  /invoices                    -> invoice list with derived status, paid and balance
+                                       (``?status=`` incl. overdue/partial/paid, ``?customer_id=``)
   GET  /invoices/new                -> new-invoice form             (owner)
   POST /invoices/new                -> saves a draft                (owner)
   GET  /invoices/{id}               -> read-only invoice with its lines
@@ -57,6 +58,7 @@ from payroll.frontend.journal_routers import parse_amount
 from payroll.frontend.routers import _error_partial, templates
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, AccountType, SystemRole
+from payroll.receivables.balances import STATUSES, invoice_state, invoice_states
 from payroll.receivables.credits import RefundService, customer_credits
 from payroll.receivables.customers import CustomerService
 from payroll.receivables.deposits import DepositService
@@ -70,7 +72,7 @@ from payroll.receivables.exceptions import (
     InvoiceNumberError,
     InvoiceStateError,
 )
-from payroll.receivables.invoices import STATUSES, InvoiceLineInput, InvoiceService, live_applied
+from payroll.receivables.invoices import InvoiceLineInput, InvoiceService, live_applied
 from payroll.receivables.items import INCOME_TYPES, ItemService
 from payroll.receivables.models import Invoice, Payment, PaymentApplication
 from payroll.receivables.payments import (
@@ -648,6 +650,15 @@ def _fill_blank_lines(lines: list[dict]) -> list[dict]:
     return lines
 
 
+def _invoice_list(session: Session, status: str | None, customer_id: int | None, limit: int = 100):
+    """Derived states as of today, newest first, optionally filtered by derived status."""
+    states = invoice_states(session, customer_id=customer_id, include_inactive=True)
+    if status is not None:
+        states = [s for s in states if s.status == status]
+    states.sort(key=lambda s: (s.invoice.invoice_date, s.invoice.id), reverse=True)
+    return states[:limit]
+
+
 @router.get("/invoices", response_class=HTMLResponse)
 async def invoices_list(
     request: Request,
@@ -666,7 +677,7 @@ async def invoices_list(
         request,
         "invoices/list.html",
         {
-            "invoices": InvoiceService(session).list(status=status or None, customer_id=customer),
+            "states": _invoice_list(session, status or None, customer),
             "customers": {c.id: c for c in customers},
             "status": status,
             "customer_id": customer,
@@ -738,11 +749,13 @@ def _invoice_page(
     except AppBaseError as exc:
         return _error_partial(request, exc)
     applied = live_applied(session, invoice_id)
+    state = invoice_state(session, invoice)
     return templates.TemplateResponse(
         request,
         "invoices/view.html",
         {
             "invoice": invoice,
+            "state": state,
             "customer": customer,
             "lines": service.lines(invoice_id),
             "has_payments": invoice.status == "open" and live_applied(session, invoice_id) > 0,

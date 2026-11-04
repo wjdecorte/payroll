@@ -2,12 +2,13 @@
 Frontend pages for the financial reports.
 
 Full-page routes (not in the OpenAPI schema), all GET-only:
-  GET /reports                   -> index of the six reports
+  GET /reports                   -> index of the reports
   GET /reports/profit-and-loss   -> ``preset``/``start``/``end``, ``basis``, ``compare``
   GET /reports/balance-sheet     -> ``asOf``, ``basis``, ``compare``
   GET /reports/trial-balance     -> ``asOf``
   GET /reports/general-ledger    -> ``preset``/``start``/``end``, ``account``
   GET /reports/journal           -> ``preset``/``start``/``end``
+  GET /reports/ar-aging          -> ``asOf``
   GET /reports/<report>.csv|.pdf -> the same report as a download (same query string)
 
 Every route needs a signed-in user (router-level ``require_reader``). The picker is
@@ -34,6 +35,7 @@ from payroll.reports.basis import DEFAULT_BASIS, Basis
 from payroll.reports.periods import PRESETS
 from payroll.reports.runs import (
     DEFAULT_PRESET,
+    run_ar_aging,
     run_balance_sheet,
     run_general_ledger,
     run_journal,
@@ -86,6 +88,11 @@ REPORTS = (
         "Journal",
         "/reports/journal",
         "Every journal entry dated in a period, with all of its lines.",
+    ),
+    (
+        "A/R Aging",
+        "/reports/ar-aging",
+        "What each customer owes by days past due, open invoices and credits, as of a date.",
     ),
 )
 
@@ -301,6 +308,29 @@ async def journal_report(
         session,
         entries=run.report.entries,
         period=run.period,
+    )
+
+
+@router.get("/reports/ar-aging", response_class=HTMLResponse)
+async def ar_aging_report(
+    request: Request,
+    asOf: str = "",  # noqa: N803  (query parameter name)
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    picker = Picker("/reports/ar-aging", as_of=asOf, date=True)
+    try:
+        aging = run_ar_aging(session, {"asOf": asOf}).report
+    except AppBaseError as exc:
+        return _page(request, "reports/ar_aging.html", "A/R Aging", picker, session, error=exc)
+    return _page(
+        request,
+        "reports/ar_aging.html",
+        "A/R Aging",
+        picker,
+        session,
+        aging=aging,
+        invariants=aging.invariants,
+        names={r.customer_id: r.customer_name for r in aging.rows},
     )
 
 

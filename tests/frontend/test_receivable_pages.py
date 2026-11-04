@@ -250,7 +250,10 @@ def _open_invoice(session, owner_user, chart, *, issue=True):
     return invoice, customer, item
 
 
-def test_issue_button_and_void_form_on_detail(owner_client, owner_user, session, chart):
+def test_issue_button_and_void_form_on_detail(
+    owner_client, owner_user, session, chart, monkeypatch
+):
+    monkeypatch.setattr("payroll.receivables.balances.company_today", lambda: date(2026, 3, 5))
     invoice, customer, item = _open_invoice(session, owner_user, chart, issue=False)
     draft_page = owner_client.get(f"/invoices/{invoice.id}")
     assert f'action="/invoices/{invoice.id}/issue"' in draft_page.text
@@ -260,7 +263,7 @@ def test_issue_button_and_void_form_on_detail(owner_client, owner_user, session,
     assert issued.status_code == 303
     assert issued.headers["location"] == f"/invoices/{invoice.id}"
     page = owner_client.get(f"/invoices/{invoice.id}")
-    assert "#1001" in page.text and "Open" in page.text
+    assert "#1001" in page.text and 'id="inv-status">Open<' in page.text
     assert f'action="/invoices/{invoice.id}/void"' in page.text
     assert "/issue" not in page.text
     assert f'href="/invoices/{invoice.id}/edit"' in page.text
@@ -820,3 +823,69 @@ def test_viewer_reads_customer_page_but_cannot_refund(
             == 403
         )
     assert session.exec(select(CustomerRefund)).all() == []
+
+
+# ---------------------------------------------------------------------------
+# Derived invoice status, paid and balance
+# ---------------------------------------------------------------------------
+
+
+def test_list_shows_derived_status_and_filters(
+    owner_client, owner_user, session, chart, monkeypatch
+):
+    monkeypatch.setattr("payroll.receivables.balances.company_today", lambda: date(2026, 4, 15))
+    customer = CustomerService(session).create(actor=owner_user, name="Acme")
+    item = ItemService(session).create(
+        actor=owner_user,
+        name="Consulting",
+        unit_price=Decimal("100.00"),
+        income_account_id=chart["Services Revenue"].id,
+    )
+    late = _invoice_for(session, owner_user, customer, item, "100.00", date(2026, 3, 1))
+    partial = _invoice_for(session, owner_user, customer, item, "100.00", date(2026, 4, 10))
+    paid = _invoice_for(session, owner_user, customer, item, "60.00", date(2026, 4, 10))
+    open_ = _invoice_for(session, owner_user, customer, item, "10.00", date(2026, 4, 12))
+    draft = InvoiceService(session).create_draft(
+        actor=owner_user,
+        customer_id=customer.id,
+        invoice_date=date(2026, 4, 12),
+        lines=[InvoiceLineInput(item.id, "Work", Decimal("1"), Decimal("5.00"))],
+    )
+    PaymentService(session).record(
+        actor=owner_user,
+        customer_id=customer.id,
+        received_date=date(2026, 4, 11),
+        amount=Decimal("90.00"),
+        deposit_account_id=chart["Undeposited Funds"].id,
+        method="check",
+        applications=[
+            ApplicationInputForPages(partial.id, Decimal("30.00")),
+            ApplicationInputForPages(paid.id, Decimal("60.00")),
+        ],
+    )
+    session.commit()
+
+    def numbers(query: str) -> list[str]:
+        text = owner_client.get(f"/invoices{query}").text
+        return [
+            f"/invoices/{i.id}"
+            for i in (late, partial, paid, open_, draft)
+            if f'href="/invoices/{i.id}"' in text
+        ]
+
+    everything = owner_client.get("/invoices").text
+    for badge in ("Overdue", "Partial", "Paid", "Open", "Draft"):
+        assert f">{badge}</span>" in everything
+    for status in ("overdue", "partial", "paid"):
+        assert f'<option value="{status}"' in everything
+    assert numbers("?status=overdue") == [f"/invoices/{late.id}"]
+    assert numbers("?status=partial") == [f"/invoices/{partial.id}"]
+    assert numbers("?status=paid") == [f"/invoices/{paid.id}"]
+    assert numbers("?status=open") == [f"/invoices/{open_.id}"]
+    assert numbers("?status=draft") == [f"/invoices/{draft.id}"]
+    assert owner_client.get("/invoices?status=bogus").status_code == 422
+
+    view = owner_client.get(f"/invoices/{partial.id}").text
+    assert 'id="inv-status">Partial<' in view
+    assert 'id="inv-paid">$30.00' in view and 'id="inv-balance">$70.00' in view
+    assert 'id="inv-status">Overdue<' in owner_client.get(f"/invoices/{late.id}").text

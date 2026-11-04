@@ -48,6 +48,18 @@ def _invalid(message: str) -> InvalidRefundError:
     return InvalidRefundError(message=message)
 
 
+def payment_live_filter(as_of: date | None) -> list[Any]:
+    """WHERE terms selecting payments live as of ``as_of`` (``None`` = posted now).
+
+    A payment counts when received on or before ``as_of`` and not voided on or before it.
+    Shared by customer credit and invoice balances so they can never disagree.
+    """
+    live = col(Payment.status) == "posted"
+    if as_of is None:
+        return [live]
+    return [col(Payment.received_date) <= as_of, or_(live, col(Payment.void_date) > as_of)]
+
+
 def customer_credits(
     session: Session, as_of: date | None = None, customer_id: int | None = None
 ) -> dict[int, Decimal]:
@@ -57,16 +69,11 @@ def customer_credits(
     applications count when recognized on or before it (and their payment counts);
     refunds count when dated on or before it and not voided on or before it.
     """
-    pay_live = col(Payment.status) == "posted"
     ref_live = col(CustomerRefund.status) == "posted"
-    pay_filter = [pay_live]
+    pay_filter = payment_live_filter(as_of)
     ref_filter = [ref_live]
     app_filter = []
     if as_of is not None:
-        pay_filter = [
-            col(Payment.received_date) <= as_of,
-            or_(pay_live, col(Payment.void_date) > as_of),
-        ]
         ref_filter = [
             col(CustomerRefund.refund_date) <= as_of,
             or_(ref_live, col(CustomerRefund.void_date) > as_of),

@@ -8,7 +8,7 @@
   <div class="card">
     <div class="card-header bg-primary d-flex justify-content-between align-items-center">
       <span><i class="bi bi-receipt me-2"></i>Invoice{% if invoice.number is not none %} #{{ invoice.number }}{% endif %}</span>
-      <span class="badge {{ 'bg-secondary' if invoice.status == 'void' else 'bg-info text-dark' if invoice.status == 'draft' else 'bg-success' }}">{{ invoice.status | capitalize }}</span>
+      <span class="badge {{ 'bg-secondary' if state.status == 'void' else 'bg-info text-dark' if state.status == 'draft' else 'bg-danger' if state.status == 'overdue' else 'bg-warning text-dark' if state.status == 'partial' else 'bg-success' }}" id="inv-status">{{ state.status | capitalize }}</span>
     </div>
     <div class="card-body">
       <dl class="row mb-3">
@@ -36,8 +36,8 @@
         <tfoot>
           <tr class="fw-bold"><td colspan="4">Total</td><td class="num">{{ invoice.total | currency }}</td></tr>
           {% if invoice.status == "open" %}
-          <tr><td colspan="4">Paid</td><td class="num" id="inv-paid">{{ applied | currency }}</td></tr>
-          <tr class="fw-bold"><td colspan="4">Balance due</td><td class="num" id="inv-balance">{{ balance | currency }}</td></tr>
+          <tr><td colspan="4">Paid</td><td class="num" id="inv-paid">{{ state.paid | currency }}</td></tr>
+          <tr class="fw-bold"><td colspan="4">Balance due</td><td class="num" id="inv-balance">{{ state.balance | currency }}</td></tr>
           {% endif %}
         </tfoot>
       </table>

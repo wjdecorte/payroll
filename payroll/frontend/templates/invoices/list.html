@@ -35,21 +35,24 @@
       </form>
       <table class="table table-sm table-hover mb-0 align-middle">
         <thead>
-          <tr><th>Number</th><th>Customer</th><th>Date</th><th>Due</th><th class="num">Total</th><th>Status</th><th class="no-print"></th></tr>
+          <tr><th>Number</th><th>Customer</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th class="no-print"></th></tr>
         </thead>
         <tbody>
-          {% for inv in invoices %}
-          <tr{% if inv.status == "void" %} class="text-muted"{% endif %}>
+          {% for st in states %}
+          {% set inv = st.invoice %}
+          <tr{% if st.status == "void" %} class="text-muted"{% endif %}>
             <td>{{ inv.number if inv.number is not none else "" }}</td>
             <td>{{ customers[inv.customer_id].name }}</td>
             <td>{{ inv.invoice_date }}</td>
             <td>{{ inv.due_date }}</td>
             <td class="num">{{ inv.total | currency }}</td>
-            <td><span class="badge {{ 'bg-secondary' if inv.status == 'void' else 'bg-info text-dark' if inv.status == 'draft' else 'bg-success' }}">{{ inv.status | capitalize }}</span></td>
+            <td class="num">{{ st.paid | currency }}</td>
+            <td class="num">{{ st.balance | currency }}</td>
+            <td><span class="badge {{ 'bg-secondary' if st.status == 'void' else 'bg-info text-dark' if st.status == 'draft' else 'bg-danger' if st.status == 'overdue' else 'bg-warning text-dark' if st.status == 'partial' else 'bg-success' }}">{{ st.status | capitalize }}</span></td>
             <td class="no-print text-end"><a class="btn btn-sm btn-outline-secondary" href="/invoices/{{ inv.id }}">View</a></td>
           </tr>
           {% else %}
-          <tr><td colspan="7" class="text-center text-muted py-4">No invoices found.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted py-4">No invoices found.</td></tr>
           {% endfor %}
         </tbody>
       </table>

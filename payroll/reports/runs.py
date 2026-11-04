@@ -14,6 +14,7 @@ from datetime import date
 
 from sqlmodel import Session
 
+from payroll.receivables.balances import ARAging, ar_aging
 from payroll.reports.basis import DEFAULT_BASIS, Basis
 from payroll.reports.periods import (
     PRESETS,
@@ -35,7 +36,7 @@ from payroll.reports.statements import COMPARISONS, ReportService
 DEFAULT_PRESET = "this_month"
 MAX_ACCOUNT_ID = 2**31 - 1  # integer primary key range
 
-Report = Statement | TrialBalance | GeneralLedger | JournalReport
+Report = Statement | TrialBalance | GeneralLedger | JournalReport | ARAging
 Query = Mapping[str, str]
 
 
@@ -157,10 +158,17 @@ def run_journal(session: Session, q: Query) -> ReportRun:
     return ReportRun("journal", "Journal", journal, params, stem, period)
 
 
+def run_ar_aging(session: Session, q: Query) -> ReportRun:
+    as_of = parse_date(q.get("asOf", ""), "As-of date") or company_today()
+    aging = ar_aging(session, as_of)
+    return ReportRun("ar-aging", "A/R Aging", aging, {"asOf": as_of}, f"ar-aging-{as_of}")
+
+
 RUNNERS: dict[str, Callable[[Session, Query], ReportRun]] = {
     "profit-and-loss": run_profit_and_loss,
     "balance-sheet": run_balance_sheet,
     "trial-balance": run_trial_balance,
     "general-ledger": run_general_ledger,
     "journal": run_journal,
+    "ar-aging": run_ar_aging,
 }

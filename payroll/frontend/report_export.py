@@ -19,6 +19,7 @@ from payroll.auth.models import User
 from payroll.auth.permissions import require_reader
 from payroll.common.dependencies import get_session
 from payroll.frontend.routers import templates
+from payroll.receivables.balances import ARAging
 from payroll.reports.export import to_csv, to_pdf
 from payroll.reports.runs import RUNNERS, ReportRun, trial_invariants
 from payroll.reports.schemas import GeneralLedger, JournalReport, Statement, TrialBalance
@@ -38,6 +39,8 @@ def render_print_html(run: ReportRun) -> str:
         context.update(ledger=report)
     elif isinstance(report, JournalReport):
         context.update(journal=report)
+    elif isinstance(report, ARAging):
+        context.update(aging=report, invariants=report.invariants)
     return templates.env.get_template("reports/print.html").render(context)
 
 

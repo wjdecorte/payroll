@@ -18,6 +18,7 @@ import io
 from datetime import date
 from decimal import Decimal
 
+from payroll.receivables.balances import AgingRow, ARAging
 from payroll.reports.schemas import (
     GeneralLedger,
     JournalReport,
@@ -170,6 +171,68 @@ def _journal(journal: JournalReport) -> list[list[Cell]]:
     return rows
 
 
+def _aging_row(row: AgingRow, name: str) -> list[Cell]:
+    return [
+        name,
+        row.current,
+        row.d1_30,
+        row.d31_60,
+        row.d61_90,
+        row.d91_plus,
+        row.total,
+        row.credit,
+    ]
+
+
+def _ar_aging(aging: ARAging) -> list[list[Cell]]:
+    rows: list[list[Cell]] = [
+        ["A/R Aging"],
+        ["As of", aging.as_of],
+        [],
+        ["Customer", "Current", "1-30", "31-60", "61-90", "91+", "Total", "Unapplied credit"],
+    ]
+    rows += [_aging_row(r, r.customer_name) for r in aging.rows]
+    rows.append(_aging_row(aging.totals, "Total"))
+    rows += [
+        [],
+        ["Open invoices"],
+        [
+            "Invoice",
+            "Customer",
+            "Invoice date",
+            "Due date",
+            "Days overdue",
+            "Total",
+            "Paid",
+            "Balance",
+        ],
+    ]
+    names = {r.customer_id: r.customer_name for r in aging.rows}
+    for s in aging.invoices:
+        inv = s.invoice
+        rows.append(
+            [
+                inv.number,
+                names.get(inv.customer_id, ""),
+                inv.invoice_date,
+                inv.due_date,
+                s.days_overdue,
+                inv.total,
+                s.paid,
+                s.balance,
+            ]
+        )
+    rows += [
+        [],
+        ["Ledger A/R balance", aging.ledger_ar_balance],
+        ["Difference", aging.difference],
+        [],
+        ["Checks"],
+    ]
+    rows += [[i.name, "OK" if i.ok else "FAILED", i.detail] for i in aging.invariants]
+    return rows
+
+
 def _table(report: object) -> list[list[Cell]]:
     if isinstance(report, Statement):
         return _statement(report)
@@ -179,10 +242,14 @@ def _table(report: object) -> list[list[Cell]]:
         return _general_ledger(report)
     if isinstance(report, JournalReport):
         return _journal(report)
+    if isinstance(report, ARAging):
+        return _ar_aging(report)
     raise TypeError(f"Cannot export {type(report).__name__} as CSV")
 
 
-def to_csv(report: Statement | TrialBalance | GeneralLedger | JournalReport) -> str:
+def to_csv(
+    report: Statement | TrialBalance | GeneralLedger | JournalReport | ARAging,
+) -> str:
     """The report as CSV text (UTF-8 by the caller, ``\\r\\n`` line ends)."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
