@@ -634,11 +634,50 @@ def test_viewer_and_accountant_read_all_receivable_pages_but_cannot_mutate(
     assert client.get("/settings/receivables").status_code == 200
 
 
-def test_receivable_routes_need_csrf(any_app):
-    """No CSRF pair: every receivables POST is refused (403) before auth or any work."""
-    with TestClient(any_app, raise_server_exceptions=False) as bare:
-        for method, path in RECEIVABLES_UNSAFE_ENDPOINTS:
-            response = bare.request(method, path, follow_redirects=False)
-            assert response.status_code in (403, 303), (method, path, response.status_code)
-            if response.status_code == 303:
-                assert response.headers["location"].startswith("/login"), (method, path)
+def test_receivable_routes_need_csrf(owner_client, session):
+    """A signed-in owner without the CSRF token is refused (403 CSRFError) and nothing is written."""
+    from sqlalchemy import func
+
+    from payroll.auth.dependencies import CSRF_HEADER
+    from payroll.receivables.models import (
+        Customer,
+        CustomerRefund,
+        Deposit,
+        Invoice,
+        Item,
+        Payment,
+    )
+
+    tables = (Customer, Item, Invoice, Payment, Deposit, CustomerRefund, AuditLog)
+
+    def counts() -> list[int]:
+        return [session.exec(select(func.count()).select_from(t)).one() for t in tables]
+
+    session.commit()
+    token = owner_client.headers.pop(CSRF_HEADER)  # a valid session, but no CSRF token header
+    assert token and CSRF_HEADER not in owner_client.headers
+    before = counts()
+    body = {
+        "name": "Csrf Probe",
+        "email": "probe@example.com",
+        "customer_id": "1",
+        "amount": "10.00",
+        "void_date": "2026-03-01",
+        "invoice_date": "2026-03-01",
+        "received_date": "2026-03-01",
+        "number": "5000",
+        "unit_price": "10.00",
+        "terms_days": "30",
+    }
+    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 19
+    for method, path in RECEIVABLES_UNSAFE_ENDPOINTS:
+        response = owner_client.request(method, path, data=body, follow_redirects=False)
+        where = f"{method} {path} -> {response.status_code}"
+        assert response.status_code == 403, where
+        assert response.json() == {"detail": "CSRF token missing or invalid"}, where
+    assert counts() == before
+    # Control: the same session with the token is NOT refused as CSRF (so the 403s above are the CSRF check).
+    owner_client.headers[CSRF_HEADER] = token
+    ok = owner_client.post("/customers/new", data=body, follow_redirects=False)
+    assert ok.status_code != 403
+    assert counts()[0] == before[0] + 1
