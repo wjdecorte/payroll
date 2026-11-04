@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Import chart of accounts · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-upload me-2"></i>Import chart of accounts from QuickBooks</span>
+      <a class="btn btn-sm btn-outline-light" href="/accounts">Back to accounts</a>
+    </div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+
+      {% if not plan %}
+      <p>Upload the chart of accounts exported from QuickBooks Online (<strong>Settings &rsaquo; Chart of accounts &rsaquo; Export</strong>, or the <strong>Account List</strong> report) as a CSV file. You will see a preview before anything is created.</p>
+      <ul class="small text-muted">
+        <li>Sub-accounts are read from names like <code>Parent:Child</code>.</li>
+        <li>Accounts already in the chart (same number, or same name under the same parent) are skipped and never changed.</li>
+        <li>Balances are ignored; opening balances come in with the general ledger import.</li>
+        <li>Maximum file size {{ max_kb }} KB.</li>
+      </ul>
+      <form method="post" action="/accounts/import" enctype="multipart/form-data" class="d-flex gap-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="flex-grow-1">
+          <label class="form-label" for="file">CSV file</label>
+          <input class="form-control" id="file" name="file" type="file" accept=".csv,text/csv" required>
+        </div>
+        <button type="submit" class="btn btn-brand">Preview import</button>
+      </form>
+
+      {% else %}
+      {% set creates = plan.count("create") %}
+      <p class="mb-3">
+        <span class="badge bg-success">{{ creates }} to create</span>
+        <span class="badge bg-secondary">{{ plan.count("exists") }} already in the chart</span>
+        {% if plan.count("error") %}<span class="badge bg-danger">{{ plan.count("error") }} with errors</span>{% endif %}
+      </p>
+      <div class="table-responsive mb-3">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr><th>Line</th><th>Number</th><th>Account</th><th>QBO type</th><th>Becomes</th><th>Result</th></tr>
+          </thead>
+          <tbody>
+            {% for item in plan.rows %}
+            <tr class="{% if item.action == 'error' %}table-danger{% elif item.action == 'exists' %}text-muted{% endif %}">
+              <td>{{ item.row.line }}</td>
+              <td>{{ item.row.number }}</td>
+              <td>{{ item.row.full_name }}</td>
+              <td>{{ item.row.qbo_type }}</td>
+              <td>{{ (item.account_type.value | replace("_", " ") | title) if item.account_type else "" }}</td>
+              <td>
+                {% if item.action == "create" %}<span class="text-success fw-semibold">Create</span>
+                {% elif item.action == "exists" %}Skip
+                {% else %}<span class="fw-semibold">Error</span>{% endif %}
+                {% if item.reason %}<span class="small"> · {{ item.reason }}</span>{% endif %}
+                {% if item.warning %}<span class="small text-warning-emphasis"> · {{ item.warning }}</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <form method="post" action="/accounts/import/confirm" class="d-flex gap-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <textarea name="csv_text" hidden>{{ csv_text }}</textarea>
+        <button type="submit" class="btn btn-brand"{% if plan.has_errors or not creates %} disabled{% endif %}>
+          Import {{ creates }} account{{ "" if creates == 1 else "s" }}
+        </button>
+        <a class="btn btn-outline-secondary" href="/accounts/import">Choose another file</a>
+      </form>
+      {% if plan.has_errors %}
+      <p class="small text-muted mt-2">Fix the rows marked Error in QuickBooks or in the file, then upload it again. Nothing is imported until every row is valid.</p>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

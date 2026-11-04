@@ -18,7 +18,7 @@ everything, including every report.
 
 | Page | Purpose |
 |------|---------|
-| `/accounts` | Chart of accounts: add, edit, deactivate, per-account register |
+| `/accounts` | Chart of accounts: add, edit, deactivate, import from a QBO CSV export (`/accounts/import`), per-account register |
 | `/journal` | Manual journal entries (post, reverse, void) and the entry detail |
 | `/reports` | Profit and Loss, Balance Sheet, Trial Balance, General Ledger, Journal, with presets (this/last month, quarter, year, YTD, trailing 12), custom ranges, comparison columns and drill-down |
 | `/settings/ledger` | System account roles and the period lock (changing it needs your password) |

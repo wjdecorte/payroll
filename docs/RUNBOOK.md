@@ -98,6 +98,13 @@ After the upgrade, as the owner:
    Rename or add accounts afterwards on the Accounts page; check Settings > Ledger that the
    system roles (A/R, Undeposited Funds, Due to Owner, Retained Earnings, Opening Balance
    Equity) point at the right accounts.
+   **Or import your QBO chart instead of the default one.** In QBO export the chart (Settings >
+   Chart of accounts > Export) or the Account List report as CSV, then use Accounts > Import
+   from QBO. You get a preview first; accounts already in the app (same number, or same name
+   under the same parent) are skipped and never changed, balances are ignored, and nothing is
+   created until every row is valid. Sub-accounts come from `Parent:Child` names. Account
+   numbers QBO decorated (for example `2100*OE`) are kept as exported and flagged; fix them on
+   the Accounts page. Import before binding the system roles, then bind them in Settings > Ledger.
 2. **Do not run `seed-demo` against real books.** It posts a fictitious 2026 year; it refuses
    when any journal entry exists, and exists only to explore the reports on a scratch database.
 3. Set `COMPANY_TIMEZONE` in `.env` if the company is not on Eastern time (default
