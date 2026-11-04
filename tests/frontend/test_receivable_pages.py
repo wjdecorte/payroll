@@ -549,3 +549,161 @@ def test_viewer_gets_403_on_record_apply_void(viewer_client, owner_user, session
     assert session.get(Payment, payment.id).status == "posted"
     invoice_page = viewer_client.get(f"/invoices/{invoice.id}")
     assert "Receive payment" not in invoice_page.text
+
+
+# ---------------------------------------------------------------------------
+# Deposits
+# ---------------------------------------------------------------------------
+
+
+def _undeposited_payment(session, owner_user, customer, chart, amount, day=date(2026, 3, 10), **kw):
+    return PaymentService(session).record(
+        actor=owner_user,
+        customer_id=customer.id,
+        received_date=day,
+        amount=Decimal(amount),
+        deposit_account_id=kw.pop("account", chart["Undeposited Funds"]).id,
+        method="check",
+        **kw,
+    )
+
+
+def _deposit_form_data(chart, *payments, **fields):
+    data = {
+        "deposit_date": "2026-03-12",
+        "bank_account_id": str(chart["Business Checking"].id),
+        "memo": "Friday",
+        "payment_id": [str(p.id) for p in payments],
+    }
+    data.update(fields)
+    return data
+
+
+def test_new_deposit_page_lists_only_available_payments(owner_client, owner_user, session, chart):
+    customer = Customer(name="Zed Customer")
+    session.add(customer)
+    session.flush()
+    shown = _undeposited_payment(session, owner_user, customer, chart, "111.11", reference="SHOWN")
+    _undeposited_payment(
+        session,
+        owner_user,
+        customer,
+        chart,
+        "222.22",
+        reference="DIRECT",
+        account=chart["Business Checking"],
+    )
+    voided = _undeposited_payment(session, owner_user, customer, chart, "333.33", reference="VOID")
+    PaymentService(session).void(voided.id, actor=owner_user, void_date=date(2026, 3, 11))
+    page = owner_client.get("/deposits/new")
+    assert page.status_code == 200
+    assert "SHOWN" in page.text and "Zed Customer" in page.text
+    assert f'value="{shown.id}"' in page.text and 'data-cents="11111"' in page.text
+    assert "DIRECT" not in page.text and "VOID" not in page.text
+    # Undeposited Funds is not offered as the bank; the real bank is
+    assert "Business Checking" in page.text
+    assert '<option value="' + str(chart["Undeposited Funds"].id) + '"' not in page.text
+    assert "/static/js/deposit.js" in page.text and 'id="dep-save"' in page.text
+
+
+def test_create_via_form_redirects_to_view(owner_client, owner_user, session, chart):
+    customer = Customer(name="Acme")
+    session.add(customer)
+    session.flush()
+    one = _undeposited_payment(session, owner_user, customer, chart, "100.00", reference="A1")
+    two = _undeposited_payment(session, owner_user, customer, chart, "50.50", reference="A2")
+    response = owner_client.post(
+        "/deposits/new", data=_deposit_form_data(chart, one, two), follow_redirects=False
+    )
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location.startswith("/deposits/")
+    page = owner_client.get(location)
+    assert page.status_code == 200
+    assert "$150.50" in page.text and "A1" in page.text and "A2" in page.text
+    assert "Business Checking" in page.text and "Void deposit" in page.text
+    listing = owner_client.get("/deposits").text
+    assert "Friday" in listing and "$150.50" in listing and "Business Checking" in listing
+    # the payments left the form
+    assert "A1" not in owner_client.get("/deposits/new").text
+
+    deposit_id = int(location.rsplit("/", 1)[1])
+    voided = owner_client.post(
+        f"{location}/void", data={"void_date": "2026-03-13"}, follow_redirects=False
+    )
+    assert voided.status_code == 303
+    page = owner_client.get(location)
+    assert "Void deposit" not in page.text and "released" in page.text
+    assert "A1" in owner_client.get("/deposits/new").text
+    assert deposit_id
+
+
+def test_deposit_form_errors_rerender_422_with_typed_values(
+    owner_client, owner_user, session, chart
+):
+    customer = Customer(name="Acme")
+    session.add(customer)
+    session.flush()
+    payment = _undeposited_payment(session, owner_user, customer, chart, "10.00")
+    empty = owner_client.post("/deposits/new", data=_deposit_form_data(chart, memo="keep me"))
+    assert empty.status_code == 422 and "at least one payment" in empty.text
+    assert 'value="keep me"' in empty.text
+    early = owner_client.post(
+        "/deposits/new", data=_deposit_form_data(chart, payment, deposit_date="2026-03-01")
+    )
+    assert early.status_code == 422 and "after the deposit date" in early.text
+    assert f'value="{payment.id}" data-cents="1000" aria-label' in early.text
+    assert "checked" in early.text
+    for bad in (
+        {"bank_account_id": ""},
+        {"deposit_date": ""},
+        {"deposit_date": "nope"},
+        {"payment_id": ["abc"]},
+    ):
+        assert owner_client.post(
+            "/deposits/new", data=_deposit_form_data(chart, **bad)
+        ).status_code in (
+            422,
+            400,
+        )
+    missing = owner_client.post("/deposits/999999/void", data={"void_date": "2026-03-13"})
+    assert missing.status_code == 404
+    assert owner_client.get("/deposits/999999").status_code == 404
+
+
+def test_deposit_void_error_rerenders_view(owner_client, owner_user, session, chart):
+    customer = Customer(name="Acme")
+    session.add(customer)
+    session.flush()
+    payment = _undeposited_payment(session, owner_user, customer, chart, "10.00")
+    created = owner_client.post(
+        "/deposits/new", data=_deposit_form_data(chart, payment), follow_redirects=False
+    )
+    location = created.headers["location"]
+    owner_client.post(f"{location}/void", data={"void_date": "2026-03-13"})
+    again = owner_client.post(f"{location}/void", data={"void_date": "2026-03-13"})
+    assert again.status_code == 409 and "already void" in again.text
+    blank = owner_client.post(f"{location}/void", data={"void_date": ""})
+    assert blank.status_code == 422
+
+
+def test_deposit_js_served(owner_client):
+    response = owner_client.get("/static/js/deposit.js")
+    assert response.status_code == 200
+    assert "BigInt" in response.text and "dep-total" in response.text
+    assert "parseFloat" not in response.text
+
+
+def test_viewer_gets_403_on_deposit_mutations(viewer_client, owner_user, session, chart):
+    customer = Customer(name="Acme")
+    session.add(customer)
+    session.flush()
+    payment = _undeposited_payment(session, owner_user, customer, chart, "10.00")
+    assert viewer_client.get("/deposits").status_code == 200
+    assert viewer_client.get("/deposits/new").status_code == 403
+    assert (
+        viewer_client.post("/deposits/new", data=_deposit_form_data(chart, payment)).status_code
+        == 403
+    )
+    session.expire_all()
+    assert session.get(Payment, payment.id).deposit_id is None

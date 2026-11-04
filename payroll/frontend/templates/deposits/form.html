@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Make deposit · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary">Make deposit</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/deposits/new" id="dep-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label class="form-label" for="deposit_date">Deposit date</label>
+            <input class="form-control" type="date" id="deposit_date" name="deposit_date" required value="{{ values.deposit_date }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="bank_account_id">Deposit to</label>
+            <select class="form-select" id="bank_account_id" name="bank_account_id" required>
+              <option value="">Choose a bank account</option>
+              {% for a in banks %}
+              <option value="{{ a.id }}"{% if values.bank_account_id == a.id | string %} selected{% endif %}>{{ a.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label" for="memo">Memo</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <h2 class="h6">Payments in Undeposited Funds</h2>
+        {% if payments %}
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th></th><th>Received</th><th>Customer</th><th>Method</th><th>Reference</th><th class="num">Amount</th></tr>
+          </thead>
+          <tbody id="dep-rows">
+            {% for p in payments %}
+            <tr>
+              <td><input class="form-check-input" type="checkbox" name="payment_id" value="{{ p.id }}" data-cents="{{ (p.amount * 100) | int }}" aria-label="Deposit payment from {{ customers[p.customer_id].name }}"{% if p.id | string in checked %} checked{% endif %}></td>
+              <td>{{ p.received_date }}</td>
+              <td>{{ customers[p.customer_id].name }}</td>
+              <td>{{ (p.method or "") | capitalize }}</td>
+              <td>{{ p.reference or "" }}</td>
+              <td class="num">{{ p.amount | currency }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr><th colspan="5" class="text-end">Deposit total</th><th class="num" id="dep-total"></th></tr>
+          </tfoot>
+        </table>
+        {% else %}
+        <p class="text-muted">No payments are waiting in Undeposited Funds.</p>
+        {% endif %}
+        <button type="submit" class="btn btn-success" id="dep-save">Save deposit</button>
+        <a class="btn btn-outline-secondary" href="/deposits">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/deposit.js"></script>{% endblock %}

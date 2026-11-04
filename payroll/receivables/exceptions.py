@@ -115,3 +115,9 @@ class ARNotConfiguredError(AppBaseError):
 class PaymentStateError(AppBaseError):
     message: str = "The payment is not in a state that allows this"
     http_code: int = 409
+
+
+@dataclass
+class InvalidDepositError(AppBaseError):
+    message: str = "Invalid deposit"
+    http_code: int = 422

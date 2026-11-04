@@ -25,6 +25,11 @@ Full-page routes (not in the OpenAPI schema):
   GET  /payments/{id}               -> payment, its applications, unapplied credit, void form
   POST /payments/{id}/apply         -> applies the unapplied credit to open invoices (owner)
   POST /payments/{id}/void          -> voids the payment            (owner)
+  GET  /deposits                    -> deposit list
+  GET  /deposits/new                -> tick undeposited payments, pick bank and date (owner)
+  POST /deposits/new                -> makes the deposit            (owner)
+  GET  /deposits/{id}               -> deposit, its payments, void form
+  POST /deposits/{id}/void          -> voids the deposit, freeing its payments (owner)
   GET  /settings/receivables        -> next invoice number, company details
   POST /settings/receivables/number -> sets the next invoice number (owner)
   POST /settings/receivables/company -> saves the company details   (owner)
@@ -51,8 +56,10 @@ from payroll.frontend.routers import _error_partial, templates
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, AccountType, SystemRole
 from payroll.receivables.customers import CustomerService
+from payroll.receivables.deposits import DepositService
 from payroll.receivables.exceptions import (
     InvalidCustomerError,
+    InvalidDepositError,
     InvalidInvoiceError,
     InvalidItemError,
     InvalidPaymentError,
@@ -1075,6 +1082,183 @@ async def payment_void(
             request, session, payment_id, error=exc.message, status_code=exc.http_code
         )
     return RedirectResponse(f"/payments/{payment_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Deposits
+# ---------------------------------------------------------------------------
+
+MAX_DEPOSIT_FORM_PAYMENTS = 200
+
+
+def _deposit_error(message: str) -> InvalidDepositError:
+    return InvalidDepositError(message=message)
+
+
+def _bank_accounts(session: Session) -> list[Account]:
+    """Active asset accounts a deposit can go to (not A/R, not Undeposited Funds)."""
+    return [
+        a
+        for a in AccountService(session).list()
+        if a.type == AccountType.ASSET
+        and a.system_role not in (SystemRole.ACCOUNTS_RECEIVABLE, SystemRole.UNDEPOSITED_FUNDS)
+    ]
+
+
+def _deposit_form(
+    request: Request,
+    session: Session,
+    *,
+    values: dict,
+    checked: set[str],
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    payments = DepositService(session).available()
+    customers = {c.id: c for c in CustomerService(session).list(include_inactive=True)}
+    return templates.TemplateResponse(
+        request,
+        "deposits/form.html",
+        {
+            "payments": payments,
+            "customers": customers,
+            "banks": _bank_accounts(session),
+            "values": values,
+            "checked": checked,
+            "error": error,
+            "tab": "deposits",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/deposits", response_class=HTMLResponse)
+async def deposits_list(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    deposits = DepositService(session).list()
+    banks = {a.id: a for a in AccountService(session).list(include_inactive=True)}
+    counts: dict[int, int] = {}
+    for payment in session.exec(
+        select(Payment).where(col(Payment.deposit_id).in_([d.id for d in deposits]))
+    ).all():
+        counts[payment.deposit_id] = counts.get(payment.deposit_id, 0) + 1  # type: ignore[index]
+    return templates.TemplateResponse(
+        request,
+        "deposits/list.html",
+        {"deposits": deposits, "banks": banks, "counts": counts, "tab": "deposits"},
+    )
+
+
+@router.get("/deposits/new", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
+async def deposit_new(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    values = {"deposit_date": str(company_today()), "bank_account_id": "", "memo": ""}
+    return _deposit_form(request, session, values=values, checked=set())
+
+
+@router.post("/deposits/new", response_class=HTMLResponse)
+async def deposit_create(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    values = {
+        "deposit_date": _text(form.get("deposit_date")),
+        "bank_account_id": _text(form.get("bank_account_id")),
+        "memo": _text(form.get("memo")),
+    }
+    raw_ids = [v for v in form.getlist("payment_id") if isinstance(v, str)]
+    checked = {v.strip() for v in raw_ids}
+    try:
+        if len(raw_ids) > MAX_DEPOSIT_FORM_PAYMENTS:
+            raise _deposit_error(f"A deposit can hold at most {MAX_DEPOSIT_FORM_PAYMENTS} payments")
+        payment_ids = []
+        for raw in raw_ids:
+            if not (raw.strip().isascii() and raw.strip().isdigit() and len(raw.strip()) <= 10):
+                raise _deposit_error("Choose valid payments")
+            payment_ids.append(int(raw.strip()))
+        deposit_date = _parse_date(values["deposit_date"], "Deposit date")
+        if deposit_date is None:
+            raise _deposit_error("Enter the deposit date")
+        bank_id = _id_param(values["bank_account_id"], "Bank account")
+        if bank_id is None:
+            raise _deposit_error("Choose the bank account to deposit to")
+        deposit = DepositService(session).create(
+            actor=actor,
+            deposit_date=deposit_date,
+            bank_account_id=bank_id,
+            payment_ids=payment_ids,
+            memo=values["memo"] or None,
+        )
+    except AppBaseError as exc:
+        return _deposit_form(
+            request,
+            session,
+            values=values,
+            checked=checked,
+            error=exc.message,
+            status_code=exc.http_code,
+        )
+    return RedirectResponse(f"/deposits/{deposit.id}", status_code=303)
+
+
+def _deposit_page(
+    request: Request,
+    session: Session,
+    deposit_id: int,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    service = DepositService(session)
+    try:
+        deposit = service.get(deposit_id)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    payments = service.payments(deposit_id)
+    customers = {c.id: c for c in CustomerService(session).list(include_inactive=True)}
+    return templates.TemplateResponse(
+        request,
+        "deposits/view.html",
+        {
+            "deposit": deposit,
+            "bank": session.get(Account, deposit.bank_account_id),
+            "payments": payments,
+            "customers": customers,
+            "today": str(company_today()),
+            "error": error,
+            "tab": "deposits",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/deposits/{deposit_id}", response_class=HTMLResponse)
+async def deposit_view(
+    request: Request, deposit_id: int, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    return _deposit_page(request, session, deposit_id)
+
+
+@router.post("/deposits/{deposit_id}/void", response_class=HTMLResponse)
+async def deposit_void(
+    request: Request,
+    deposit_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    try:
+        void_date = _parse_date(_text(form.get("void_date")), "Void date")
+        if void_date is None:
+            raise _deposit_error("Enter a void date")
+        DepositService(session).void(
+            deposit_id, actor=actor, void_date=void_date, memo=_text(form.get("memo")) or None
+        )
+    except AppBaseError as exc:
+        return _deposit_page(
+            request, session, deposit_id, error=exc.message, status_code=exc.http_code
+        )
+    return RedirectResponse(f"/deposits/{deposit_id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
