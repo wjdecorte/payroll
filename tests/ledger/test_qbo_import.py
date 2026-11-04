@@ -275,3 +275,86 @@ def test_importing_twice_creates_nothing_the_second_time(session, owner_user):
     second = _plan(session, CHART)
     assert second.count("create") == 0
     assert second.count("exists") == 9
+
+
+def _line(plan, name):
+    return next(p.row.line for p in plan.rows if p.row.full_name == name)
+
+
+def test_plan_with_a_selection_creates_only_the_selected_rows(session):
+    everything = _plan(session, CHART)
+    keep = {_line(everything, "Business Checking"), _line(everything, "Service Revenue")}
+    plan = plan_import(session, parse_qbo_csv(CHART), selected=keep)
+    assert [a.name for a in plan.new_accounts] == ["Business Checking", "Service Revenue"]
+    assert plan.selected_count == 2
+    assert plan.count("create") == 9  # the preview still lists what could be created
+    assert {p.row.full_name for p in plan.rows if p.action == "create" and not p.selected} == {
+        p.row.full_name for p in plan.rows if p.row.line not in keep and p.action == "create"
+    }
+
+
+def test_no_selection_means_every_creatable_row(session):
+    plan = plan_import(session, parse_qbo_csv(CHART))
+    assert plan.selected_count == 9
+    assert all(p.selected for p in plan.rows)
+
+
+def test_an_empty_selection_creates_nothing(session):
+    assert plan_import(session, parse_qbo_csv(CHART), selected=set()).new_accounts == []
+
+
+def test_a_selected_child_needs_its_parent_selected(session):
+    plan = _plan(session, CHART)
+    child = _line(plan, "Payroll Expenses:Payroll Taxes Expense")
+    with _raises("needs its parent 'Payroll Expenses', which is not selected"):
+        plan_import(session, parse_qbo_csv(CHART), selected={child})
+
+
+def test_a_selected_child_may_use_a_parent_already_in_the_chart(session, owner_user):
+    AccountService(session).create(
+        actor=owner_user, name="Payroll Liabilities", type=AccountType.LIABILITY
+    )
+    plan = _plan(session, CHART)
+    child = _line(plan, "Payroll Liabilities:GA Income Tax")
+    chosen = plan_import(session, parse_qbo_csv(CHART), selected={child})
+    assert [a.name for a in chosen.new_accounts] == ["GA Income Tax"]
+    assert chosen.new_accounts[0].parent_id is not None
+
+
+def test_parent_and_children_can_be_selected_without_the_rest(session):
+    plan = _plan(session, CHART)
+    chain = {
+        _line(plan, "Payroll Expenses"),
+        _line(plan, "Payroll Expenses:Payroll Taxes Expense"),
+        _line(plan, "Payroll Expenses:Payroll Taxes Expense:Penalties"),
+    }
+    chosen = plan_import(session, parse_qbo_csv(CHART), selected=chain)
+    assert [a.name for a in chosen.new_accounts] == [
+        "Payroll Expenses",
+        "Payroll Taxes Expense",
+        "Penalties",
+    ]
+
+
+def test_only_creatable_rows_can_be_selected(session, owner_user):
+    AccountService(session).create(
+        actor=owner_user, name="Service Revenue", type=AccountType.INCOME
+    )
+    plan = _plan(session, CHART)
+    with _raises("cannot be imported"):
+        plan_import(session, parse_qbo_csv(CHART), selected={_line(plan, "Service Revenue")})
+    with _raises("Line 999 cannot be imported"):
+        plan_import(session, parse_qbo_csv(CHART), selected={999})
+
+
+def test_unselected_error_rows_do_not_stop_the_rest(session):
+    text = CHART + ",Mystery,Spaceship,\n"
+    plan = _plan(session, text)
+    assert plan.has_errors
+    chosen = plan_import(session, parse_qbo_csv(text), selected={_line(plan, "Service Revenue")})
+    assert [a.name for a in chosen.new_accounts] == ["Service Revenue"]
+
+
+def test_row_key_is_the_lowercase_path(session):
+    plan = _plan(session, "Account name,Account type\nParent,Expenses\nParent: Child ,Expenses\n")
+    assert [p.key for p in plan.rows] == ["parent", "parent:child"]

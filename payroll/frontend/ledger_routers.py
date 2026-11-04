@@ -109,12 +109,8 @@ async def accounts_list(
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
     notice = None
-    if imported is not None and 0 <= imported <= 100_000:
-        notice = (
-            f"Imported {imported} new account{'' if imported == 1 else 's'} from QuickBooks."
-            if imported
-            else "Nothing to import: every account in the file is already in the chart."
-        )
+    if imported is not None and 0 < imported <= 100_000:
+        notice = f"Imported {imported} new account{'' if imported == 1 else 's'} from QuickBooks."
     return _account_list(request, session, inactive=bool(inactive), notice=notice)
 
 
@@ -134,7 +130,15 @@ def _import_page(
     return templates.TemplateResponse(
         request,
         "accounts/import.html",
-        {"plan": plan, "csv_text": csv_text, "error": error, "max_kb": MAX_BYTES // 1024},
+        {
+            "plan": plan,
+            "csv_text": csv_text,
+            "error": error,
+            "max_kb": MAX_BYTES // 1024,
+            "selected_n": (
+                sum(1 for r in plan.rows if r.action == "create" and r.selected) if plan else 0
+            ),
+        },
         status_code=status_code,
     )
 
@@ -161,27 +165,43 @@ async def accounts_import_preview(
     return _import_page(request, plan=plan, csv_text=text)
 
 
+def _ticked_lines(form) -> set[int]:
+    """File lines whose checkbox was ticked; anything that is not a plain number is ignored."""
+    return {
+        int(value)
+        for value in form.getlist("line")
+        if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 7
+    }
+
+
 @router.post("/accounts/import/confirm", response_class=HTMLResponse)
 async def accounts_import_confirm(
     request: Request,
     session: Session = Depends(get_session),
     actor: User = Depends(require_owner),
 ):
-    """Plans again from the same file text (the preview is never trusted) and creates it."""
-    text = _text((await request.form()).get("csv_text"))
+    """Plans again from the same file text (the preview is never trusted) and creates the
+    ticked accounts. Rows with errors are never created; they do not stop the rest."""
+    form = await request.form()
+    text = _text(form.get("csv_text"))
+    lines = _ticked_lines(form)
     try:
-        plan = plan_import(session, parse_qbo_csv(text))
-        if plan.has_errors:
-            return _import_page(
-                request,
-                plan=plan,
-                csv_text=text,
-                error="Fix the rows marked Error first",
-                status_code=422,
-            )
+        rows = parse_qbo_csv(text)
+    except AppBaseError as exc:
+        return _import_page(request, error=exc.message, status_code=exc.http_code)
+    try:
+        if not lines:
+            raise InvalidAccountError(message="Tick at least one account to import")
+        plan = plan_import(session, rows, selected=lines)
         created = AccountService(session).create_batch(actor=actor, specs=plan.new_accounts)
     except AppBaseError as exc:
-        return _import_page(request, csv_text=text, error=exc.message, status_code=exc.http_code)
+        # Show the preview again with the owner's ticks kept, so nothing has to be redone.
+        preview = plan_import(session, rows)
+        for item in preview.rows:
+            item.selected = item.action == "create" and item.row.line in lines
+        return _import_page(
+            request, plan=preview, csv_text=text, error=exc.message, status_code=exc.http_code
+        )
     return RedirectResponse(f"/accounts?imported={len(created)}", status_code=303)
 
 
