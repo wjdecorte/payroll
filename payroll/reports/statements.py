@@ -6,10 +6,11 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from payroll.ledger.accounts import AccountService
-from payroll.ledger.models import Account, AccountType, JournalEntry, JournalLine
+from payroll.ledger.models import Account, AccountType
+from payroll.receivables.models import PaymentApplication
 from payroll.reports import queries
 from payroll.reports.basis import BASIS_NOTE, DEFAULT_BASIS, Basis
 from payroll.reports.periods import (
@@ -329,7 +330,7 @@ class ReportService:
     ) -> list[Invariant]:
         """Report-level checks, computed every time and reported (never raised).
 
-        The trial-balance check reads the ledger as posted (no basis predicate).
+        The trial-balance check reads the ledger as posted (``LEDGER_BASIS``, whatever the report's basis).
         """
         balance = [
             (end, a, le) for end, a, le in zip(ends, assets, liabilities_equity, strict=True)
@@ -405,12 +406,18 @@ class ReportService:
     # Registers and general ledger
     # ------------------------------------------------------------------
 
-    def account_register(self, account_id: int, start: date, end: date) -> Register:
+    def account_register(
+        self, account_id: int, start: date, end: date, *, basis: Basis | None = None
+    ) -> Register:
+        """One account's register. ``basis=None`` is the ledger as posted; ``cash`` and
+        ``accrual`` list the rows that basis recognizes (what the statements add up)."""
         _check_period(start, end)
         account = AccountService(self.session).get(account_id)
-        opening = queries.opening_balances(self.session, start, [account_id])
-        rows = queries.period_lines(self.session, start, end, account_id)
-        return self._registers([account], rows, opening, start, end)[0]
+        source = queries.LEDGER_BASIS if basis is None else Basis(basis)
+        opening = queries.opening_balances(self.session, start, [account_id], basis=source)
+        rows = queries.basis_lines(self.session, start, end, basis=source, account_id=account_id)
+        label = "ledger" if basis is None else source.value
+        return self._registers([account], rows, opening, start, end, label)[0]
 
     def general_ledger(
         self, start: date, end: date, account_id: int | None = None
@@ -422,8 +429,8 @@ class ReportService:
                 start=start, end=end, accounts=[self.account_register(account_id, start, end)]
             )
         opening = {a: n for a, n in queries.opening_balances(self.session, start).items() if n != 0}
-        rows = queries.period_lines(self.session, start, end)
-        accounts = {line_account.id: line_account for _, _, line_account in rows}
+        rows = queries.basis_lines(self.session, start, end, basis=queries.LEDGER_BASIS)
+        accounts = {line.account.id: line.account for line in rows}
         missing = [a for a in opening if a not in accounts]
         if missing:
             for account in self.session.exec(select(Account).where(Account.id.in_(missing))):  # type: ignore[attr-defined]
@@ -432,41 +439,58 @@ class ReportService:
             accounts.values(), key=lambda a: (a.number is None, a.number or "", a.name, a.id)
         )
         return GeneralLedger(
-            start=start, end=end, accounts=self._registers(ordered, rows, opening, start, end)
+            start=start,
+            end=end,
+            accounts=self._registers(ordered, rows, opening, start, end, "ledger"),
         )
 
-    @staticmethod
     def _registers(
+        self,
         accounts: list[Account],
-        rows: list[tuple[JournalLine, JournalEntry, Account]],
+        rows: list[queries.BasisLine],
         opening: dict[int, Decimal],
         start: date,
         end: date,
+        basis: Literal["ledger", "cash", "accrual"],
     ) -> list[Register]:
-        by_account: dict[int, list[tuple[JournalLine, JournalEntry]]] = {a.id: [] for a in accounts}
-        for line, entry, account in rows:
-            by_account[account.id].append((line, entry))
+        by_account: dict[int, list[queries.BasisLine]] = {a.id: [] for a in accounts}
+        for row in rows:
+            by_account[row.account.id].append(row)
+        # An application row (cash basis) links its payment (the entry's source) and invoice.
+        invoice_of = {
+            application_id: invoice_id
+            for application_id, invoice_id in self.session.exec(
+                select(PaymentApplication.id, PaymentApplication.invoice_id).where(
+                    col(PaymentApplication.id).in_(
+                        {r.application_id for r in rows if r.application_id is not None}
+                    )
+                )
+            )
+        }
         registers = []
         for account in accounts:
             debit_normal = queries.is_debit_normal(account.type)
             opening_balance = queries.natural(account.type, opening.get(account.id, ZERO), ZERO)
             running = opening_balance
             lines = []
-            for line, entry in by_account[account.id]:
-                running += queries.natural(account.type, line.debit, line.credit)
+            for row in by_account[account.id]:
+                running += queries.natural(account.type, row.debit, row.credit)
+                applied = row.application_id is not None
                 lines.append(
                     RegisterLine(
-                        entry_id=entry.id,
-                        entry_no=entry.entry_no,
-                        line_no=line.line_no,
-                        source_type=entry.source_type,
-                        entry_date=entry.entry_date,
-                        memo=line.memo or entry.memo,
-                        debit=line.debit,
-                        credit=line.credit,
+                        entry_id=row.entry_id,
+                        entry_no=row.entry_no,
+                        line_no=row.line_no,
+                        source_type=row.source_type,
+                        entry_date=row.entry_date,
+                        memo=row.memo,
+                        debit=row.debit,
+                        credit=row.credit,
                         balance=running,
-                        is_void=entry.status == "void",
-                        is_reversal=entry.reverses_entry_id is not None,
+                        is_void=row.is_void,
+                        is_reversal=row.is_reversal,
+                        payment_id=int(row.source_id) if applied else None,
+                        invoice_id=invoice_of.get(row.application_id) if applied else None,
                     )
                 )
             registers.append(
@@ -476,6 +500,7 @@ class ReportService:
                     name=account.name,
                     type=account.type,
                     normal_balance="debit" if debit_normal else "credit",
+                    basis=basis,
                     start=start,
                     end=end,
                     opening_balance=opening_balance,

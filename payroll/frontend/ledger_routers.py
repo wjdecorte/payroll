@@ -11,7 +11,7 @@ Full-page routes (not in the OpenAPI schema):
   GET  /accounts/{id}/edit          -> edit form                   (owner)
   POST /accounts/{id}/edit          -> saves the account           (owner)
   POST /accounts/{id}/active        -> (de)activates the account   (owner)
-  GET  /accounts/{id}/register      -> account register for a date range
+  GET  /accounts/{id}/register      -> account register for a date range and ``basis``
   GET  /settings/ledger             -> system roles and period lock
   POST /settings/ledger/roles       -> binds the system roles      (owner)
   POST /settings/ledger/lock        -> moves the lock date         (owner, needs password)
@@ -38,7 +38,8 @@ from payroll.ledger.exceptions import InvalidAccountError, LockPasswordError
 from payroll.ledger.models import Account, AccountType, SystemRole
 from payroll.ledger.period_lock import PeriodLockService
 from payroll.ledger.qbo_import import MAX_BYTES, decode_upload, parse_qbo_csv, plan_import
-from payroll.reports.periods import company_today
+from payroll.reports.basis import Basis
+from payroll.reports.periods import InvalidPeriodError, company_today
 from payroll.reports.periods import parse_date as _parse_date
 from payroll.reports.statements import ReportService, fiscal_year_start
 
@@ -358,19 +359,33 @@ async def account_set_active(
     return RedirectResponse("/accounts", status_code=303)
 
 
+def _register_basis(raw: str) -> Basis | None:
+    """``None`` (the ledger as posted) for ``""`` / ``ledger``; else a basis or a 422."""
+    if raw in ("", "ledger"):
+        return None
+    try:
+        return Basis(raw)
+    except ValueError as exc:
+        raise InvalidPeriodError(message="Choose ledger, cash or accrual basis") from exc
+
+
 @router.get("/accounts/{account_id}/register", response_class=HTMLResponse)
 async def account_register(
     request: Request,
     account_id: int,
     start: str = "",
     end: str = "",
+    basis: str = "",
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
+    """``basis``: ``ledger`` (default: the entries as posted), ``cash`` or ``accrual``."""
     today = company_today()
     try:
         start_date = _parse_date(start, "Start") or fiscal_year_start(today)
         end_date = _parse_date(end, "End") or today
-        register = ReportService(session).account_register(account_id, start_date, end_date)
+        register = ReportService(session).account_register(
+            account_id, start_date, end_date, basis=_register_basis(basis)
+        )
     except AppBaseError as exc:
         return _error_partial(request, exc)
     return templates.TemplateResponse(

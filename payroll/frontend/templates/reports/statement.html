@@ -28,7 +28,7 @@
           <tr{% if row.kind in ("subtotal", "total") %} class="fw-bold"{% elif row.kind == "section" %} class="table-light fw-bold"{% endif %}>
             <td class="acct-indent-{{ [row.depth, 5] | min }}">
               {%- if row.kind == "account" and row.account_id is not none -%}
-              <a href="/accounts/{{ row.account_id }}/register?start={{ columns[0].start }}&amp;end={{ columns[0].end }}">{{ row.label }}</a>
+              <a href="/accounts/{{ row.account_id }}/register?start={{ columns[0].start }}&amp;end={{ columns[0].end }}&amp;basis={{ statement.basis.value }}">{{ row.label }}</a>
               {%- else -%}{{ row.label }}{%- endif -%}
             </td>
             {% if row.kind == "section" %}

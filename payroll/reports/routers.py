@@ -59,9 +59,14 @@ async def journal(
 
 @router.get("/account-register/{account_id}", response_model=Register, summary="Account register")
 async def account_register(
-    account_id: int, start: date, end: date, session: Session = Depends(get_session)
+    account_id: int,
+    start: date,
+    end: date,
+    basis: Basis | None = None,
+    session: Session = Depends(get_session),
 ) -> Register:
-    return ReportService(session).account_register(account_id, start, end)
+    """``basis`` omitted: the ledger as posted; ``cash`` / ``accrual``: that basis's rows."""
+    return ReportService(session).account_register(account_id, start, end, basis=basis)
 
 
 Comparison = Literal["previous_period", "previous_year"]

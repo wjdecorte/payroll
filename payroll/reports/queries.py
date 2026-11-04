@@ -84,12 +84,22 @@ def line_selection(
     Columns of the lines are taken from ``row_source(basis)`` (``rows.debit``,
     ``rows.entry_date``, ...); for accrual those are the ``journal_line`` /
     ``journal_entry`` columns themselves, so the ledger-as-is reports can also select
-    the ``JournalLine`` / ``JournalEntry`` entities. ``on_or_before`` / ``before`` /
+    the ``JournalLine`` / ``JournalEntry`` entities. Other bases refuse those entities
+    and their columns (``ValueError``): they would cross join the row source. ``on_or_before`` / ``before`` /
     ``start`` / ``end`` restrict the line date (``start`` and ``end`` inclusive);
     ``account_id`` restricts to one account and ``account_types`` to accounts of those
     types; ``exclude_sources`` drops lines of those source types.
     """
     rows = row_source(basis)
+    if rows.basis != Basis.ACCRUAL:
+        # Only accrual's row source *is* journal_line ⋈ journal_entry; their columns next
+        # to another source's FROM would silently cross join.
+        ledger_tables = {JournalLine.__table__, JournalEntry.__table__}  # type: ignore[attr-defined]
+        if any(f in ledger_tables for f in select(*columns).get_final_froms()):
+            raise ValueError(
+                f"{rows.basis.value} basis: select columns of row_source(basis), "
+                "not JournalLine / JournalEntry"
+            )
     stmt = (
         select(*columns).select_from(rows.from_).join(Account, col(Account.id) == rows.account_id)
     )
@@ -189,20 +199,6 @@ def opening_balances(
     if account_ids is not None:
         stmt = stmt.where(rows.account_id.in_(list(account_ids)))
     return {account_id: net for account_id, net in session.exec(stmt).all()}
-
-
-def period_lines(session: Session, start: date, end: date, account_id: int | None = None):
-    """Lines dated within ``[start, end]`` with their entry and account, in report order."""
-    stmt = line_selection(
-        JournalLine,
-        JournalEntry,
-        Account,
-        basis=LEDGER_BASIS,
-        start=start,
-        end=end,
-        account_id=account_id,
-    ).order_by(*ACCOUNT_ORDER, *LINE_ORDER)
-    return session.exec(stmt).all()
 
 
 def journal_lines(session: Session, start: date, end: date):

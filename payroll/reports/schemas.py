@@ -28,7 +28,7 @@ class TrialBalance(AppBaseSchema):
 class RegisterLine(AppBaseSchema):
     entry_id: int
     entry_no: int
-    line_no: int
+    line_no: int | None  # None on a cash-basis application row
     source_type: SourceType
     entry_date: date
     memo: str | None
@@ -37,6 +37,10 @@ class RegisterLine(AppBaseSchema):
     balance: Money
     is_void: bool
     is_reversal: bool
+    # Set on a cash-basis application row: the payment (``entry_id`` is its entry) and
+    # the invoice the payment was applied to.
+    payment_id: int | None = None
+    invoice_id: int | None = None
 
 
 class Register(AppBaseSchema):
@@ -45,6 +49,7 @@ class Register(AppBaseSchema):
     name: str
     type: AccountType
     normal_balance: Literal["debit", "credit"]
+    basis: Literal["ledger", "cash", "accrual"] = "ledger"
     start: date
     end: date
     opening_balance: Money
