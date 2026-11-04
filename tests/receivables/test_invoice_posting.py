@@ -403,7 +403,9 @@ def test_unbind_or_rebind_ar_role_refused_after_issue_but_allowed_before(
         SystemRole.ACCOUNTS_RECEIVABLE, chart["Accounts Receivable"].id, actor=owner_user
     )
     _issued(session, owner_user, customer, item)
-    message = "Accounts receivable cannot change after invoices have been issued"
+    message = (
+        "Accounts receivable cannot change after invoices, payments or refunds have been recorded"
+    )
     for target in (spare.id, None):
         with pytest.raises(InvalidAccountError) as caught:
             accounts.bind_role(SystemRole.ACCOUNTS_RECEIVABLE, target, actor=owner_user)

@@ -23,7 +23,15 @@ from payroll.ledger.exceptions import (
     AccountNotFoundError,
     InvalidAccountError,
 )
-from payroll.ledger.models import NORMAL_DEBIT, Account, AccountType, JournalLine, SystemRole
+from payroll.ledger.models import (
+    NORMAL_DEBIT,
+    Account,
+    AccountType,
+    JournalEntry,
+    JournalLine,
+    SourceType,
+    SystemRole,
+)
 
 logger = logging.getLogger(f"{app_settings.logger_name}.ledger.accounts")
 
@@ -303,8 +311,8 @@ class AccountService:
         ensure_role(actor, OWNER)
         current = self.account_by_role(role)
         if role == SystemRole.ACCOUNTS_RECEIVABLE and current is not None:
-            # Wait for in-flight invoice postings (they hold this row FOR SHARE) so the
-            # freeze check below sees every issued invoice.
+            # Wait for in-flight invoice/payment/refund postings (they hold this row FOR SHARE)
+            # so the freeze check below sees every document.
             self.session.exec(
                 select(Account.id).where(Account.id == current.id).with_for_update()
             ).one()
@@ -322,10 +330,13 @@ class AccountService:
             role == SystemRole.ACCOUNTS_RECEIVABLE
             and current is not None
             and (target is None or target.id != current.id)
-            and self._invoices_issued()
+            and self._receivables_activity()
         ):
             raise InvalidAccountError(
-                message="Accounts receivable cannot change after invoices have been issued"
+                message=(
+                    "Accounts receivable cannot change after invoices, payments or refunds "
+                    "have been recorded"
+                )
             )
         before = {"account_id": current.id if current else None}
         if current is not None and (target is None or current.id != target.id):
@@ -353,11 +364,12 @@ class AccountService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _invoices_issued(self) -> bool:
-        from payroll.receivables.models import Invoice  # deferred: receivables sits above ledger
-
-        stmt = select(Invoice.id).where(
-            (Invoice.status == "open") | (col(Invoice.entry_id).is_not(None))
+    def _receivables_activity(self) -> bool:
+        """Any invoice, payment or refund entry exists (voided documents keep theirs)."""
+        stmt = select(JournalEntry.id).where(
+            col(JournalEntry.source_type).in_(
+                [SourceType.INVOICE, SourceType.PAYMENT, SourceType.REFUND]
+            )
         )
         return self.session.exec(stmt.limit(1)).first() is not None
 

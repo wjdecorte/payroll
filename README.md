@@ -77,7 +77,7 @@ Sheet and Trial Balance always balance. On cash basis an income row drills down 
 applications behind it.
 
 Before the first invoice: bind Accounts receivable and Undeposited Funds in Settings > Ledger
-(the A/R binding is frozen after the first invoice is issued), set the next invoice number in
+(the A/R binding is frozen once any invoice, payment or refund has been recorded), set the next invoice number in
 Settings > Receivables to continue your QBO sequence, and enter the company details.
 There is no JSON API for receivables documents; the A/R Aging CSV/PDF are also exposed
 read-only under the report API.

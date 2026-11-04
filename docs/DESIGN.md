@@ -169,8 +169,9 @@ receivables_settings  one row: next_invoice_no, company_name, company_address,
   accounts. Slices are allocated **cumulatively** with a cap per account, so once an invoice is
   fully paid each of its accounts has received exactly its own income and no rounding drifts.
   Applications are refused on or before the period-lock date.
-- The A/R system role is frozen once an invoice has been issued (rebinding would strand the
-  cash-basis rows); Undeposited Funds can still be rebound.
+- The A/R system role is frozen once any invoice, payment or refund has been recorded, voided
+  ones included (they all post to A/R, and rebinding would split the subledger from the ledger
+  and strand the cash-basis rows); Undeposited Funds can still be rebound.
 - Documents that are voided keep a `void_date` (the date of the reversing entry).
 
 Derived at query time (never stored): invoice paid amount (applications whose payment is

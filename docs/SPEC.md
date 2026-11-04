@@ -141,7 +141,8 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    takes a date after the lock.
 5. **Terms are net days only.** No discounts, late fees, credit memos or sales tax (§3.4).
 6. **Refunds of unapplied credit** use the journal source type `refund`.
-7. **The A/R role is frozen** once an invoice has been issued; Undeposited Funds can still move.
+7. **The A/R role is frozen** once any invoice, payment or refund has been recorded (voided
+   ones included); Undeposited Funds can still move.
 8. **Reports in M2:** A/R Aging with an open-invoice detail. Customer Statement and
    attachments stay for later.
 9. **Owner-only mutations;** accountants and viewers read everything (as in M1). Company

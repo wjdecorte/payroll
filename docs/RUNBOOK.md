@@ -88,8 +88,8 @@ any upgrade. Rolling back means restoring that dump and pinning the previous ima
 First use, as the owner:
 
 1. In Settings > Ledger bind **Accounts receivable** and **Undeposited Funds** to the right
-   accounts. Do this before the first invoice: once an invoice has been issued the A/R binding
-   is frozen (Undeposited Funds can still move).
+   accounts. Do this before the first invoice or payment: once an invoice, payment or refund has
+   been recorded (voided ones count) the A/R binding is frozen (Undeposited Funds can still move).
 2. In Settings > Receivables set the **next invoice number** to continue QBO's sequence (it must
    be above every number already used; numbers of voided invoices are never reused, so a void
    leaves a gap), and enter the **company details** (name, address, remit-to, footer) printed on
