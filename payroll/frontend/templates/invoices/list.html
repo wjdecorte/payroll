@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Invoices · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-receipt me-2"></i>Invoices</span>
+      {% if is_owner %}
+      <a class="btn btn-sm btn-light" href="/invoices/new"><i class="bi bi-plus-lg me-1"></i>New invoice</a>
+      {% endif %}
+    </div>
+    <div class="card-body p-0">
+      <form method="get" action="/invoices" class="row g-2 align-items-end p-3 no-print">
+        <div class="col-auto">
+          <label class="form-label" for="status">Status</label>
+          <select class="form-select" id="status" name="status">
+            <option value="">All</option>
+            {% for s in statuses %}
+            <option value="{{ s }}"{% if status == s %} selected{% endif %}>{{ s | capitalize }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="customer_id">Customer</label>
+          <select class="form-select" id="customer_id" name="customer_id">
+            <option value="">All customers</option>
+            {% for id, c in customers.items() %}
+            <option value="{{ id }}"{% if customer_id == id %} selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto"><button type="submit" class="btn btn-brand">Filter</button></div>
+      </form>
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr><th>Number</th><th>Customer</th><th>Date</th><th>Due</th><th class="num">Total</th><th>Status</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for inv in invoices %}
+          <tr{% if inv.status == "void" %} class="text-muted"{% endif %}>
+            <td>{{ inv.number if inv.number is not none else "" }}</td>
+            <td>{{ customers[inv.customer_id].name }}</td>
+            <td>{{ inv.invoice_date }}</td>
+            <td>{{ inv.due_date }}</td>
+            <td class="num">{{ inv.total | currency }}</td>
+            <td><span class="badge {{ 'bg-secondary' if inv.status == 'void' else 'bg-info text-dark' if inv.status == 'draft' else 'bg-success' }}">{{ inv.status | capitalize }}</span></td>
+            <td class="no-print text-end"><a class="btn btn-sm btn-outline-secondary" href="/invoices/{{ inv.id }}">View</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-center text-muted py-4">No invoices found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

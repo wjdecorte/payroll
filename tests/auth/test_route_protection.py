@@ -80,6 +80,9 @@ RECEIVABLES_UNSAFE_ENDPOINTS = (
     ("POST", "/items/new"),
     ("POST", "/items/1/edit"),
     ("POST", "/items/1/active"),
+    ("POST", "/invoices/new"),
+    ("POST", "/invoices/1/edit"),
+    ("POST", "/invoices/1/discard"),
     ("POST", "/settings/receivables/number"),
     ("POST", "/settings/receivables/company"),
 )
@@ -310,7 +313,7 @@ def _readable_ledger_pages() -> list[str]:
 
 
 def _receivables_unsafe_routes() -> set[tuple[str, str]]:
-    prefixes = ("/customers", "/items", "/settings/receivables")
+    prefixes = ("/customers", "/items", "/invoices", "/settings/receivables")
     return {
         (method, path)
         for method, path in _endpoints(app)
