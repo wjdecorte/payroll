@@ -21,7 +21,6 @@ from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.money import round_money
-from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.receivables._common import utcnow_naive
@@ -224,7 +223,7 @@ class InvoiceService:
         ensure_role(actor, OWNER)
 
         def work() -> Invoice:
-            ar = AccountService(self.session).account_by_role(SystemRole.ACCOUNTS_RECEIVABLE)
+            ar = self._locked_ar()
             if ar is None:
                 raise ARNotConfiguredError(
                     message="Bind Accounts receivable in Settings > Ledger first"
@@ -290,7 +289,7 @@ class InvoiceService:
         ensure_role(actor, OWNER)
 
         def work() -> Invoice:
-            ar = AccountService(self.session).account_by_role(SystemRole.ACCOUNTS_RECEIVABLE)
+            ar = self._locked_ar()
             if ar is None:
                 raise ARNotConfiguredError(
                     message="Bind Accounts receivable in Settings > Ledger first"
@@ -360,6 +359,14 @@ class InvoiceService:
 
     # ---------------------------------------------------------------- helpers
 
+    def _locked_ar(self) -> Account | None:
+        """The A/R account, held FOR SHARE so a rebind waits until this transaction ends."""
+        return self.session.exec(
+            select(Account)
+            .where(Account.system_role == SystemRole.ACCOUNTS_RECEIVABLE)
+            .with_for_update(read=True)
+        ).first()
+
     def _locked_open(self, invoice_id: int, message: str) -> Invoice:
         invoice = self.session.get(Invoice, invoice_id, with_for_update=True)
         if invoice is None:
@@ -390,6 +397,9 @@ class InvoiceService:
             if line.description:
                 texts.append(line.description)
             per_account[line.income_account_id] = (total + line.amount, texts)
+        per_account = {
+            aid: v for aid, v in per_account.items() if v[0] > 0
+        }  # a $0 line has no credit
         accounts = {
             a.id: a
             for a in self.session.exec(select(Account).where(col(Account.id).in_(per_account)))

@@ -302,6 +302,12 @@ class AccountService:
         """Bind ``role`` to an account (moving it from any other); ``None`` unbinds."""
         ensure_role(actor, OWNER)
         current = self.account_by_role(role)
+        if role == SystemRole.ACCOUNTS_RECEIVABLE and current is not None:
+            # Wait for in-flight invoice postings (they hold this row FOR SHARE) so the
+            # freeze check below sees every issued invoice.
+            self.session.exec(
+                select(Account.id).where(Account.id == current.id).with_for_update()
+            ).one()
         target = self.get(account_id) if account_id is not None else None
         if target is not None:
             if target.type != ROLE_TYPES[role]:

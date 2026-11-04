@@ -454,3 +454,30 @@ def test_owner_only_and_audited(session, owner_user, customer, item):
     assert {"invoice.create", "invoice.issue", "invoice.replace", "invoice.void"} <= set(by_action)
     assert all(r.user_id == owner_user.id for r in rows)
     assert session.exec(select(func.count()).select_from(JournalEntry)).one() == 4
+
+
+def test_issue_and_replace_skip_zero_amount_income_account(
+    session, owner_user, customer, item, chart
+):
+    free_income = AccountService(session).create(
+        actor=owner_user, name="Free Income", type=AccountType.INCOME, number="4600"
+    )
+    free = Item(name="Freebie", unit_price=D("0.00"), income_account_id=free_income.id)
+    session.add(free)
+    session.commit()
+    lines = [_line(free, "1", "0.00", "Gift"), _line(item, "1", "100.00", "Work")]
+    invoice = _issued(session, owner_user, customer, item, lines=lines)
+    entry_lines = _entry_lines(session, invoice.entry_id)
+    assert [ln.account_id for ln in entry_lines] == [
+        chart["Accounts Receivable"].id,
+        chart["Services Revenue"].id,
+    ]
+    replaced = InvoiceService(session).replace(
+        invoice.id,
+        actor=owner_user,
+        customer_id=customer.id,
+        invoice_date=DAY,
+        lines=[_line(free, "1", "0.00", "Gift"), _line(item, "1", "60.00", "Work")],
+    )
+    assert [ln.credit for ln in _entry_lines(session, replaced.entry_id)] == [D("0.00"), D("60.00")]
+    assert _ar_balance(session, chart) == D("60.00")
