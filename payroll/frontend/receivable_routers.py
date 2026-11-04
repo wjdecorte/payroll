@@ -8,6 +8,8 @@ Full-page routes (not in the OpenAPI schema):
   GET  /customers/{id}/edit         -> edit form                    (owner)
   POST /customers/{id}/edit         -> saves the customer           (owner)
   POST /customers/{id}/active       -> (de)activates the customer   (owner)
+  GET  /customers/{id}              -> customer page: open invoices, payments, credit, refunds
+  POST /customers/{id}/refund       -> refunds unapplied credit     (owner)
   GET/POST /items ...               -> the same set for items
   GET  /invoices                    -> invoice list (``?status=`` and ``?customer_id=`` filters)
   GET  /invoices/new                -> new-invoice form             (owner)
@@ -55,6 +57,7 @@ from payroll.frontend.journal_routers import parse_amount
 from payroll.frontend.routers import _error_partial, templates
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, AccountType, SystemRole
+from payroll.receivables.credits import RefundService, customer_credits
 from payroll.receivables.customers import CustomerService
 from payroll.receivables.deposits import DepositService
 from payroll.receivables.exceptions import (
@@ -63,6 +66,7 @@ from payroll.receivables.exceptions import (
     InvalidInvoiceError,
     InvalidItemError,
     InvalidPaymentError,
+    InvalidRefundError,
     InvoiceNumberError,
     InvoiceStateError,
 )
@@ -243,6 +247,108 @@ async def customer_set_active(
             request, session, inactive=not active, error=exc.message, status_code=exc.http_code
         )
     return RedirectResponse("/customers", status_code=303)
+
+
+def _customer_page(
+    request: Request,
+    session: Session,
+    customer_id: int,
+    *,
+    values: dict | None = None,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    try:
+        customer = CustomerService(session).get(customer_id)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    payments = PaymentService(session).list(customer_id=customer_id)
+    credit = customer_credits(session, None, customer_id).get(customer_id, Decimal("0.00"))
+    banks = _bank_accounts(session)
+    refunds = RefundService(session).list(customer_id=customer_id)
+    defaults = {
+        "refund_date": str(company_today()),
+        "amount": "",
+        "method": "check",
+        "reference": "",
+        "memo": "",
+        "bank_account_id": str(banks[0].id) if banks else "",
+    }
+    return templates.TemplateResponse(
+        request,
+        "customers/view.html",
+        {
+            "customer": customer,
+            "open_invoices": _open_invoices(session, customer_id),
+            "payments": payments,
+            "unapplied": {p.id: unapplied(session, p.id) for p in payments},  # type: ignore[arg-type]
+            "credit": credit,
+            "refunds": refunds,
+            "bank_names": {
+                r.bank_account_id: session.get(Account, r.bank_account_id).name  # type: ignore[union-attr]
+                for r in refunds
+            },
+            "banks": banks,
+            "methods": METHODS,
+            "values": values if values is not None else defaults,
+            "error": error,
+            "tab": "customers",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/customers/{customer_id}", response_class=HTMLResponse)
+async def customer_view(
+    request: Request, customer_id: int, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    return _customer_page(request, session, customer_id)
+
+
+@router.post("/customers/{customer_id}/refund", response_class=HTMLResponse)
+async def customer_refund(
+    request: Request,
+    customer_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    values = {
+        key: _text(form.get(key))
+        for key in ("refund_date", "amount", "method", "reference", "memo", "bank_account_id")
+    }
+    try:
+        CustomerService(session).get(customer_id)
+        refund_date = _parse_date(values["refund_date"], "Refund date")
+        if refund_date is None:
+            raise InvalidRefundError(message="Enter the refund date")
+        try:
+            amount = parse_amount(values["amount"])
+        except ValueError as exc:
+            raise InvalidRefundError(message=str(exc)) from exc
+        bank_id = _id_param(values["bank_account_id"], "Bank account")
+        if bank_id is None:
+            raise InvalidRefundError(message="Choose the bank account the refund was paid from")
+        RefundService(session).record(
+            actor=actor,
+            customer_id=customer_id,
+            refund_date=refund_date,
+            amount=amount,
+            bank_account_id=bank_id,
+            method=values["method"],
+            reference=values["reference"] or None,
+            memo=values["memo"] or None,
+        )
+    except AppBaseError as exc:
+        return _customer_page(
+            request,
+            session,
+            customer_id,
+            values=values,
+            error=exc.message,
+            status_code=exc.http_code,
+        )
+    return RedirectResponse(f"/customers/{customer_id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -571,9 +677,11 @@ async def invoices_list(
 
 
 @router.get("/invoices/new", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
-async def invoice_new(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+async def invoice_new(
+    request: Request, customer_id: str = "", session: Session = Depends(get_session)
+) -> HTMLResponse:
     values = {
-        "customer_id": "",
+        "customer_id": customer_id if customer_id.isascii() and customer_id.isdigit() else "",
         "invoice_date": str(company_today()),
         "terms_days": "",
         "memo": "",

@@ -121,3 +121,9 @@ class PaymentStateError(AppBaseError):
 class InvalidDepositError(AppBaseError):
     message: str = "Invalid deposit"
     http_code: int = 422
+
+
+@dataclass
+class RefundStateError(AppBaseError):
+    message: str = "The refund is not in a state that allows this"
+    http_code: int = 409

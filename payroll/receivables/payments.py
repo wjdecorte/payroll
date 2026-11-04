@@ -285,6 +285,11 @@ class PaymentService:
                 deposit = self.session.get(Deposit, payment.deposit_id)
                 if deposit is not None and deposit.status == "posted":
                     raise DepositError(message="Void the deposit first")
+            left = unapplied(self.session, payment.id)  # type: ignore[arg-type]
+            if left > self._customer_credit(payment.customer_id):
+                raise PaymentStateError(
+                    message="Part of this payment was refunded; void the refund first"
+                )
             before = self._snapshot(payment)
             reversal = LedgerPostingService(self.session).void(
                 payment.entry_id,  # type: ignore[arg-type]
@@ -328,15 +333,34 @@ class PaymentService:
         return ar
 
     def _locked_payment(self, payment_id: int) -> Payment:
-        payment = self.session.exec(
+        """The payment FOR UPDATE, after every payment of its customer (FOR UPDATE, by id).
+
+        Customer refunds spend credit across all of a customer's payments, so an apply or
+        void must hold them all to check the customer's credit consistently. Every writer
+        takes these rows in id order, so they wait for each other instead of deadlocking.
+        """
+        customer_id = self.session.exec(
+            select(Payment.customer_id).where(Payment.id == payment_id)
+        ).first()
+        if customer_id is None:
+            raise PaymentNotFoundError()
+        locked = self.session.exec(
             select(Payment)
-            .where(Payment.id == payment_id)
+            .where(Payment.customer_id == customer_id)
+            .order_by(col(Payment.id))
             .with_for_update()
             .execution_options(populate_existing=True)
-        ).first()
-        if payment is None:
+        ).all()
+        payment = next((p for p in locked if p.id == payment_id), None)
+        if payment is None:  # pragma: no cover - payments are never deleted
             raise PaymentNotFoundError()
         return payment
+
+    def _customer_credit(self, customer_id: int) -> Decimal:
+        # imported here: credits.py imports this module (check_amount, METHODS)
+        from payroll.receivables.credits import customer_credits
+
+        return customer_credits(self.session, None, customer_id).get(customer_id, ZERO)
 
     def _deposit_account(self, account_id: int, ar: Account) -> Account:
         account = self.session.get(Account, account_id) if isinstance(account_id, int) else None
@@ -383,8 +407,14 @@ class PaymentService:
             select(PeriodLock.lock_date).where(PeriodLock.id == 1).with_for_update(read=True)
         ).one_or_none()
         available = payment.amount - _applied_by_payment(self.session, payment.id)  # type: ignore[arg-type]
-        if sum((i.amount for i in items), ZERO) > available:
+        wanted = sum((i.amount for i in items), ZERO)
+        if wanted > available:
             raise OverApplicationError(message=f"Only {available} of this payment is left to apply")
+        credit = self._customer_credit(payment.customer_id)
+        if wanted > credit:
+            raise OverApplicationError(
+                message=f"Only {max(credit, ZERO)} of credit is left to apply (the rest was refunded)"
+            )
         existing = set(
             self.session.exec(
                 select(PaymentApplication.invoice_id).where(

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}{{ customer.name }} · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+  <div class="card mb-3">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-person me-2"></i>{{ customer.name }}</span>
+      <span class="d-flex gap-2 align-items-center">
+        <span class="badge {{ 'bg-secondary' if not customer.is_active else 'bg-success' }}">{{ "Active" if customer.is_active else "Inactive" }}</span>
+        {% if is_owner %}
+        <a class="btn btn-sm btn-light" href="/invoices/new?customer_id={{ customer.id }}">New invoice</a>
+        <a class="btn btn-sm btn-light" href="/payments/new?customer_id={{ customer.id }}">Receive payment</a>
+        <a class="btn btn-sm btn-outline-light" href="/customers/{{ customer.id }}/edit">Edit</a>
+        {% endif %}
+      </span>
+    </div>
+    <div class="card-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-2">Email</dt><dd class="col-sm-10">{{ customer.email or "" }}</dd>
+        <dt class="col-sm-2">Phone</dt><dd class="col-sm-10">{{ customer.phone or "" }}</dd>
+        <dt class="col-sm-2">Billing address</dt><dd class="col-sm-10" style="white-space: pre-line">{{ customer.billing_address or "" }}</dd>
+        <dt class="col-sm-2">Terms</dt><dd class="col-sm-10">Net {{ customer.terms_days }}</dd>
+        <dt class="col-sm-2">Credit balance</dt><dd class="col-sm-10 fw-semibold" id="credit-balance">{{ credit | currency }}</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header">Open invoices</div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0 align-middle" id="open-invoices">
+        <thead>
+          <tr><th>Invoice</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Balance</th></tr>
+        </thead>
+        <tbody>
+          {% for row in open_invoices %}
+          <tr>
+            <td><a href="/invoices/{{ row.invoice.id }}">#{{ row.invoice.number }}</a></td>
+            <td>{{ row.invoice.invoice_date }}</td>
+            <td>{{ row.invoice.due_date }}</td>
+            <td class="num">{{ row.invoice.total | currency }}</td>
+            <td class="num">{{ row.balance | currency }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-center text-muted py-3">No open invoices.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header">Payments</div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0 align-middle" id="customer-payments">
+        <thead>
+          <tr><th>Received</th><th>Method</th><th>Status</th><th class="num">Amount</th><th class="num">Unapplied</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for p in payments %}
+          <tr>
+            <td><a href="/payments/{{ p.id }}">{{ p.received_date }}</a></td>
+            <td>{{ (p.method or "") | capitalize }}</td>
+            <td>{{ p.status | capitalize }}</td>
+            <td class="num">{{ p.amount | currency }}</td>
+            <td class="num">{{ unapplied[p.id] | currency }}</td>
+            <td class="no-print text-end">
+              {% if is_owner and p.status == "posted" and unapplied[p.id] > 0 %}
+              <a class="btn btn-sm btn-outline-secondary" href="/payments/{{ p.id }}">Apply credit</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-3">No payments yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Refunds</div>
+    <div class="card-body">
+      <table class="table table-sm align-middle" id="customer-refunds">
+        <thead>
+          <tr><th>Date</th><th>Method</th><th>Paid from</th><th>Status</th><th class="num">Amount</th></tr>
+        </thead>
+        <tbody>
+          {% for r in refunds %}
+          <tr>
+            <td>{{ r.refund_date }}</td>
+            <td>{{ (r.method or "") | capitalize }}{% if r.reference %} · {{ r.reference }}{% endif %}</td>
+            <td>{{ bank_names[r.bank_account_id] }}</td>
+            <td>{{ r.status | capitalize }}</td>
+            <td class="num">{{ r.amount | currency }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-center text-muted py-3">No refunds.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if is_owner and credit > 0 %}
+      {% include "payments/refund_form.html" %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

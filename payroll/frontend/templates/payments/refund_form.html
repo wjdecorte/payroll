@@ -1,0 +1,39 @@
+{# Refund-credit form, included by customers/view.html (owner only). #}
+<form method="post" action="/customers/{{ customer.id }}/refund" class="no-print row g-2 align-items-end" id="refund-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="col-md-2">
+    <label class="form-label" for="refund_date">Date</label>
+    <input class="form-control" type="date" id="refund_date" name="refund_date" required value="{{ values.refund_date }}">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label" for="refund_amount">Amount</label>
+    <input class="form-control num" id="refund_amount" name="amount" inputmode="decimal" autocomplete="off" required value="{{ values.amount }}">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label" for="refund_method">Method</label>
+    <select class="form-select" id="refund_method" name="method" required>
+      {% for m in methods %}
+      <option value="{{ m }}"{% if values.method == m %} selected{% endif %}>{{ m | capitalize }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-3">
+    <label class="form-label" for="refund_bank">Paid from</label>
+    <select class="form-select" id="refund_bank" name="bank_account_id" required>
+      {% for b in banks %}
+      <option value="{{ b.id }}"{% if values.bank_account_id == b.id | string %} selected{% endif %}>{{ b.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-3">
+    <label class="form-label" for="refund_reference">Reference</label>
+    <input class="form-control" id="refund_reference" name="reference" maxlength="100" value="{{ values.reference }}">
+  </div>
+  <div class="col-md-9">
+    <label class="form-label" for="refund_memo">Memo (optional)</label>
+    <input class="form-control" id="refund_memo" name="memo" maxlength="500" value="{{ values.memo }}">
+  </div>
+  <div class="col-md-3">
+    <button type="submit" class="btn btn-brand">Refund credit</button>
+  </div>
+</form>

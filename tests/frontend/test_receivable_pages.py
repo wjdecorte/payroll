@@ -10,7 +10,14 @@ from sqlmodel import select
 from payroll.receivables.customers import CustomerService
 from payroll.receivables.invoices import InvoiceLineInput, InvoiceService
 from payroll.receivables.items import ItemService
-from payroll.receivables.models import Customer, Item, Payment, PaymentApplication
+from payroll.receivables.models import (
+    Customer,
+    CustomerRefund,
+    Item,
+    Payment,
+    PaymentApplication,
+)
+from payroll.receivables.payments import ApplicationInput as ApplicationInputForPages
 from payroll.receivables.payments import PaymentService
 from payroll.receivables.settings import ReceivablesSettingsService
 from payroll.reports.periods import company_today
@@ -707,3 +714,109 @@ def test_viewer_gets_403_on_deposit_mutations(viewer_client, owner_user, session
     )
     session.expire_all()
     assert session.get(Payment, payment.id).deposit_id is None
+
+
+# --- customer page and refunds ------------------------------------------------------------
+
+
+def _refund_form(chart, **fields):
+    data = {
+        "refund_date": "2026-03-20",
+        "amount": "40.00",
+        "method": "check",
+        "reference": "R-1",
+        "memo": "",
+        "bank_account_id": str(chart["Business Checking"].id),
+    }
+    data.update(fields)
+    return data
+
+
+def _customer_with_credit(session, owner_user, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart)  # 300.00, due 2026-03-31
+    PaymentService(session).record(
+        actor=owner_user,
+        customer_id=customer.id,
+        received_date=date(2026, 3, 10),
+        amount=Decimal("350.00"),
+        deposit_account_id=chart["Undeposited Funds"].id,
+        method="check",
+        applications=[ApplicationInputForPages(invoice.id, Decimal("100.00"))],
+    )
+    return invoice, customer
+
+
+def test_customer_page_shows_credit_and_open_invoices(owner_client, owner_user, session, chart):
+    invoice, customer = _customer_with_credit(session, owner_user, chart)
+    page = owner_client.get(f"/customers/{customer.id}")
+    assert page.status_code == 200
+    assert "Acme" in page.text
+    assert 'id="credit-balance">$250.00' in page.text
+    assert f'href="/invoices/{invoice.id}">#1001' in page.text
+    assert "$200.00" in page.text  # the invoice balance: 300.00 less 100.00 applied
+    assert "$350.00" in page.text  # the payment
+    assert f'href="/payments/{session.exec(select(Payment)).one().id}"' in page.text
+    assert "Apply credit" in page.text  # 250.00 of it is unapplied
+    assert 'id="refund-form"' in page.text and "Refund credit" in page.text
+    assert f'href="/invoices/new?customer_id={customer.id}"' in page.text
+    assert f'href="/payments/new?customer_id={customer.id}"' in page.text
+    assert owner_client.get("/customers").text.count(f'href="/customers/{customer.id}"') == 1
+    assert owner_client.get("/customers/999999").status_code == 404
+
+
+def test_refund_form_roundtrip_and_422(owner_client, owner_user, session, chart):
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    url = f"/customers/{customer.id}/refund"
+    done = owner_client.post(
+        url, data=_refund_form(chart, amount="1,000.00"), follow_redirects=False
+    )
+    assert done.status_code == 422  # more than the 250.00 of credit
+    assert "Only 250.00 of credit" in done.text
+    assert 'value="1,000.00"' in done.text and 'value="R-1"' in done.text  # typed values kept
+
+    for bad in (
+        _refund_form(chart, amount="abc"),
+        _refund_form(chart, amount="1.005"),
+        _refund_form(chart, refund_date=""),
+        _refund_form(chart, bank_account_id=""),
+        _refund_form(chart, method="bitcoin"),
+    ):
+        assert owner_client.post(url, data=bad).status_code == 422, bad
+    assert session.exec(select(CustomerRefund)).all() == []
+
+    ok = owner_client.post(url, data=_refund_form(chart, amount="40.00"), follow_redirects=False)
+    assert ok.status_code == 303 and ok.headers["location"] == f"/customers/{customer.id}"
+    refund = session.exec(select(CustomerRefund)).one()
+    assert (refund.amount, refund.reference, refund.status) == (Decimal("40.00"), "R-1", "posted")
+    page = owner_client.get(f"/customers/{customer.id}")
+    assert 'id="credit-balance">$210.00' in page.text
+    assert "R-1" in page.text and "Business Checking" in page.text
+    assert (
+        owner_client.post("/customers/999999/refund", data=_refund_form(chart)).status_code == 404
+    )
+
+
+def test_refund_page_escapes_user_text(owner_client, owner_user, session, chart):
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    owner_client.post(
+        f"/customers/{customer.id}/refund", data=_refund_form(chart, reference=XSS, memo=XSS)
+    )
+    page = owner_client.get(f"/customers/{customer.id}")
+    assert XSS not in page.text and "&lt;script&gt;" in page.text
+
+
+def test_viewer_reads_customer_page_but_cannot_refund(
+    viewer_client, accountant_client, owner_user, session, chart
+):
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    for client in (viewer_client, accountant_client):
+        page = client.get(f"/customers/{customer.id}")
+        assert page.status_code == 200
+        assert 'id="credit-balance">$250.00' in page.text
+        assert "refund-form" not in page.text and "Refund credit" not in page.text
+        assert "/invoices/new" not in page.text and "Apply credit" not in page.text
+        assert (
+            client.post(f"/customers/{customer.id}/refund", data=_refund_form(chart)).status_code
+            == 403
+        )
+    assert session.exec(select(CustomerRefund)).all() == []

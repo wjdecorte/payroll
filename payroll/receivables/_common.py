@@ -5,8 +5,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
 
 from payroll.exceptions import AppBaseError
+from payroll.ledger.models import Account, SystemRole
 
 
 def utcnow_naive() -> datetime:
@@ -35,3 +37,33 @@ def conflict_safe[**P, R](
         return wrapper
 
     return decorate
+
+
+def commit_or_rollback[R](session: Session, work: Callable[[], R]) -> R:
+    """Run ``work`` and commit; on ANY exception roll back at once (frees row locks)."""
+    try:
+        result = work()
+        session.commit()
+    except BaseException:
+        session.rollback()
+        raise
+    return result
+
+
+def locked_role_account(
+    session: Session, role: SystemRole, error: Callable[[], AppBaseError]
+) -> Account:
+    """The account bound to ``role``, held FOR SHARE so a rebind waits for this transaction.
+
+    The role is confirmed after the lock: a rebind that committed while we waited is
+    seen, and ``error()`` is raised if the account no longer holds the role.
+    """
+    account = session.exec(
+        select(Account)
+        .where(Account.system_role == role)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    ).first()
+    if account is None or account.system_role != role:
+        raise error()
+    return account

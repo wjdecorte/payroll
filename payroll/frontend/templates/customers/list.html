@@ -27,7 +27,7 @@
         <tbody>
           {% for c in customers %}
           <tr class="{% if not c.is_active %}acct-inactive{% endif %}">
-            <td>{{ c.name }}</td>
+            <td><a href="/customers/{{ c.id }}">{{ c.name }}</a></td>
             <td>{{ c.email or "" }}</td>
             <td>{{ c.phone or "" }}</td>
             <td class="num">Net {{ c.terms_days }}</td>

@@ -77,6 +77,7 @@ RECEIVABLES_UNSAFE_ENDPOINTS = (
     ("POST", "/customers/new"),
     ("POST", "/customers/1/edit"),
     ("POST", "/customers/1/active"),
+    ("POST", "/customers/1/refund"),
     ("POST", "/items/new"),
     ("POST", "/items/1/edit"),
     ("POST", "/items/1/active"),
