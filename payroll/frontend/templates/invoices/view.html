@@ -67,6 +67,9 @@
         {% if is_owner and invoice.status == "open" and balance > 0 %}
         <a class="btn btn-success" href="/payments/new?customer_id={{ invoice.customer_id }}">Receive payment</a>
         {% endif %}
+        {% if invoice.status in ("open", "void") %}
+        <a class="btn btn-outline-primary" id="download-pdf" href="/invoices/{{ invoice.id }}.pdf"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>
+        {% endif %}
         <a class="btn btn-outline-secondary" href="/invoices">Back to invoices</a>
       </div>
       {% if is_owner and invoice.status == "open" and not has_payments %}

@@ -16,6 +16,7 @@ Full-page routes (not in the OpenAPI schema):
   GET  /invoices/new                -> new-invoice form             (owner)
   POST /invoices/new                -> saves a draft                (owner)
   GET  /invoices/{id}               -> read-only invoice with its lines
+  GET  /invoices/{id}.pdf           -> the issued invoice as a PDF download (any signed-in role)
   GET  /invoices/{id}/edit          -> edit form, drafts and open invoices (owner)
   POST /invoices/{id}/edit          -> saves the draft or replaces the open invoice (owner)
   POST /invoices/{id}/discard       -> discards the draft           (owner)
@@ -47,9 +48,10 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlmodel import Session, col, select
 
+from payroll.audit.services import record
 from payroll.auth.models import User
 from payroll.auth.permissions import require_owner, require_reader
 from payroll.common.dependencies import get_session
@@ -72,6 +74,7 @@ from payroll.receivables.exceptions import (
     InvoiceNumberError,
     InvoiceStateError,
 )
+from payroll.receivables.invoice_pdf import render_invoice_pdf
 from payroll.receivables.invoices import InvoiceLineInput, InvoiceService, live_applied
 from payroll.receivables.items import INCOME_TYPES, ItemService
 from payroll.receivables.models import Invoice, Payment, PaymentApplication
@@ -767,6 +770,43 @@ def _invoice_page(
             "tab": "invoices",
         },
         status_code=status_code,
+    )
+
+
+@router.get("/invoices/{invoice_id}.pdf")
+def invoice_pdf(
+    request: Request,
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_reader),
+):
+    """Download an issued invoice (open, or void with a VOID mark); drafts are 409."""
+    try:
+        body = render_invoice_pdf(session, invoice_id)
+        invoice = InvoiceService(session).get(invoice_id)
+        record(
+            session,
+            action="invoice.pdf",
+            user_id=user.id,
+            entity="invoice",
+            entity_id=str(invoice_id),
+            after={"number": invoice.number},
+            ip=request.client.host if request.client else None,
+        )
+        session.commit()
+    except AppBaseError as exc:
+        session.rollback()
+        return _error_partial(request, exc)
+    except Exception:
+        session.rollback()
+        raise
+    return Response(
+        body,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="Invoice-{invoice.number}.pdf"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
