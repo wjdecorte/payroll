@@ -2,6 +2,7 @@
 
 # ruff: noqa: F811  (the ``chart`` fixture is re-exported by conftest and used as an argument)
 
+import re
 import socket
 import threading
 from datetime import date
@@ -179,7 +180,15 @@ def test_pdf_endpoint_returns_pdf_bytes_and_filename(
     assert render_invoice_pdf(session, invoice.id).startswith(b"%PDF")
 
 
-def test_pdf_cannot_fetch_urls(session, owner_user, customer, item, pdf_ready, monkeypatch):
+def test_pdf_fetcher_refuses_real_img_markup_in_invoice_html(
+    session, owner_user, customer, item, pdf_ready, monkeypatch
+):
+    """Real (unescaped) <img>/<link> markup in the invoice HTML is refused by ``NoFetch``.
+
+    Duplicates M1's ``to_pdf`` fetcher test, but through this invoice's own HTML: the
+    hostile markup is injected after ``invoice_html`` (the template escapes user text, so
+    it could never get there through a description). Fails if the fetcher stops refusing.
+    """
     from payroll.reports import export
 
     attempts: list[str] = []
@@ -206,22 +215,65 @@ def test_pdf_cannot_fetch_urls(session, owner_user, customer, item, pdf_ready, m
 
     thread = threading.Thread(target=accept)
     thread.start()
-    description = f'<img src="http://127.0.0.1:{port}/x.png">'
+    invoice = _issue(session, owner_user, customer, item)
+    hostile = (
+        f'<img src="http://127.0.0.1:{port}/x.png"><img src="file:///etc/hosts">'
+        '<link rel="stylesheet" href="file:///etc/hosts">'
+    )
+    html = invoice_html(session, invoice.id).replace("</body>", hostile + "</body>")
+    pdf = export.to_pdf(html)
+    thread.join()
+    server.close()
+    assert pdf.startswith(b"%PDF")
+    assert connections == []
+    assert any(a.startswith(f"http://127.0.0.1:{port}") for a in attempts)
+    assert any(a.startswith("file:///etc/hosts") for a in attempts)
+
+
+def test_invoice_html_never_emits_remote_urls_and_pdf_goes_through_to_pdf(
+    session, owner_user, customer, item, monkeypatch
+):
+    """Not Pango-gated. Only the data-URI logo is a src; the route renders via ``to_pdf``.
+
+    (The fetcher itself is covered by M1's tests and the gated test above.)
+    """
+    url_text = "http://evil.example/a.png https://evil.example file:///etc/passwd url(http://x)"
+    customer.name = f"Cust {url_text}"
+    customer.billing_address = url_text
+    session.add(customer)
+    settings = ReceivablesSettingsService(session).get()
+    settings.company_name = url_text
+    settings.remit_to = url_text
+    settings.invoice_footer = url_text
+    session.add(settings)
+    session.commit()
     invoice = _issue(
         session,
         owner_user,
         customer,
         item,
-        lines=[InvoiceLineInput(item.id, description, D("1"), D("5.00"))],
+        lines=[
+            InvoiceLineInput(
+                item.id, f'<img src="http://evil.example/x"> {url_text}', D("1"), D("5.00")
+            )
+        ],
+        memo=url_text,
     )
     html = invoice_html(session, invoice.id)
-    assert f'<img src="http://127.0.0.1:{port}' not in html
-    pdf = render_invoice_pdf(session, invoice.id)
-    thread.join()
-    server.close()
-    assert pdf.startswith(b"%PDF")
-    assert connections == []
-    assert not any(a.startswith("http://") for a in attempts)
+    # Strip the user text (escaped) to look only at the template's own markup.
+    markup = re.sub(r">[^<]*<", "><", html)
+    srcs = re.findall(r'(?:src|href)\s*=\s*"([^"]*)"', markup, re.IGNORECASE)
+    assert srcs, "the logo src must be found, or this check is vacuous"
+    assert all(s.startswith("data:image/png;base64,") for s in srcs), srcs
+    assert not re.search(r"url\(|@import", markup, re.IGNORECASE)
+    assert "&lt;img src=" in html  # escaped, shown as text
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "payroll.receivables.invoice_pdf.to_pdf", lambda h: seen.append(h) or b"%PDF-spy"
+    )
+    assert render_invoice_pdf(session, invoice.id) == b"%PDF-spy"
+    assert seen == [html]
 
 
 def test_viewer_can_download_pdf_and_it_is_audited(
