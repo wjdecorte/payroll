@@ -1,13 +1,15 @@
 """
 Read-only SQL for the ledger reports.
 
-Every report query starts from :func:`line_selection`, the one place that joins
-``journal_line`` -> ``journal_entry`` -> ``account``. Anything that narrows which
-lines count (a date window, the accounting basis) belongs there so no report
-can bypass it. Every caller states its basis: the ledger-as-is reports (trial
-balance, registers, journal) pass ``Basis.ACCRUAL``, which applies no basis
-predicate; the financial statements pass the user's chosen basis. Balances are always computed from ``journal_line``
-rows with ``GROUP BY`` aggregates; nothing is stored.
+Every report query starts from :func:`line_selection`, the one place that joins a basis's
+row source (:func:`payroll.reports.basis.row_source`) to ``account``. Anything that
+narrows which lines count (a date window, the accounting basis) belongs there so no
+report can bypass it. Every caller states its basis: the ledger-as-is reports (trial
+balance, registers, journal) pass ``LEDGER_BASIS`` (accrual: the plain
+``journal_line`` ⋈ ``journal_entry`` join); the financial statements pass the user's
+chosen basis. Aggregates select their columns from ``row_source(basis)``; detail rows of
+any basis come from :func:`basis_lines`. Balances are always computed with ``GROUP BY``
+aggregates; nothing is stored.
 """
 
 from collections.abc import Iterable
@@ -28,12 +30,12 @@ from payroll.ledger.models import (
     JournalLine,
     SourceType,
 )
-from payroll.reports.basis import Basis, recognized_lines
+from payroll.reports.basis import Basis, row_source
 
 ZERO = Decimal("0.00")
 
 # The ledger as posted: the trial balance, registers, journal and the trial-balance
-# invariant never depend on a cash/accrual predicate (accrual applies none).
+# invariant never depend on the cash/accrual choice (accrual reads the plain join).
 LEDGER_BASIS = Basis.ACCRUAL
 
 # Entries a period's income statement leaves out: a year-end close zeroes the
@@ -77,38 +79,35 @@ def line_selection(
 ) -> Select:
     """The base selection of ledger lines every report is built on.
 
-    Selects ``columns`` from ``journal_line`` joined to its entry and account.
-    ``on_or_before`` / ``before`` / ``start`` / ``end`` restrict ``entry_date``
-    (``start`` and ``end`` inclusive); ``account_id`` restricts to one account and
-    ``account_types`` to accounts of those types; ``exclude_sources`` drops
-    entries of those source types. ``basis`` (required, so every caller states
-    it) applies :func:`payroll.reports.basis.recognized_lines`, the one
-    accounting-basis hook.
+    Selects ``columns`` from the row source of ``basis`` (required, so every caller
+    states it; see :func:`payroll.reports.basis.row_source`) joined to ``account``.
+    Columns of the lines are taken from ``row_source(basis)`` (``rows.debit``,
+    ``rows.entry_date``, ...); for accrual those are the ``journal_line`` /
+    ``journal_entry`` columns themselves, so the ledger-as-is reports can also select
+    the ``JournalLine`` / ``JournalEntry`` entities. ``on_or_before`` / ``before`` /
+    ``start`` / ``end`` restrict the line date (``start`` and ``end`` inclusive);
+    ``account_id`` restricts to one account and ``account_types`` to accounts of those
+    types; ``exclude_sources`` drops lines of those source types.
     """
+    rows = row_source(basis)
     stmt = (
-        select(*columns)
-        .select_from(JournalLine)
-        .join(JournalEntry, col(JournalEntry.id) == col(JournalLine.entry_id))
-        .join(Account, col(Account.id) == col(JournalLine.account_id))
+        select(*columns).select_from(rows.from_).join(Account, col(Account.id) == rows.account_id)
     )
     if on_or_before is not None:
-        stmt = stmt.where(col(JournalEntry.entry_date) <= on_or_before)
+        stmt = stmt.where(rows.entry_date <= on_or_before)
     if before is not None:
-        stmt = stmt.where(col(JournalEntry.entry_date) < before)
+        stmt = stmt.where(rows.entry_date < before)
     if start is not None:
-        stmt = stmt.where(col(JournalEntry.entry_date) >= start)
+        stmt = stmt.where(rows.entry_date >= start)
     if end is not None:
-        stmt = stmt.where(col(JournalEntry.entry_date) <= end)
+        stmt = stmt.where(rows.entry_date <= end)
     if account_id is not None:
-        stmt = stmt.where(col(JournalLine.account_id) == account_id)
+        stmt = stmt.where(rows.account_id == account_id)
     if account_types is not None:
         stmt = stmt.where(col(Account.type).in_([AccountType(t).value for t in account_types]))
     if exclude_sources is not None:
         excluded = [SourceType(t).value for t in exclude_sources]
-        stmt = stmt.where(col(JournalEntry.source_type).not_in(excluded))
-    recognized = recognized_lines(basis)
-    if recognized is not None:
-        stmt = stmt.where(recognized)
+        stmt = stmt.where(rows.source_type.not_in(excluded))
     return stmt
 
 
@@ -128,10 +127,11 @@ class AccountTotals:
     credit: Decimal
 
 
-def account_totals(session: Session, **window: Any) -> list[AccountTotals]:
+def account_totals(session: Session, *, basis: Basis, **window: Any) -> list[AccountTotals]:
     """Debit and credit totals per account (only accounts with lines), in report order."""
+    rows = row_source(basis)
     stmt = (
-        line_selection(Account, func.sum(JournalLine.debit), func.sum(JournalLine.credit), **window)
+        line_selection(Account, func.sum(rows.debit), func.sum(rows.credit), basis=basis, **window)
         .group_by(col(Account.id))
         .order_by(*ACCOUNT_ORDER)
     )
@@ -141,24 +141,29 @@ def account_totals(session: Session, **window: Any) -> list[AccountTotals]:
     ]
 
 
-def debit_credit_totals(session: Session, **window: Any) -> tuple[Decimal, Decimal]:
+def debit_credit_totals(
+    session: Session, *, basis: Basis, **window: Any
+) -> tuple[Decimal, Decimal]:
     """Total debits and total credits of every line in the window (the trial-balance check)."""
+    rows = row_source(basis)
     debit, credit = session.exec(
-        line_selection(func.sum(JournalLine.debit), func.sum(JournalLine.credit), **window)
+        line_selection(func.sum(rows.debit), func.sum(rows.credit), basis=basis, **window)
     ).one()
     return debit or ZERO, credit or ZERO
 
 
-def earnings(session: Session, **window: Any) -> Decimal:
+def earnings(session: Session, *, basis: Basis, **window: Any) -> Decimal:
     """Net earnings of the window: Σ(credit − debit) over every income-statement line.
 
     Equals income + other income − COGS − expenses − other expenses (natural
     signs). A year-end close entry nets a closed year to zero here, because its
     lines on the income-statement accounts offset that year's activity.
     """
+    rows = row_source(basis)
     net = session.exec(
         line_selection(
-            func.sum(JournalLine.credit - JournalLine.debit),
+            func.sum(rows.credit - rows.debit),
+            basis=basis,
             account_types=INCOME_STATEMENT_TYPES,
             **window,
         )
@@ -167,17 +172,22 @@ def earnings(session: Session, **window: Any) -> Decimal:
 
 
 def opening_balances(
-    session: Session, before: date, account_ids: Iterable[int] | None = None
+    session: Session,
+    before: date,
+    account_ids: Iterable[int] | None = None,
+    *,
+    basis: Basis = LEDGER_BASIS,
 ) -> dict[int, Decimal]:
-    """Debit-minus-credit per account for entries dated before ``before``."""
+    """Debit-minus-credit per account for lines dated before ``before`` (default: as posted)."""
+    rows = row_source(basis)
     stmt = line_selection(
-        JournalLine.account_id,
-        func.sum(JournalLine.debit - JournalLine.credit),
-        basis=LEDGER_BASIS,
+        rows.account_id,
+        func.sum(rows.debit - rows.credit),
+        basis=basis,
         before=before,
-    ).group_by(col(JournalLine.account_id))
+    ).group_by(rows.account_id)
     if account_ids is not None:
-        stmt = stmt.where(col(JournalLine.account_id).in_(list(account_ids)))
+        stmt = stmt.where(rows.account_id.in_(list(account_ids)))
     return {account_id: net for account_id, net in session.exec(stmt).all()}
 
 
@@ -201,3 +211,83 @@ def journal_lines(session: Session, start: date, end: date):
         JournalLine, JournalEntry, Account, basis=LEDGER_BASIS, start=start, end=end
     ).order_by(*LINE_ORDER)
     return session.exec(stmt).all()
+
+
+@dataclass(frozen=True)
+class BasisLine:
+    """One row of a basis's row source with its account (detail reports).
+
+    ``line_id`` and ``line_no`` are ``None`` for a cash-basis application row, which
+    carries its payment's entry (``entry_id``, ``entry_no``, ``source_type``, status) and
+    ``application_id``; its reversing mirror (payment void) also has ``reverses_entry_id``.
+    """
+
+    line_id: int | None
+    entry_id: int
+    line_no: int | None
+    account: Account
+    debit: Decimal
+    credit: Decimal
+    line_memo: str | None
+    entry_date: date
+    source_type: str
+    entry_no: int
+    source_id: str | None
+    entry_memo: str | None
+    status: str
+    reverses_entry_id: int | None
+    application_id: int | None
+
+    @property
+    def memo(self) -> str | None:
+        return self.line_memo or self.entry_memo
+
+    @property
+    def is_void(self) -> bool:
+        return self.status == "void"
+
+    @property
+    def is_reversal(self) -> bool:
+        return self.reverses_entry_id is not None
+
+
+def basis_lines(
+    session: Session,
+    start: date,
+    end: date,
+    *,
+    basis: Basis,
+    account_id: int | None = None,
+) -> list[BasisLine]:
+    """The rows ``basis`` recognizes dated within ``[start, end]``, by account then line order.
+
+    Within an account: date, source type, entry number, line number (application rows,
+    which have none, after the entry's own lines), then application id and the reversing
+    mirror after the original.
+    """
+    rows = row_source(basis)
+    stmt = line_selection(
+        *rows.columns(), Account, basis=basis, start=start, end=end, account_id=account_id
+    ).order_by(
+        *ACCOUNT_ORDER,
+        rows.entry_date,
+        rows.source_type,
+        rows.entry_no,
+        rows.line_no.asc().nulls_last(),
+        rows.application_id.asc().nulls_first(),
+        rows.reverses_entry_id.asc().nulls_first(),
+    )
+    out = []
+    for row in session.exec(stmt).all():
+        values = row._mapping
+        out.append(
+            BasisLine(
+                account=values[Account],
+                **{
+                    name: values[name]
+                    for name in BasisLine.__dataclass_fields__
+                    if name != "account"
+                },
+            )
+        )
+    return out

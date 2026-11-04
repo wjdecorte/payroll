@@ -79,7 +79,7 @@ def test_compare_previous_period_and_year(owner_client, ledger):
 def test_accrual_basis_selected_and_note_shown(owner_client, ledger):
     page = owner_client.get("/reports/profit-and-loss?basis=accrual").text
     assert re.search(r'value="accrual"[^>]*checked', page)
-    assert "Cash and accrual agree" in page
+    assert "Cash basis recognizes income when an invoice is paid." in page
 
 
 @pytest.mark.parametrize(
