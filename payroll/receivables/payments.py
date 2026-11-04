@@ -486,11 +486,16 @@ class PaymentService:
         return audit
 
     def _income_split(self, invoice: Invoice, amount: Decimal) -> list[tuple[int, Decimal]]:
-        """Split ``amount`` over the invoice's income accounts in proportion to their lines.
+        """Split ``amount`` over the invoice's income accounts, cumulatively.
 
-        All but the last account (by number, then id) take ``round_money(amount x share)``;
-        the last takes the remainder, so the slices sum exactly to ``amount``. Zero slices
-        are not stored.
+        ``prior`` is what live (posted-payment) applications already cover and ``prior_A`` the
+        slices they stored for account ``A``. After this application ``A`` should have
+        ``round_money((prior + amount) x total_A / invoice_total)``; the slice is the
+        difference (never negative, never more than what is left of ``amount``) for every
+        account but the last (by number, then id), which takes the remainder so the slices sum
+        exactly to ``amount``. Rounding therefore never accumulates: once the invoice is fully
+        applied each account's slices sum exactly to its invoice total. Zero slices are not
+        stored.
         """
         totals: dict[int, Decimal] = {}
         for line in self.session.exec(
@@ -507,13 +512,29 @@ class PaymentService:
             key=lambda aid: (accounts[aid].number is None, accounts[aid].number or "", aid),
         )
         grand = sum(totals.values(), ZERO)
+        # the application row for ``amount`` is already flushed (its slices are not yet)
+        prior = live_applied(self.session, invoice.id) - amount  # type: ignore[arg-type]
+        prior_by_account = {
+            aid: Decimal(total)
+            for aid, total in self.session.exec(
+                select(ApplicationIncome.account_id, func.sum(ApplicationIncome.amount))
+                .join(
+                    PaymentApplication,
+                    col(PaymentApplication.id) == col(ApplicationIncome.application_id),
+                )
+                .join(Payment, col(Payment.id) == col(PaymentApplication.payment_id))
+                .where(PaymentApplication.invoice_id == invoice.id, Payment.status == "posted")
+                .group_by(col(ApplicationIncome.account_id))
+            ).all()
+        }
         remaining = amount
         out: list[tuple[int, Decimal]] = []
         for position, aid in enumerate(ordered):
             if position == len(ordered) - 1:
                 piece = remaining
             else:
-                piece = min(round_money(amount * totals[aid] / grand), remaining)
+                target = round_money((prior + amount) * totals[aid] / grand)
+                piece = max(ZERO, min(target - prior_by_account.get(aid, ZERO), remaining))
             remaining -= piece
             if piece > 0:
                 out.append((aid, piece))

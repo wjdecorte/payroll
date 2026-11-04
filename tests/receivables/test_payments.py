@@ -617,3 +617,140 @@ def test_listing_filters_by_customer(session, owner_user, customer, item, chart)
     assert [p.id for p in service.list(customer_id=other.id)] == [theirs.id]
     assert service.list(limit=1, offset=1)[0].id == mine.id
     assert [a.invoice_id for a in service.applications(mine.id)] == []
+
+
+# ---------------------------------------------------------------------------
+# Cumulative income split: per-account totals stay exact across installments
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_incomes(session, chart):
+    """Factory: ``n`` income accounts (numbers 4101..) each with one item."""
+
+    def build(n):
+        items = []
+        for k in range(1, n + 1):
+            account = Account(name=f"Cum Income {k}", number=f"410{k}", type=AccountType.INCOME)
+            session.add(account)
+            session.flush()
+            row = Item(name=f"Cum Item {k}", unit_price=D("1.00"), income_account_id=account.id)
+            session.add(row)
+            session.flush()
+            items.append(row)
+        session.commit()
+        return items
+
+    return build
+
+
+def _issue(session, owner_user, customer, items, prices):
+    service = InvoiceService(session)
+    draft = service.create_draft(
+        actor=owner_user,
+        customer_id=customer.id,
+        invoice_date=DAY,
+        lines=[InvoiceLineInput(i.id, "x", D("1"), D(p)) for i, p in zip(items, prices)],
+    )
+    return service.issue(draft.id, actor=owner_user)
+
+
+def _pay_parts(session, owner_user, customer, chart, invoice, parts):
+    for part in parts:
+        _record(session, owner_user, customer, chart, part, applications=_apps((invoice, part)))
+
+
+def _live_slices(session, invoice_id):
+    """account_id -> sum of stored slices of live applications; also checks every slice > 0
+    and that every application's slices sum to the application amount."""
+    totals: dict[int, Decimal] = {}
+    for app in session.exec(
+        select(PaymentApplication).where(PaymentApplication.invoice_id == invoice_id)
+    ).all():
+        rows = session.exec(
+            select(ApplicationIncome).where(ApplicationIncome.application_id == app.id)
+        ).all()
+        assert all(r.amount > 0 for r in rows)
+        assert sum((r.amount for r in rows), D("0.00")) == app.amount
+        if session.get(Payment, app.payment_id).status == "posted":
+            for r in rows:
+                totals[r.account_id] = totals.get(r.account_id, D("0.00")) + r.amount
+    return totals
+
+
+def _expected(items, prices):
+    return {i.income_account_id: D(p) for i, p in zip(items, prices)}
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["33.33", "33.33", "33.34"],
+        ["10.00", "10.00", "80.00"],
+        ["80.00", "10.00", "10.00"],
+        ["0.01"] * 7 + ["99.93"],
+        ["0.01", "99.99"],
+        ["99.99", "0.01"],
+        ["25.00"] * 4,
+        ["0.03", "0.07", "49.90", "50.00"],
+    ],
+)
+def test_installments_give_exact_per_account_totals(
+    session, owner_user, customer, chart, make_incomes, parts
+):
+    items = make_incomes(3)
+    prices = ["50.00", "30.00", "20.00"]
+    assert sum(D(p) for p in parts) == D("100.00")
+    invoice = _issue(session, owner_user, customer, items, prices)
+    _pay_parts(session, owner_user, customer, chart, invoice, parts)
+    assert _live_slices(session, invoice.id) == _expected(items, prices)
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_random_installment_partitions_are_exact(
+    session, owner_user, customer, chart, make_incomes, seed
+):
+    import random
+
+    rng = random.Random(seed)
+    n = rng.choice([3, 4])
+    items = make_incomes(n)
+    cents = [rng.randint(1, 4000) for _ in range(n)]
+    cents[-1] += 1  # odd totals such as 100.01
+    prices = [f"{c / 100:.2f}" for c in cents]
+    total = sum(cents)
+    cuts = sorted(rng.sample(range(1, total), rng.randint(1, min(9, total - 1))))
+    parts = [f"{(b - a) / 100:.2f}" for a, b in zip([0, *cuts], [*cuts, total])]
+    invoice = _issue(session, owner_user, customer, items, prices)
+    assert invoice.total == D(total) / 100
+    _pay_parts(session, owner_user, customer, chart, invoice, parts)
+    assert _balance(session, invoice) == D("0.00")
+    assert _live_slices(session, invoice.id) == _expected(items, prices)
+
+
+def test_void_then_repay_ends_with_exact_live_and_cash_basis_totals(
+    session, owner_user, customer, chart, make_incomes
+):
+    from payroll.reports import queries
+    from payroll.reports.basis import Basis
+
+    items = make_incomes(3)
+    prices = ["50.00", "30.00", "20.00"]
+    invoice = _issue(session, owner_user, customer, items, prices)
+    keep = _record(
+        session, owner_user, customer, chart, "33.33", applications=_apps((invoice, "33.33"))
+    )
+    bad = _record(
+        session, owner_user, customer, chart, "33.33", applications=_apps((invoice, "33.33"))
+    )
+    PaymentService(session).void(bad.id, actor=owner_user, void_date=DAY)
+    _pay_parts(session, owner_user, customer, chart, invoice, ["0.01", "33.33", "33.33"])
+    assert keep.status == "posted" and _balance(session, invoice) == D("0.00")
+    assert _live_slices(session, invoice.id) == _expected(items, prices)
+    totals = {
+        t.account.id: t.credit - t.debit
+        for t in queries.account_totals(
+            session, basis=Basis.CASH, account_types=[AccountType.INCOME], end=date(2026, 12, 31)
+        )
+    }
+    assert totals == _expected(items, prices)
