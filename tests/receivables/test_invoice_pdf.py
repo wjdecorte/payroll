@@ -260,12 +260,21 @@ def test_invoice_html_never_emits_remote_urls_and_pdf_goes_through_to_pdf(
         memo=url_text,
     )
     html = invoice_html(session, invoice.id)
-    # Strip the user text (escaped) to look only at the template's own markup.
-    markup = re.sub(r">[^<]*<", "><", html)
-    srcs = re.findall(r'(?:src|href)\s*=\s*"([^"]*)"', markup, re.IGNORECASE)
-    assert srcs, "the logo src must be found, or this check is vacuous"
-    assert all(s.startswith("data:image/png;base64,") for s in srcs), srcs
-    assert not re.search(r"url\(|@import", markup, re.IGNORECASE)
+    # User text is escaped, so every "<...>" below is the template's own markup.
+    styles = re.findall(r"<style[^>]*>(.*?)</style>", html, re.DOTALL | re.IGNORECASE)
+    assert styles, "the style block must be found, or the CSS check is vacuous"
+    for css in styles:
+        assert not re.search(r"url\(|@import|https?:|file:", css, re.IGNORECASE), css
+    tags = re.findall(r"<[a-zA-Z][^>]*>", re.sub(r"<style.*?</style>", "", html, flags=re.DOTALL))
+    attr = re.compile(
+        r"""\b(src|href|srcset|poster|data|style)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
+        re.IGNORECASE,
+    )
+    found = [(m[0].lower(), m[1] or m[2] or m[3]) for t in tags for m in attr.findall(t)]
+    urls = [v for k, v in found if k != "style"]
+    assert urls, "the logo src must be found, or this check is vacuous"
+    assert all(v.startswith("data:image/png;base64,") for v in urls), urls
+    assert not any(re.search(r"url\(|@import", v, re.IGNORECASE) for _, v in found), found
     assert "&lt;img src=" in html  # escaped, shown as text
 
     seen: list[str] = []
