@@ -1,4 +1,4 @@
-# DCI Payroll runbook (v2.1.0)
+# DCI Payroll runbook (v2.2.0)
 
 Compose service names: `db` (Postgres 17) and `api` (the whole app, UI + API).
 Synology paths below assume the stack lives in `/volume1/docker/payroll`.
@@ -59,6 +59,48 @@ What changes for you:
 - API money values are JSON **strings** now. Scripts using the API must parse them as
   decimals (breaking change).
 - Every route requires sign-in with MFA. There is no API-only anonymous access.
+
+## Upgrading to v2.2.0 (receivables, M2)
+
+The M2 migration is **additive**: it adds the receivables tables (customers, items, invoices
+and lines, payments and applications, deposits, customer refunds), their integrity triggers
+and one settings row (`receivables_settings`), and changes no existing data. The ledger,
+payroll runs, users and the audit log are untouched. A `pg_dump` first is still the rule before
+any upgrade. Rolling back means restoring that dump and pinning the previous image tag.
+
+1. **Before merging or pushing to `master`, stop Watchtower** (it would pull the image as soon
+   as the build finishes): `docker compose -f compose.synology.yml stop watchtower`
+2. **Back up the database:**
+   ```bash
+   docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_2_$(date +%F).dump
+   ```
+3. Merge/push, and let the image build (tests must pass first).
+4. Pull and start:
+   ```bash
+   docker compose -f compose.synology.yml pull
+   docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
+   ```
+5. **Verify:** `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+   prints `c3d9f1a7e2b4`, and
+   `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
+6. **Start Watchtower again:** `docker compose -f compose.synology.yml start watchtower`
+
+First use, as the owner:
+
+1. In Settings > Ledger bind **Accounts receivable** and **Undeposited Funds** to the right
+   accounts. Do this before the first invoice: once an invoice has been issued the A/R binding
+   is frozen (Undeposited Funds can still move).
+2. In Settings > Receivables set the **next invoice number** to continue QBO's sequence (it must
+   be above every number already used; numbers of voided invoices are never reused, so a void
+   leaves a gap), and enter the **company details** (name, address, remit-to, footer) printed on
+   invoice PDFs.
+3. Add customers and items, then invoices, payments and deposits. `seed-demo` now also creates
+   demo receivables; never run it against real books.
+
+Cash-basis note: reports default to cash basis, where income appears when an invoice is paid
+(on the later of the payment and invoice dates). Applications cannot be created on or before the
+period-lock date, and a payment cannot be voided into a locked period; fix a misapplied payment
+by voiding it and recording it again.
 
 ## Upgrading to v2.1.0 (ledger and reports, M1)
 

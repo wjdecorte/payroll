@@ -119,6 +119,34 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
   credit that can be applied to a later invoice or refunded.
 - Deleting a payment is not allowed; it is voided with a reversal.
 
+**Rulings made for M2 (v2.2.0), where this spec was silent:**
+
+1. **Cash-basis method.** An invoice entry never appears on cash basis. A payment's own cash
+   entry is untouched (the money sits in A/R as customer credit). Each *application* of a
+   payment to an invoice adds, on its recognition date (the later of the payment and invoice
+   dates), a debit to A/R and credits to the invoice's income accounts, allocated cumulatively
+   per account with caps so a fully paid invoice yields exactly its per-account income. A void
+   payment adds the mirror pair on its void date. Unapplied money stays a credit in A/R (not
+   income).
+2. **Applications are append-only and refused on or before the lock date** (they would change
+   a closed period on cash basis). Misapplied money is fixed by voiding the payment and
+   re-recording it. Credit can never go negative on any past date.
+3. **No JSON API for receivables documents** (pages only). The A/R Aging CSV/PDF also appear
+   under the M1 report API as read-only exports. Importers (M6) call the services directly.
+4. **Invoice rules.** Integer numbers assigned on issue from a settable next number (above
+   every number used; voided numbers are never reused). Draft, Open, Void are stored; Partial,
+   Paid and Overdue are derived. An open invoice can be edited only while nothing is applied
+   (edit = reverse and re-post on the same date and number). Void needs no applied payments and
+   takes a date after the lock.
+5. **Terms are net days only.** No discounts, late fees, credit memos or sales tax (§3.4).
+6. **Refunds of unapplied credit** use the journal source type `refund`.
+7. **The A/R role is frozen** once an invoice has been issued; Undeposited Funds can still move.
+8. **Reports in M2:** A/R Aging with an open-invoice detail. Customer Statement and
+   attachments stay for later.
+9. **Owner-only mutations;** accountants and viewers read everything (as in M1). Company
+   details (name, address, remit-to, footer) and the next invoice number live in
+   Settings > Receivables.
+
 ### 4.4 Owner-paid expenses
 
 - Expense lines carry an expense account, optional memo and receipt.
@@ -249,8 +277,8 @@ network.
 | # | Milestone | Done when |
 |---|---|---|
 | M0 | Foundation | Auth + MFA, single-app structure, Postgres-only, Decimal money, audit log, CI green. |
-| M1 | Ledger & reports | **Done (v2.1.0).** Chart of accounts, manual journals, Trial Balance, Balance Sheet, P&L (all presets and custom), GL, CSV/PDF export. Cash (default) and accrual toggle are in place; figures are identical until receivables exist (M2). |
-| M2 | Receivables | Customers, items, invoices, payments, deposits, A/R aging. |
+| M1 | Ledger & reports | **Done (v2.1.0).** Chart of accounts, manual journals, Trial Balance, Balance Sheet, P&L (all presets and custom), GL, CSV/PDF export. Cash (default) and accrual toggle are in place; figures differ once receivables exist (M2, v2.2.0). |
+| M2 | Receivables | **Done (v2.2.0).** Customers, items, invoices (draft, issue, edit, void, PDF), payments with applications, deposits, customer refunds and credit, A/R aging, cash-basis reports with drill-down. |
 | M3 | Expenses | Expenses, receipts, owner-paid and reimbursement flow. |
 | M4 | Payroll to ledger | Existing calculator posts to the ledger; payroll liabilities and tax payments. |
 | M5 | Payroll returns | 941, GA-7M, DOL-4N, 940, W-2/W-3 worksheets matching QBO's figures for 2026. |
