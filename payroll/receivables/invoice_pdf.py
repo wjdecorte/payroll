@@ -1,7 +1,7 @@
 """The send-ready invoice PDF.
 
 :func:`invoice_html` builds the print HTML (autoescaped Jinja; the logo is embedded as a
-data URI because the PDF fetcher refuses every URL) and :func:`render_invoice_pdf` turns
+data URI because the PDF fetcher refuses every URL except inline ``data:`` ones) and :func:`render_invoice_pdf` turns
 it into bytes with the same refusing-fetcher WeasyPrint call the reports use. Only issued
 invoices render: ``open`` ones, and ``void`` ones marked VOID. The balance due is the
 derived one (:func:`~payroll.receivables.balances.invoice_state`), never ``total - applied``.

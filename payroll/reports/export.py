@@ -8,7 +8,8 @@ Cells are typed. A ``str`` is *text* (account names, memos, labels) and goes thr
 debits and credits are left blank, as on the pages.
 
 PDF: :func:`to_pdf` renders an HTML string with WeasyPrint, which is given a URL
-fetcher that always refuses, so no ``file://`` or network resource can ever be read.
+fetcher that refuses everything but inline ``data:`` URIs, so no ``file://`` or network
+resource can ever be read.
 WeasyPrint is imported lazily: it needs the native Pango libraries, and the CSV side
 must work without them.
 """
@@ -263,7 +264,11 @@ class FetchBlockedError(Exception):
 
 
 class NoFetch:
-    """A WeasyPrint URL fetcher that refuses everything (``file:``, ``http:``, ``data:``).
+    """A WeasyPrint URL fetcher that refuses everything except ``data:`` URIs.
+
+    A ``data:`` URI carries its bytes inline (the invoice logo), so decoding it reads no
+    file and touches no network. Every other scheme (``file:``, ``http:``, ``https:``,
+    ``ftp:``, ...) is refused, whatever its case or surrounding whitespace.
 
     WeasyPrint 68+ expects a callable taking the URL and carrying ``_fail_on_errors``;
     ``False`` makes a refused resource a logged warning (it is skipped) rather than
@@ -273,7 +278,16 @@ class NoFetch:
     _fail_on_errors = False
 
     def __call__(self, url: str, *args: object, **kwargs: object) -> object:
+        cleaned = url.strip()
+        if cleaned[:5].lower() == "data:":
+            return self._decode_data(cleaned)
         raise FetchBlockedError("blocked: PDF rendering never fetches resources")
+
+    @staticmethod
+    def _decode_data(url: str) -> object:
+        from weasyprint.urls import URLFetcher  # lazy: needs the native Pango libraries
+
+        return URLFetcher(allowed_protocols={"data"}).fetch(url)
 
 
 def to_pdf(html: str) -> bytes:

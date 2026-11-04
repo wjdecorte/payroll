@@ -493,3 +493,56 @@ def test_pages_link_to_their_exports_with_the_same_query(viewer_client, ledger):
     assert 'href="/reports/journal.csv">CSV</a>' in bare
     bad = viewer_client.get(f"{PAGE}/journal?preset=nope").text
     assert ">CSV</a>" not in bad
+
+
+class _Served:
+    """Stands in for WeasyPrint's data-URI decoder (no Pango needed)."""
+
+    def __init__(self):
+        self.urls: list[str] = []
+
+    def __call__(self, url):
+        self.urls.append(url)
+        return "served"
+
+
+def test_fetcher_serves_data_uris_and_refuses_every_other_scheme(monkeypatch):
+    from payroll.reports import export
+
+    served = _Served()
+    monkeypatch.setattr(export.NoFetch, "_decode_data", staticmethod(served))
+    fetch = export.NoFetch()
+    uri = "data:image/png;base64,iVBORw0KGgo="
+    assert fetch(uri) == "served"
+    assert fetch("DATA:image/png;base64,iVBORw0KGgo=") == "served"
+    assert fetch("  Data:text/plain,hi \n") == "served"  # surrounding whitespace is stripped
+    assert served.urls == [uri, "DATA:image/png;base64,iVBORw0KGgo=", "Data:text/plain,hi"]
+    for blocked in (
+        "http://example.com/x.png",
+        "HTTPS://example.com/x.png",
+        "file:///etc/hosts",
+        " FILE:///etc/hosts",
+        "ftp://example.com/x",
+        "//example.com/x.png",
+        "/etc/hosts",
+        "xdata:image/png;base64,AAAA",
+        "javascript:alert(1)",
+        "",
+    ):
+        with pytest.raises(export.FetchBlockedError):
+            fetch(blocked)
+    assert len(served.urls) == 3  # nothing refused ever reached the decoder
+
+
+def test_fetcher_decodes_a_real_data_uri(pdf_ready):
+    import base64
+
+    from payroll.reports import export
+
+    payload = b"\x89PNG-bytes"
+    uri = "data:image/png;base64," + base64.b64encode(payload).decode()
+    response = export.NoFetch()(uri)
+    assert response.read() == payload
+    assert response.content_type == "image/png"
+    with pytest.raises(Exception):  # noqa: B017,PT011 - WeasyPrint's own refusal
+        export.NoFetch._decode_data("http://example.com/x")

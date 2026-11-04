@@ -295,3 +295,31 @@ def test_viewer_can_download_pdf_and_it_is_audited(
     assert response.content == b"%PDF-fake"
     row = session.exec(select(AuditLog).where(AuditLog.action == "invoice.pdf")).one()
     assert (row.entity, row.entity_id) == ("invoice", str(invoice.id))
+
+
+def test_rendered_invoice_pdf_embeds_the_logo_without_logging_errors(
+    session, owner_user, customer, item, pdf_ready, caplog
+):
+    """The data-URI logo is decoded by the fetcher: the PDF holds an image, no ERROR logged."""
+    import logging
+
+    invoice = _issue(session, owner_user, customer, item)
+    html = invoice_html(session, invoice.id)
+    assert 'src="data:image/png;base64,' in html  # the premise: the logo <img> is there
+    with caplog.at_level(logging.DEBUG, logger="weasyprint"):
+        pdf = render_invoice_pdf(session, invoice.id)
+    assert pdf.startswith(b"%PDF")
+    assert b"/Subtype /Image" in pdf
+    bad = [
+        r for r in caplog.records if r.name.startswith("weasyprint") and r.levelno >= logging.ERROR
+    ]
+    assert bad == []
+    # and without the logo the PDF has no image: the assertion above can fail
+    plain = export_pdf_without_logo(html)
+    assert b"/Image" not in plain
+
+
+def export_pdf_without_logo(html: str) -> bytes:
+    from payroll.reports.export import to_pdf
+
+    return to_pdf(re.sub(r'<img[^>]*src="data:[^"]*"[^>]*>', "", html))
