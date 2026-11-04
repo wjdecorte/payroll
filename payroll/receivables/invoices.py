@@ -1,8 +1,9 @@
-"""Invoices: drafts now; issuing, replacing and voiding arrive with the posting task.
+"""Invoices: drafts, then issuing, replacing and voiding with ledger posting.
 
 A draft never touches the ledger: it has no number and no entry, and discarding it
-just marks it ``void``. Mutations are owner-only, audited, and commit through a
-wrapper that rolls back on any error.
+just marks it ``void``. Issuing assigns the number and posts one journal entry;
+replacing reverses that entry and posts a new one; voiding reverses it. Mutations
+are owner-only, audited, and commit through a wrapper that rolls back on any error.
 """
 
 import logging
@@ -12,7 +13,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from payroll import app_settings
 from payroll.audit.services import record as record_audit
@@ -20,13 +21,25 @@ from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.money import round_money
+from payroll.ledger.accounts import AccountService
+from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
+from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.receivables._common import utcnow_naive
 from payroll.receivables.exceptions import (
+    ARNotConfiguredError,
     InvalidInvoiceError,
     InvoiceNotFoundError,
     InvoiceStateError,
 )
-from payroll.receivables.models import Customer, Invoice, InvoiceLine, Item
+from payroll.receivables.models import (
+    Customer,
+    Invoice,
+    InvoiceLine,
+    Item,
+    Payment,
+    PaymentApplication,
+    ReceivablesSettings,
+)
 
 logger = logging.getLogger(f"{app_settings.logger_name}.receivables.invoices")
 
@@ -52,6 +65,17 @@ class InvoiceLineInput:
 def line_amount(qty: Decimal, unit_price: Decimal) -> Decimal:
     """``qty x unit_price`` rounded half-up to the cent."""
     return round_money(qty * unit_price)
+
+
+def live_applied(session: Session, invoice_id: int) -> Decimal:
+    """Total applied to an invoice by payments that are still ``posted``."""
+    stmt = (
+        select(func.coalesce(func.sum(PaymentApplication.amount), 0))
+        .select_from(PaymentApplication)
+        .join(Payment, col(Payment.id) == col(PaymentApplication.payment_id))
+        .where(PaymentApplication.invoice_id == invoice_id, Payment.status == "posted")
+    )
+    return Decimal(session.exec(stmt).one())
 
 
 def _invalid(message: str) -> InvalidInvoiceError:
@@ -196,7 +220,200 @@ class InvoiceService:
 
         return self._commit(work)
 
+    def issue(self, invoice_id: int, *, actor: User) -> Invoice:
+        ensure_role(actor, OWNER)
+
+        def work() -> Invoice:
+            ar = AccountService(self.session).account_by_role(SystemRole.ACCOUNTS_RECEIVABLE)
+            if ar is None:
+                raise ARNotConfiguredError(
+                    message="Bind Accounts receivable in Settings > Ledger first"
+                )
+            invoice = self._locked_draft(invoice_id, "Only a draft invoice can be issued")
+            before = self._snapshot(invoice)
+            customer = self.session.get(Customer, invoice.customer_id)
+            if customer is None or not customer.is_active:
+                raise _invalid("The customer is inactive")
+            lines = self.lines(invoice.id)  # type: ignore[arg-type]
+            for number, line in enumerate(lines, start=1):
+                item = self.session.get(Item, line.item_id) if line.item_id is not None else None
+                if item is None:
+                    raise _invalid(f"Line {number}: choose an item")
+                if not item.is_active:
+                    raise _invalid(f"Line {number}: the item is inactive")
+                line.income_account_id = item.income_account_id
+                self.session.add(line)
+            self.session.flush()
+            settings = self.session.exec(
+                select(ReceivablesSettings).where(ReceivablesSettings.id == 1).with_for_update()
+            ).first()
+            if settings is None:
+                settings = ReceivablesSettings()
+                self.session.add(settings)
+                self.session.flush()
+            number = settings.next_invoice_no
+            settings.next_invoice_no = number + 1
+            self.session.add(settings)
+            entry = self._post_entry(invoice, customer, lines, number, ar, actor)
+            invoice.number = number
+            invoice.entry_id = entry.id
+            invoice.status = "open"
+            invoice.modify_date = utcnow_naive()
+            self.session.add(invoice)
+            self.session.flush()
+            record_audit(
+                self.session,
+                action="invoice.issue",
+                user_id=actor.id,
+                entity="invoice",
+                entity_id=str(invoice.id),
+                before=before,
+                after=self._snapshot(invoice) | {"number": number, "entry_id": entry.id},
+            )
+            return invoice
+
+        invoice = self._commit(work)
+        logger.info("Issued invoice id=%s number=%s", invoice.id, invoice.number)
+        return invoice
+
+    def replace(
+        self,
+        invoice_id: int,
+        *,
+        actor: User,
+        customer_id: int,
+        invoice_date: date,
+        lines: list[InvoiceLineInput],
+        terms_days: int | None = None,
+        memo: str | None = None,
+    ) -> Invoice:
+        ensure_role(actor, OWNER)
+
+        def work() -> Invoice:
+            ar = AccountService(self.session).account_by_role(SystemRole.ACCOUNTS_RECEIVABLE)
+            if ar is None:
+                raise ARNotConfiguredError(
+                    message="Bind Accounts receivable in Settings > Ledger first"
+                )
+            invoice = self._locked_open(invoice_id, "Only an open invoice can be replaced")
+            self._require_no_applications(invoice, "replaced")
+            before = self._snapshot(invoice)
+            rows = self._fill(invoice, customer_id, invoice_date, lines, terms_days, memo)
+            invoice.modify_date = utcnow_naive()
+            self.session.add(invoice)
+            self._replace_lines(invoice, rows)
+            customer = self.session.get(Customer, invoice.customer_id)
+            old_entry = self.session.get(JournalEntry, invoice.entry_id)
+            ledger = LedgerPostingService(self.session)
+            ledger.void(old_entry.id, entry_date=old_entry.entry_date, actor=actor)  # type: ignore[union-attr,arg-type]
+            new_lines = self.lines(invoice.id)  # type: ignore[arg-type]
+            entry = self._post_entry(invoice, customer, new_lines, invoice.number, ar, actor)  # type: ignore[arg-type]
+            invoice.entry_id = entry.id
+            self.session.add(invoice)
+            self.session.flush()
+            record_audit(
+                self.session,
+                action="invoice.replace",
+                user_id=actor.id,
+                entity="invoice",
+                entity_id=str(invoice.id),
+                before=before | {"entry_id": old_entry.id},  # type: ignore[union-attr]
+                after=self._snapshot(invoice) | {"entry_id": entry.id},
+            )
+            return invoice
+
+        return self._commit(work)
+
+    def void(
+        self, invoice_id: int, *, actor: User, void_date: date, memo: str | None = None
+    ) -> Invoice:
+        ensure_role(actor, OWNER)
+
+        def work() -> Invoice:
+            invoice = self._locked_open(invoice_id, "Only an open invoice can be voided")
+            self._require_no_applications(invoice, "voided")
+            before = self._snapshot(invoice)
+            reversal = LedgerPostingService(self.session).void(
+                invoice.entry_id,  # type: ignore[arg-type]
+                entry_date=void_date,
+                actor=actor,
+                memo=memo,
+            )
+            invoice.status = "void"
+            invoice.void_date = void_date
+            invoice.modify_date = utcnow_naive()
+            self.session.add(invoice)
+            self.session.flush()
+            record_audit(
+                self.session,
+                action="invoice.void",
+                user_id=actor.id,
+                entity="invoice",
+                entity_id=str(invoice.id),
+                before=before,
+                after=self._snapshot(invoice)
+                | {"void_date": void_date.isoformat(), "reversal_entry_id": reversal.id},
+            )
+            return invoice
+
+        return self._commit(work)
+
     # ---------------------------------------------------------------- helpers
+
+    def _locked_open(self, invoice_id: int, message: str) -> Invoice:
+        invoice = self.session.get(Invoice, invoice_id, with_for_update=True)
+        if invoice is None:
+            raise InvoiceNotFoundError()
+        if invoice.status != "open":
+            raise InvoiceStateError(message=message)
+        return invoice
+
+    def _require_no_applications(self, invoice: Invoice, verb: str) -> None:
+        if live_applied(self.session, invoice.id) > 0:  # type: ignore[arg-type]
+            raise InvoiceStateError(
+                message=f"An invoice with payments applied cannot be {verb}; void the payment first"
+            )
+
+    def _post_entry(
+        self,
+        invoice: Invoice,
+        customer: Customer | None,
+        lines: list[InvoiceLine],
+        number: int,
+        ar: Account,
+        actor: User,
+    ) -> JournalEntry:
+        """Dr A/R for the total; one Cr line per income account (summed, ordered)."""
+        per_account: dict[int, tuple[Decimal, list[str]]] = {}
+        for line in lines:
+            total, texts = per_account.get(line.income_account_id, (Decimal("0.00"), []))
+            if line.description:
+                texts.append(line.description)
+            per_account[line.income_account_id] = (total + line.amount, texts)
+        accounts = {
+            a.id: a
+            for a in self.session.exec(select(Account).where(col(Account.id).in_(per_account)))
+        }
+        ordered = sorted(
+            per_account,
+            key=lambda aid: (accounts[aid].number is None, accounts[aid].number or "", aid),
+        )
+        drafts = [LineDraft(ar.id, debit=invoice.total)]  # type: ignore[arg-type]
+        for aid in ordered:
+            amount, texts = per_account[aid]
+            memo = "; ".join(texts)[:MAX_MEMO] or None
+            drafts.append(LineDraft(aid, credit=amount, memo=memo))
+        name = customer.name if customer is not None else ""
+        return LedgerPostingService(self.session).post(
+            EntryDraft(
+                invoice.invoice_date,
+                drafts,
+                memo=f"Invoice #{number} {name}"[:MAX_MEMO],
+                source_type=SourceType.INVOICE,
+                source_id=str(invoice.id),
+            ),
+            actor=actor,
+        )
 
     def _commit(self, work: Callable[[], Invoice]) -> Invoice:
         """Run ``work`` and commit; on any error roll back at once (frees row locks)."""
@@ -208,12 +425,14 @@ class InvoiceService:
             raise
         return result
 
-    def _locked_draft(self, invoice_id: int) -> Invoice:
+    def _locked_draft(
+        self, invoice_id: int, message: str = "Only a draft invoice can be edited or discarded"
+    ) -> Invoice:
         invoice = self.session.get(Invoice, invoice_id, with_for_update=True)
         if invoice is None:
             raise InvoiceNotFoundError()
         if invoice.status != "draft":
-            raise InvoiceStateError(message="Only a draft invoice can be edited or discarded")
+            raise InvoiceStateError(message=message)
         return invoice
 
     def _fill(

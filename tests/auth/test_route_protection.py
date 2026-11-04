@@ -83,6 +83,8 @@ RECEIVABLES_UNSAFE_ENDPOINTS = (
     ("POST", "/invoices/new"),
     ("POST", "/invoices/1/edit"),
     ("POST", "/invoices/1/discard"),
+    ("POST", "/invoices/1/issue"),
+    ("POST", "/invoices/1/void"),
     ("POST", "/settings/receivables/number"),
     ("POST", "/settings/receivables/company"),
 )

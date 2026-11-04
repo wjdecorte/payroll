@@ -312,6 +312,15 @@ class AccountService:
                 raise InvalidAccountError(message="A system role needs an active account")
             if target.system_role not in (None, role):
                 raise AccountConflictError(message="That account already holds another system role")
+        if (
+            role == SystemRole.ACCOUNTS_RECEIVABLE
+            and current is not None
+            and (target is None or target.id != current.id)
+            and self._invoices_issued()
+        ):
+            raise InvalidAccountError(
+                message="Accounts receivable cannot change after invoices have been issued"
+            )
         before = {"account_id": current.id if current else None}
         if current is not None and (target is None or current.id != target.id):
             current.system_role = None
@@ -337,6 +346,14 @@ class AccountService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _invoices_issued(self) -> bool:
+        from payroll.receivables.models import Invoice  # deferred: receivables sits above ledger
+
+        stmt = select(Invoice.id).where(
+            (Invoice.status == "open") | (col(Invoice.entry_id).is_not(None))
+        )
+        return self.session.exec(stmt.limit(1)).first() is not None
 
     def _check_parent(self, account: Account | None, parent_id: int, new_type: AccountType) -> None:
         parent = self.get(parent_id)

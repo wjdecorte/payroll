@@ -2,12 +2,17 @@
 
 # ruff: noqa: F811  (the ``chart`` fixture is re-exported below and used as an argument)
 
+from datetime import date
+from decimal import Decimal
+
 from sqlmodel import select
 
 from payroll.receivables.customers import CustomerService
+from payroll.receivables.invoices import InvoiceLineInput, InvoiceService
 from payroll.receivables.items import ItemService
-from payroll.receivables.models import Customer, Item
+from payroll.receivables.models import Customer, Item, Payment, PaymentApplication
 from payroll.receivables.settings import ReceivablesSettingsService
+from payroll.reports.periods import company_today
 from tests.ledger.conftest import chart  # noqa: F401
 
 XSS = "<script>alert(1)</script>"
@@ -210,3 +215,138 @@ def test_settings_page_owner_only_for_posts(
         )
         assert client.post("/settings/receivables/company", data={}).status_code == 403
     assert ReceivablesSettingsService(session).get().next_invoice_no == 2000
+
+
+# ---------------------------------------------------------------------------
+# Issuing, replacing and voiding invoices
+# ---------------------------------------------------------------------------
+
+
+def _open_invoice(session, owner_user, chart, *, issue=True):
+    customer = CustomerService(session).create(actor=owner_user, name="Acme")
+    item = ItemService(session).create(
+        actor=owner_user,
+        name="Consulting",
+        unit_price=Decimal("150.00"),
+        income_account_id=chart["Services Revenue"].id,
+    )
+    service = InvoiceService(session)
+    invoice = service.create_draft(
+        actor=owner_user,
+        customer_id=customer.id,
+        invoice_date=date(2026, 3, 1),
+        lines=[InvoiceLineInput(item.id, "Work", Decimal("2"), Decimal("150.00"))],
+    )
+    if issue:
+        invoice = service.issue(invoice.id, actor=owner_user)
+    return invoice, customer, item
+
+
+def test_issue_button_and_void_form_on_detail(owner_client, owner_user, session, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart, issue=False)
+    draft_page = owner_client.get(f"/invoices/{invoice.id}")
+    assert f'action="/invoices/{invoice.id}/issue"' in draft_page.text
+    assert "/void" not in draft_page.text
+
+    issued = owner_client.post(f"/invoices/{invoice.id}/issue", follow_redirects=False)
+    assert issued.status_code == 303
+    assert issued.headers["location"] == f"/invoices/{invoice.id}"
+    page = owner_client.get(f"/invoices/{invoice.id}")
+    assert "#1001" in page.text and "Open" in page.text
+    assert f'action="/invoices/{invoice.id}/void"' in page.text
+    assert "/issue" not in page.text
+    assert f'href="/invoices/{invoice.id}/edit"' in page.text
+
+    # editing an open invoice replaces it, keeping the number
+    edit = owner_client.get(f"/invoices/{invoice.id}/edit")
+    assert edit.status_code == 200
+    saved = owner_client.post(
+        f"/invoices/{invoice.id}/edit",
+        data={
+            "customer_id": str(customer.id),
+            "invoice_date": "2026-03-05",
+            "terms_days": "",
+            "memo": "",
+            "line_item": [str(item.id)],
+            "line_description": ["Smaller"],
+            "line_qty": ["1"],
+            "line_unit_price": ["10.00"],
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    session.refresh(invoice)
+    assert (invoice.number, invoice.total, invoice.invoice_date) == (
+        1001,
+        Decimal("10.00"),
+        date(2026, 3, 5),
+    )
+
+    again = owner_client.post(f"/invoices/{invoice.id}/issue")
+    assert again.status_code == 409 and "Only a draft invoice can be issued" in again.text
+
+    voided = owner_client.post(
+        f"/invoices/{invoice.id}/void",
+        data={"void_date": "2026-03-20", "memo": "Duplicate"},
+        follow_redirects=False,
+    )
+    assert voided.status_code == 303
+    session.refresh(invoice)
+    assert (invoice.status, invoice.void_date) == ("void", date(2026, 3, 20))
+    final = owner_client.get(f"/invoices/{invoice.id}")
+    assert "/void" not in final.text and "2026-03-20" in final.text
+
+
+def test_void_form_defaults_to_today(owner_client, owner_user, session, chart):
+    invoice, _, _ = _open_invoice(session, owner_user, chart)
+    page = owner_client.get(f"/invoices/{invoice.id}")
+    assert f'name="void_date" value="{company_today()}"' in page.text
+    bad = owner_client.post(f"/invoices/{invoice.id}/void", data={"void_date": ""})
+    assert bad.status_code == 422 and "Enter a void date" in bad.text
+    session.refresh(invoice)
+    assert invoice.status == "open"
+
+
+def test_edit_link_hidden_for_paid_invoice(owner_client, owner_user, session, chart):
+    invoice, customer, _ = _open_invoice(session, owner_user, chart)
+    payment = Payment(
+        customer_id=customer.id,
+        received_date=date(2026, 3, 2),
+        amount=Decimal("50.00"),
+        deposit_account_id=chart["Business Checking"].id,
+    )
+    session.add(payment)
+    session.flush()
+    session.add(
+        PaymentApplication(
+            payment_id=payment.id,
+            invoice_id=invoice.id,
+            amount=Decimal("50.00"),
+            recognized_date=date(2026, 3, 2),
+            ar_account_id=chart["Accounts Receivable"].id,
+        )
+    )
+    session.commit()
+    page = owner_client.get(f"/invoices/{invoice.id}")
+    assert f"/invoices/{invoice.id}/edit" not in page.text
+    assert f"/invoices/{invoice.id}/void" not in page.text
+    assert owner_client.get(f"/invoices/{invoice.id}/edit").status_code == 409
+    refused = owner_client.post(f"/invoices/{invoice.id}/void", data={"void_date": "2026-03-20"})
+    assert refused.status_code == 409
+
+
+def test_viewer_gets_403_on_issue_void_replace(viewer_client, owner_user, session, chart):
+    draft, customer, item = _open_invoice(session, owner_user, chart, issue=False)
+    open_invoice = InvoiceService(session).issue(draft.id, actor=owner_user)
+    page = viewer_client.get(f"/invoices/{open_invoice.id}")
+    assert page.status_code == 200
+    assert "/void" not in page.text and "/edit" not in page.text
+    for path, data in (
+        (f"/invoices/{open_invoice.id}/issue", {}),
+        (f"/invoices/{open_invoice.id}/void", {"void_date": "2026-03-20"}),
+        (f"/invoices/{open_invoice.id}/edit", {"customer_id": str(customer.id)}),
+    ):
+        assert viewer_client.post(path, data=data).status_code == 403, path
+    assert viewer_client.get(f"/invoices/{open_invoice.id}/edit").status_code == 403
+    session.refresh(open_invoice)
+    assert open_invoice.status == "open"

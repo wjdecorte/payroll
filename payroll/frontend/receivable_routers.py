@@ -13,9 +13,11 @@ Full-page routes (not in the OpenAPI schema):
   GET  /invoices/new                -> new-invoice form             (owner)
   POST /invoices/new                -> saves a draft                (owner)
   GET  /invoices/{id}               -> read-only invoice with its lines
-  GET  /invoices/{id}/edit          -> edit form, drafts only       (owner)
-  POST /invoices/{id}/edit          -> saves the draft              (owner)
+  GET  /invoices/{id}/edit          -> edit form, drafts and open invoices (owner)
+  POST /invoices/{id}/edit          -> saves the draft or replaces the open invoice (owner)
   POST /invoices/{id}/discard       -> discards the draft           (owner)
+  POST /invoices/{id}/issue         -> numbers and posts the draft  (owner)
+  POST /invoices/{id}/void          -> voids an open invoice        (owner)
   GET  /settings/receivables        -> next invoice number, company details
   POST /settings/receivables/number -> sets the next invoice number (owner)
   POST /settings/receivables/company -> saves the company details   (owner)
@@ -48,7 +50,7 @@ from payroll.receivables.exceptions import (
     InvoiceNumberError,
     InvoiceStateError,
 )
-from payroll.receivables.invoices import STATUSES, InvoiceLineInput, InvoiceService
+from payroll.receivables.invoices import STATUSES, InvoiceLineInput, InvoiceService, live_applied
 from payroll.receivables.items import INCOME_TYPES, ItemService
 from payroll.receivables.settings import ReceivablesSettingsService
 from payroll.reports.periods import company_today
@@ -578,9 +580,13 @@ async def invoice_create(
     return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)
 
 
-@router.get("/invoices/{invoice_id}", response_class=HTMLResponse)
-async def invoice_view(
-    request: Request, invoice_id: int, session: Session = Depends(get_session)
+def _invoice_page(
+    request: Request,
+    session: Session,
+    invoice_id: int,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
 ) -> HTMLResponse:
     service = InvoiceService(session)
     try:
@@ -595,9 +601,20 @@ async def invoice_view(
             "invoice": invoice,
             "customer": customer,
             "lines": service.lines(invoice_id),
+            "has_payments": invoice.status == "open" and live_applied(session, invoice_id) > 0,
+            "today": str(company_today()),
+            "error": error,
             "tab": "invoices",
         },
+        status_code=status_code,
     )
+
+
+@router.get("/invoices/{invoice_id}", response_class=HTMLResponse)
+async def invoice_view(
+    request: Request, invoice_id: int, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    return _invoice_page(request, session, invoice_id)
 
 
 @router.get(
@@ -611,8 +628,10 @@ async def invoice_edit(
     service = InvoiceService(session)
     try:
         invoice = service.get(invoice_id)
-        if invoice.status != "draft":
-            raise InvoiceStateError(message="Only a draft invoice can be edited")
+        if invoice.status not in ("draft", "open"):
+            raise InvoiceStateError(message="Only a draft or open invoice can be edited")
+        if invoice.status == "open" and live_applied(session, invoice_id) > 0:
+            raise InvoiceStateError(message="An invoice with payments applied cannot be edited")
     except AppBaseError as exc:
         return _error_partial(request, exc)
     values = {
@@ -652,7 +671,11 @@ async def invoice_update(
     values = _invoice_values(form)
     lines = _lines_from_form(form)
     try:
-        service.update_draft(invoice_id, actor=actor, **_build_invoice(values, lines))
+        built = _build_invoice(values, lines)
+        if invoice.status == "open":
+            service.replace(invoice_id, actor=actor, **built)
+        else:
+            service.update_draft(invoice_id, actor=actor, **built)
     except AppBaseError as exc:
         return _invoice_form(
             request,
@@ -678,6 +701,44 @@ async def invoice_discard(
     except AppBaseError as exc:
         return _error_partial(request, exc)
     return RedirectResponse("/invoices", status_code=303)
+
+
+@router.post("/invoices/{invoice_id}/issue", response_class=HTMLResponse)
+async def invoice_issue(
+    request: Request,
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    try:
+        InvoiceService(session).issue(invoice_id, actor=actor)
+    except AppBaseError as exc:
+        return _invoice_page(
+            request, session, invoice_id, error=exc.message, status_code=exc.http_code
+        )
+    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+
+
+@router.post("/invoices/{invoice_id}/void", response_class=HTMLResponse)
+async def invoice_void(
+    request: Request,
+    invoice_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    try:
+        void_date = _parse_date(_text(form.get("void_date")), "Void date")
+        if void_date is None:
+            raise InvalidInvoiceError(message="Enter a void date")
+        InvoiceService(session).void(
+            invoice_id, actor=actor, void_date=void_date, memo=_text(form.get("memo")) or None
+        )
+    except AppBaseError as exc:
+        return _invoice_page(
+            request, session, invoice_id, error=exc.message, status_code=exc.http_code
+        )
+    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
