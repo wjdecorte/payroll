@@ -123,6 +123,8 @@ def _applied_total(engine) -> Decimal:
 @pytest.mark.parametrize("round_no", range(3))
 @pytest.mark.parametrize("amount", ["50.00", "60.00"])
 def test_two_payments_racing_for_one_invoice_cannot_exceed_total(pay_db, amount, round_no):
+    """record()+apply() racing. The payment entry counter serializes the two records, so this
+    does not exercise the invoice row lock (see the apply-vs-apply test below)."""
     engine, ids = pay_db
     invoice_id = _invoice(engine, ids)
 
@@ -238,3 +240,27 @@ def test_application_racing_invoice_void_or_replace_never_leaves_both(pay_db, ac
                 assert invoice.total == D("20.00") and invoice.entry_id != entry_before
         rows = db.exec(select(col(PaymentApplication.invoice_id))).all()
         assert (len(rows) == 1) == (applied > 0)
+
+
+@pytest.mark.parametrize("round_no", range(6))
+def test_two_recorded_payments_applied_concurrently_cannot_exceed_invoice(pay_db, round_no):
+    """Two existing payments apply() to one invoice at once: only the invoice lock serializes them."""
+    engine, ids = pay_db
+    invoice_id = _invoice(engine, ids)
+    first, second = _payment(engine, ids, "60.00"), _payment(engine, ids, "60.00")
+
+    def apply_from(payment_id):
+        def job(db, actor):
+            PaymentService(db).apply(
+                payment_id, actor=actor, applications=[ApplicationInput(invoice_id, D("60.00"))]
+            )
+
+        return job
+
+    outcome = _run([apply_from(first), apply_from(second)])
+    assert sorted(outcome) == ["OverApplicationError", "ok"], outcome
+    assert _applied_total(engine) == D("60.00")
+    with Session(engine) as db:
+        assert live_applied(db, invoice_id) == D("60.00") <= db.get(Invoice, invoice_id).total
+        ar_balance = AccountService(db).balances().get(ids["ar"], D("0.00"))
+        assert ar_balance == D("100.00") - D("120.00")  # invoice less both payments recorded
