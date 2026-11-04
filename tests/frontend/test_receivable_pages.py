@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from sqlmodel import select
 
+from payroll.ledger.models import JournalEntry
 from payroll.receivables.customers import CustomerService
 from payroll.receivables.invoices import InvoiceLineInput, InvoiceService
 from payroll.receivables.items import ItemService
@@ -823,6 +824,125 @@ def test_viewer_reads_customer_page_but_cannot_refund(
             == 403
         )
     assert session.exec(select(CustomerRefund)).all() == []
+
+
+def _post_refund(owner_client, customer, chart, amount="60.00"):
+    done = owner_client.post(
+        f"/customers/{customer.id}/refund",
+        data=_refund_form(chart, amount=amount),
+        follow_redirects=False,
+    )
+    assert done.status_code == 303
+
+
+def test_refund_void_form_only_for_live_refunds_with_default_date(
+    owner_client, owner_user, session, chart, monkeypatch
+):
+    monkeypatch.setattr(
+        "payroll.frontend.receivable_routers.company_today", lambda: date(2026, 5, 1)
+    )
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    _post_refund(owner_client, customer, chart, "60.00")
+    _post_refund(owner_client, customer, chart, "10.00")
+    live, other = session.exec(select(CustomerRefund).order_by(CustomerRefund.id)).all()
+    page = owner_client.get(f"/customers/{customer.id}").text
+    for refund in (live, other):
+        assert f'action="/customers/{customer.id}/refunds/{refund.id}/void"' in page
+    assert page.count('name="void_date" value="2026-05-01"') == 2  # max(today, refund date)
+    # a refund dated after today defaults to its own date
+    late = owner_client.post(
+        f"/customers/{customer.id}/refund",
+        data=_refund_form(chart, amount="5.00", refund_date="2026-06-15"),
+        follow_redirects=False,
+    )
+    assert late.status_code == 303
+    assert (
+        'name="void_date" value="2026-06-15"' in owner_client.get(f"/customers/{customer.id}").text
+    )
+    done = owner_client.post(
+        f"/customers/{customer.id}/refunds/{live.id}/void",
+        data={"void_date": "2026-05-01"},
+        follow_redirects=False,
+    )
+    assert done.status_code == 303 and done.headers["location"] == f"/customers/{customer.id}"
+    session.refresh(live)
+    assert (live.status, live.void_date) == ("void", date(2026, 5, 1))
+    page = owner_client.get(f"/customers/{customer.id}").text
+    assert f"/refunds/{live.id}/void" not in page  # voided: no form, shown as voided
+    assert f"/refunds/{other.id}/void" in page
+    assert "Voided 2026-05-01" in page
+
+
+def test_voiding_the_refund_lets_the_payment_be_voided(owner_client, owner_user, session, chart):
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    payment = session.exec(select(Payment)).one()
+    _post_refund(owner_client, customer, chart, "60.00")
+    blocked = owner_client.post(f"/payments/{payment.id}/void", data={"void_date": "2026-03-25"})
+    assert blocked.status_code == 409 and "void the refund first" in blocked.text
+    refund = session.exec(select(CustomerRefund)).one()
+    ok = owner_client.post(
+        f"/customers/{customer.id}/refunds/{refund.id}/void",
+        data={"void_date": "2026-03-25"},
+        follow_redirects=False,
+    )
+    assert ok.status_code == 303
+    again = owner_client.post(
+        f"/payments/{payment.id}/void", data={"void_date": "2026-03-25"}, follow_redirects=False
+    )
+    assert again.status_code == 303
+    session.refresh(payment)
+    assert payment.status == "void"
+
+
+def test_refund_void_errors_change_nothing(owner_client, owner_user, session, chart):
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    _post_refund(owner_client, customer, chart, "60.00")
+    refund = session.exec(select(CustomerRefund)).one()
+    url = f"/customers/{customer.id}/refunds/{refund.id}/void"
+    before = session.exec(select(JournalEntry)).all()
+    early = owner_client.post(url, data={"void_date": "2026-03-19"})  # refund is dated 03-20
+    assert early.status_code == 422 and "before" in early.text
+    assert owner_client.post(url, data={"void_date": ""}).status_code == 422
+    session.refresh(refund)
+    assert refund.status == "posted"
+    assert len(session.exec(select(JournalEntry)).all()) == len(before)
+    # another customer's refund, and unknown ids, are 404
+    other = CustomerService(session).create(actor=owner_user, name="Other Co")
+    session.commit()
+    wrong = owner_client.post(
+        f"/customers/{other.id}/refunds/{refund.id}/void", data={"void_date": "2026-03-25"}
+    )
+    assert wrong.status_code == 404
+    missing = owner_client.post(
+        f"/customers/{customer.id}/refunds/999999/void", data={"void_date": "2026-03-25"}
+    )
+    assert missing.status_code == 404
+    gone = owner_client.post(
+        f"/customers/999999/refunds/{refund.id}/void", data={"void_date": "2026-03-25"}
+    )
+    assert gone.status_code == 404
+    session.refresh(refund)
+    assert refund.status == "posted"
+    twice = owner_client.post(url, data={"void_date": "2026-03-25"}, follow_redirects=False)
+    assert twice.status_code == 303
+    assert owner_client.post(url, data={"void_date": "2026-03-25"}).status_code == 409
+
+
+def test_viewer_and_accountant_cannot_void_a_refund_or_see_its_form(
+    owner_client, viewer_client, accountant_client, owner_user, session, chart
+):
+    _, customer = _customer_with_credit(session, owner_user, chart)
+    _post_refund(owner_client, customer, chart, "60.00")
+    refund = session.exec(select(CustomerRefund)).one()
+    for client in (viewer_client, accountant_client):
+        assert f"/refunds/{refund.id}/void" not in client.get(f"/customers/{customer.id}").text
+        denied = client.post(
+            f"/customers/{customer.id}/refunds/{refund.id}/void",
+            data={"void_date": "2026-03-25"},
+        )
+        assert denied.status_code == 403
+    session.refresh(refund)
+    assert refund.status == "posted"
 
 
 # ---------------------------------------------------------------------------

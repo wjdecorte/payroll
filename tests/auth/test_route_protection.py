@@ -78,6 +78,7 @@ RECEIVABLES_UNSAFE_ENDPOINTS = (
     ("POST", "/customers/1/edit"),
     ("POST", "/customers/1/active"),
     ("POST", "/customers/1/refund"),
+    ("POST", "/customers/1/refunds/1/void"),
     ("POST", "/items/new"),
     ("POST", "/items/1/edit"),
     ("POST", "/items/1/active"),
@@ -610,7 +611,7 @@ def test_viewer_and_accountant_read_all_receivable_pages_but_cannot_mutate(
     # A page that rolls back on an error (the invoice PDF 404) would otherwise take the
     # uncommitted test user and session with it and sign the client out mid-loop.
     session.commit()
-    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 19
+    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 20
     for method, path in RECEIVABLES_UNSAFE_ENDPOINTS:
         response = client.request(method, path, follow_redirects=False)
         assert response.status_code == 403, (method, path, response.status_code)
@@ -669,7 +670,7 @@ def test_receivable_routes_need_csrf(owner_client, session):
         "unit_price": "10.00",
         "terms_days": "30",
     }
-    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 19
+    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 20
     for method, path in RECEIVABLES_UNSAFE_ENDPOINTS:
         response = owner_client.request(method, path, data=body, follow_redirects=False)
         where = f"{method} {path} -> {response.status_code}"

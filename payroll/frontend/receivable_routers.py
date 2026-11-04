@@ -10,6 +10,7 @@ Full-page routes (not in the OpenAPI schema):
   POST /customers/{id}/active       -> (de)activates the customer   (owner)
   GET  /customers/{id}              -> customer page: open invoices, payments, credit, refunds
   POST /customers/{id}/refund       -> refunds unapplied credit     (owner)
+  POST /customers/{id}/refunds/{refund_id}/void -> voids a refund       (owner)
   GET/POST /items ...               -> the same set for items
   GET  /invoices                    -> invoice list with derived status, paid and balance
                                        (``?status=`` incl. overdue/partial/paid, ``?customer_id=``)
@@ -73,6 +74,7 @@ from payroll.receivables.exceptions import (
     InvalidRefundError,
     InvoiceNumberError,
     InvoiceStateError,
+    RefundNotFoundError,
 )
 from payroll.receivables.invoice_pdf import render_invoice_pdf
 from payroll.receivables.invoices import InvoiceLineInput, InvoiceService, live_applied
@@ -289,6 +291,9 @@ def _customer_page(
             "unapplied": {p.id: unapplied(session, p.id) for p in payments},  # type: ignore[arg-type]
             "credit": credit,
             "refunds": refunds,
+            "refund_void_default": {
+                r.id: str(max(company_today(), r.refund_date)) for r in refunds
+            },
             "bank_names": {
                 r.bank_account_id: session.get(Account, r.bank_account_id).name  # type: ignore[union-attr]
                 for r in refunds
@@ -352,6 +357,31 @@ async def customer_refund(
             values=values,
             error=exc.message,
             status_code=exc.http_code,
+        )
+    return RedirectResponse(f"/customers/{customer_id}", status_code=303)
+
+
+@router.post("/customers/{customer_id}/refunds/{refund_id}/void", response_class=HTMLResponse)
+async def customer_refund_void(
+    request: Request,
+    customer_id: int,
+    refund_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    try:
+        CustomerService(session).get(customer_id)
+        refund = RefundService(session).get(refund_id)
+        if refund.customer_id != customer_id:
+            raise RefundNotFoundError()
+        void_date = _parse_date(_text(form.get("void_date")), "Void date")
+        if void_date is None:
+            raise InvalidRefundError(message="Enter a void date")
+        RefundService(session).void(refund_id, actor=actor, void_date=void_date)
+    except AppBaseError as exc:
+        return _customer_page(
+            request, session, customer_id, error=exc.message, status_code=exc.http_code
         )
     return RedirectResponse(f"/customers/{customer_id}", status_code=303)
 

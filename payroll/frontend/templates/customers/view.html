@@ -86,7 +86,7 @@
     <div class="card-body">
       <table class="table table-sm align-middle" id="customer-refunds">
         <thead>
-          <tr><th>Date</th><th>Method</th><th>Paid from</th><th>Status</th><th class="num">Amount</th></tr>
+          <tr><th>Date</th><th>Method</th><th>Paid from</th><th>Status</th><th class="num">Amount</th><th class="no-print"></th></tr>
         </thead>
         <tbody>
           {% for r in refunds %}
@@ -96,9 +96,21 @@
             <td>{{ bank_names[r.bank_account_id] }}</td>
             <td>{{ r.status | capitalize }}</td>
             <td class="num">{{ r.amount | currency }}</td>
+            <td class="no-print text-end">
+              {% if is_owner and r.status == "posted" %}
+              <form method="post" action="/customers/{{ customer.id }}/refunds/{{ r.id }}/void" class="d-inline-flex gap-1 align-items-center" id="refund-void-{{ r.id }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label class="visually-hidden" for="refund_void_date_{{ r.id }}">Void date</label>
+                <input type="date" class="form-control form-control-sm" id="refund_void_date_{{ r.id }}" name="void_date" value="{{ refund_void_default[r.id] }}" required>
+                <button type="submit" class="btn btn-sm btn-outline-danger">Void</button>
+              </form>
+              {% elif r.status == "void" %}
+              <span class="text-muted small">Voided{% if r.void_date %} {{ r.void_date }}{% endif %}</span>
+              {% endif %}
+            </td>
           </tr>
           {% else %}
-          <tr><td colspan="5" class="text-center text-muted py-3">No refunds.</td></tr>
+          <tr><td colspan="6" class="text-center text-muted py-3">No refunds.</td></tr>
           {% endfor %}
         </tbody>
       </table>
