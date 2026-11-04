@@ -18,6 +18,13 @@ Full-page routes (not in the OpenAPI schema):
   POST /invoices/{id}/discard       -> discards the draft           (owner)
   POST /invoices/{id}/issue         -> numbers and posts the draft  (owner)
   POST /invoices/{id}/void          -> voids an open invoice        (owner)
+  GET  /payments                    -> payment list (``?customer_id=`` filter)
+  GET  /payments/new                -> step 1: pick a customer; ``?customer_id=`` is step 2,
+                                       the payment form with the customer's open invoices (owner)
+  POST /payments/new                -> records the payment and its applications (owner)
+  GET  /payments/{id}               -> payment, its applications, unapplied credit, void form
+  POST /payments/{id}/apply         -> applies the unapplied credit to open invoices (owner)
+  POST /payments/{id}/void          -> voids the payment            (owner)
   GET  /settings/receivables        -> next invoice number, company details
   POST /settings/receivables/number -> sets the next invoice number (owner)
   POST /settings/receivables/company -> saves the company details   (owner)
@@ -33,7 +40,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from payroll.auth.models import User
 from payroll.auth.permissions import require_owner, require_reader
@@ -42,16 +49,26 @@ from payroll.exceptions import AppBaseError
 from payroll.frontend.journal_routers import parse_amount
 from payroll.frontend.routers import _error_partial, templates
 from payroll.ledger.accounts import AccountService
+from payroll.ledger.models import Account, AccountType, SystemRole
 from payroll.receivables.customers import CustomerService
 from payroll.receivables.exceptions import (
     InvalidCustomerError,
     InvalidInvoiceError,
     InvalidItemError,
+    InvalidPaymentError,
     InvoiceNumberError,
     InvoiceStateError,
 )
 from payroll.receivables.invoices import STATUSES, InvoiceLineInput, InvoiceService, live_applied
 from payroll.receivables.items import INCOME_TYPES, ItemService
+from payroll.receivables.models import Invoice, Payment, PaymentApplication
+from payroll.receivables.payments import (
+    METHODS,
+    ApplicationInput,
+    PaymentService,
+    allocate_oldest_first,
+    unapplied,
+)
 from payroll.receivables.settings import ReceivablesSettingsService
 from payroll.reports.periods import company_today
 from payroll.reports.periods import parse_date as _parse_date
@@ -580,6 +597,17 @@ async def invoice_create(
     return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)
 
 
+def _invoice_applications(session: Session, invoice_id: int) -> list[tuple]:
+    """(application, payment) pairs for the live (posted) payments applied to an invoice."""
+    stmt = (
+        select(PaymentApplication, Payment)
+        .join(Payment, col(Payment.id) == col(PaymentApplication.payment_id))
+        .where(PaymentApplication.invoice_id == invoice_id, Payment.status == "posted")
+        .order_by(col(PaymentApplication.id))
+    )
+    return list(session.exec(stmt).all())
+
+
 def _invoice_page(
     request: Request,
     session: Session,
@@ -594,6 +622,7 @@ def _invoice_page(
         customer = CustomerService(session).get(invoice.customer_id)
     except AppBaseError as exc:
         return _error_partial(request, exc)
+    applied = live_applied(session, invoice_id)
     return templates.TemplateResponse(
         request,
         "invoices/view.html",
@@ -602,6 +631,9 @@ def _invoice_page(
             "customer": customer,
             "lines": service.lines(invoice_id),
             "has_payments": invoice.status == "open" and live_applied(session, invoice_id) > 0,
+            "applied": applied,
+            "balance": invoice.total - applied,
+            "applications": _invoice_applications(session, invoice_id),
             "today": str(company_today()),
             "error": error,
             "tab": "invoices",
@@ -739,6 +771,310 @@ async def invoice_void(
             request, session, invoice_id, error=exc.message, status_code=exc.http_code
         )
     return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Payments
+# ---------------------------------------------------------------------------
+
+
+def _open_invoices(session: Session, customer_id: int) -> list[dict]:
+    """The customer's open invoices with live balances, oldest due date first."""
+    stmt = (
+        select(Invoice)
+        .where(Invoice.customer_id == customer_id, Invoice.status == "open")
+        .order_by(col(Invoice.due_date), col(Invoice.number), col(Invoice.id))
+    )
+    rows = []
+    for invoice in session.exec(stmt).all():
+        balance = invoice.total - live_applied(session, invoice.id)  # type: ignore[arg-type]
+        if balance > 0:
+            rows.append({"invoice": invoice, "balance": balance})
+    return rows
+
+
+def _deposit_accounts(session: Session) -> tuple[list[Account], int | None]:
+    """Active asset accounts to deposit to (not A/R) and the Undeposited Funds default."""
+    accounts = [
+        a
+        for a in AccountService(session).list()
+        if a.type == AccountType.ASSET and a.system_role != SystemRole.ACCOUNTS_RECEIVABLE
+    ]
+    default = next((a.id for a in accounts if a.system_role == SystemRole.UNDEPOSITED_FUNDS), None)
+    return accounts, default
+
+
+def _payment_error(message: str) -> InvalidPaymentError:
+    return InvalidPaymentError(message=message)
+
+
+def _amounts_from_form(form) -> dict[str, str]:
+    """The typed per-invoice amounts, keyed by invoice id (``apply_<id>`` fields)."""
+    typed = {}
+    for key in form.keys():
+        if key.startswith("apply_") and key[6:].isascii() and key[6:].isdigit():
+            raw = form.get(key)
+            if isinstance(raw, str) and raw.strip():
+                typed[key[6:]] = raw.strip()
+    return typed
+
+
+def _typed_inputs(typed: dict[str, str]) -> list[ApplicationInput]:
+    out = []
+    for raw_id, raw_amount in typed.items():
+        if len(raw_id) > 10 or int(raw_id) > MAX_ID:
+            raise _payment_error("Invoice is not valid")
+        try:
+            out.append(ApplicationInput(int(raw_id), parse_amount(raw_amount)))
+        except ValueError as exc:
+            raise _payment_error(str(exc)) from exc
+    return out
+
+
+def _payment_form(
+    request: Request,
+    session: Session,
+    *,
+    customer,
+    values: dict,
+    typed: dict[str, str],
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    accounts, _ = _deposit_accounts(session)
+    return templates.TemplateResponse(
+        request,
+        "payments/form.html",
+        {
+            "customer": customer,
+            "values": values,
+            "typed": typed,
+            "methods": METHODS,
+            "accounts": accounts,
+            "open_invoices": _open_invoices(session, customer.id),
+            "error": error,
+            "tab": "payments",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/payments", response_class=HTMLResponse)
+async def payments_list(
+    request: Request, customer_id: str = "", session: Session = Depends(get_session)
+) -> HTMLResponse:
+    try:
+        customer = _id_param(customer_id.strip(), "Customer")
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    customers = CustomerService(session).list(include_inactive=True)
+    payments = PaymentService(session).list(customer_id=customer)
+    return templates.TemplateResponse(
+        request,
+        "payments/list.html",
+        {
+            "payments": payments,
+            "unapplied": {p.id: unapplied(session, p.id) for p in payments},  # type: ignore[arg-type]
+            "customers": {c.id: c for c in customers},
+            "customer_id": customer,
+            "tab": "payments",
+        },
+    )
+
+
+@router.get("/payments/new", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
+async def payment_new(
+    request: Request, customer_id: str = "", session: Session = Depends(get_session)
+) -> HTMLResponse:
+    try:
+        chosen = _id_param(customer_id.strip(), "Customer")
+        customer = CustomerService(session).get(chosen) if chosen is not None else None
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    if customer is None:
+        return templates.TemplateResponse(
+            request,
+            "payments/form.html",
+            {"customer": None, "customers": CustomerService(session).list(), "tab": "payments"},
+        )
+    _, default = _deposit_accounts(session)
+    values = {
+        "received_date": str(company_today()),
+        "amount": "",
+        "method": "check",
+        "reference": "",
+        "memo": "",
+        "deposit_account_id": str(default or ""),
+        "oldest_first": "1",
+    }
+    return _payment_form(request, session, customer=customer, values=values, typed={})
+
+
+@router.post("/payments/new", response_class=HTMLResponse)
+async def payment_create(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    values = {
+        "customer_id": _text(form.get("customer_id")),
+        "received_date": _text(form.get("received_date")),
+        "amount": _text(form.get("amount")),
+        "method": _text(form.get("method")),
+        "reference": _text(form.get("reference")),
+        "memo": _text(form.get("memo")),
+        "deposit_account_id": _text(form.get("deposit_account_id")),
+        "oldest_first": "1" if form.get("oldest_first") else "",
+    }
+    typed = _amounts_from_form(form)
+    try:
+        customer_id = _id_param(values["customer_id"], "Customer")
+        customer = CustomerService(session).get(customer_id) if customer_id is not None else None
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    if customer is None:
+        return _error_partial(request, _payment_error("Choose a customer"))
+    try:
+        received = _parse_date(values["received_date"], "Received date")
+        if received is None:
+            raise _payment_error("Enter the date received")
+        try:
+            amount = parse_amount(values["amount"])
+        except ValueError as exc:
+            raise _payment_error(str(exc)) from exc
+        account_id = _id_param(values["deposit_account_id"], "Deposit account")
+        if account_id is None:
+            raise _payment_error("Choose where the money was deposited")
+        inputs = _typed_inputs(typed)
+        if not inputs and values["oldest_first"]:
+            inputs = allocate_oldest_first(session, customer.id, amount)  # type: ignore[arg-type]
+        payment = PaymentService(session).record(
+            actor=actor,
+            customer_id=customer.id,  # type: ignore[arg-type]
+            received_date=received,
+            amount=amount,
+            deposit_account_id=account_id,
+            method=values["method"],
+            reference=values["reference"] or None,
+            memo=values["memo"] or None,
+            applications=inputs,
+        )
+    except AppBaseError as exc:
+        return _payment_form(
+            request,
+            session,
+            customer=customer,
+            values=values,
+            typed=typed,
+            error=exc.message,
+            status_code=exc.http_code,
+        )
+    return RedirectResponse(f"/payments/{payment.id}", status_code=303)
+
+
+def _payment_page(
+    request: Request,
+    session: Session,
+    payment_id: int,
+    *,
+    error: str | None = None,
+    typed: dict[str, str] | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    service = PaymentService(session)
+    try:
+        payment = service.get(payment_id)
+        customer = CustomerService(session).get(payment.customer_id)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    invoices = {
+        i.id: i
+        for i in session.exec(
+            select(Invoice).where(
+                col(Invoice.id).in_([a.invoice_id for a in service.applications(payment_id)])
+            )
+        ).all()
+    }
+    deposit = session.get(Account, payment.deposit_account_id)
+    left = unapplied(session, payment_id)
+    return templates.TemplateResponse(
+        request,
+        "payments/view.html",
+        {
+            "payment": payment,
+            "customer": customer,
+            "deposit": deposit,
+            "applications": service.applications(payment_id),
+            "invoices": invoices,
+            "unapplied": left,
+            "open_invoices": _open_invoices(session, customer.id)  # type: ignore[arg-type]
+            if left > 0
+            else [],
+            "typed": typed or {},
+            "today": str(company_today()),
+            "error": error,
+            "tab": "payments",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/payments/{payment_id}", response_class=HTMLResponse)
+async def payment_view(
+    request: Request, payment_id: int, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    return _payment_page(request, session, payment_id)
+
+
+@router.post("/payments/{payment_id}/apply", response_class=HTMLResponse)
+async def payment_apply(
+    request: Request,
+    payment_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    typed = _amounts_from_form(form)
+    try:
+        service = PaymentService(session)
+        payment = service.get(payment_id)
+        inputs = _typed_inputs(typed)
+        if not inputs and form.get("oldest_first"):
+            inputs = allocate_oldest_first(
+                session,
+                payment.customer_id,
+                unapplied(session, payment_id),
+                exclude={a.invoice_id for a in service.applications(payment_id)},
+            )
+        service.apply(payment_id, actor=actor, applications=inputs)
+    except AppBaseError as exc:
+        return _payment_page(
+            request, session, payment_id, error=exc.message, typed=typed, status_code=exc.http_code
+        )
+    return RedirectResponse(f"/payments/{payment_id}", status_code=303)
+
+
+@router.post("/payments/{payment_id}/void", response_class=HTMLResponse)
+async def payment_void(
+    request: Request,
+    payment_id: int,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    try:
+        void_date = _parse_date(_text(form.get("void_date")), "Void date")
+        if void_date is None:
+            raise _payment_error("Enter a void date")
+        PaymentService(session).void(
+            payment_id, actor=actor, void_date=void_date, memo=_text(form.get("memo")) or None
+        )
+    except AppBaseError as exc:
+        return _payment_page(
+            request, session, payment_id, error=exc.message, status_code=exc.http_code
+        )
+    return RedirectResponse(f"/payments/{payment_id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Receive payment · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary">Receive payment</div>
+    <div class="card-body">
+      {% if customer is none %}
+      <form method="get" action="/payments/new" class="row g-2 align-items-end" id="pay-customer-form">
+        <div class="col-md-5">
+          <label class="form-label" for="customer_id">Customer</label>
+          <select class="form-select" id="customer_id" name="customer_id" required>
+            <option value="">Choose a customer</option>
+            {% for c in customers %}
+            <option value="{{ c.id }}">{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto"><button type="submit" class="btn btn-brand">Continue</button></div>
+      </form>
+      {% else %}
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/payments/new" id="pay-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="customer_id" value="{{ customer.id }}">
+        <p class="mb-3"><strong>Customer:</strong> {{ customer.name }} <a class="ms-2 small" href="/payments/new">Change</a></p>
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label class="form-label" for="received_date">Date received</label>
+            <input class="form-control" type="date" id="received_date" name="received_date" required value="{{ values.received_date }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="amount">Amount</label>
+            <input class="form-control num" id="amount" name="amount" inputmode="decimal" autocomplete="off" required value="{{ values.amount }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="method">Method</label>
+            <select class="form-select" id="method" name="method" required>
+              {% for m in methods %}
+              <option value="{{ m }}"{% if values.method == m %} selected{% endif %}>{{ m | capitalize }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="reference">Reference</label>
+            <input class="form-control" id="reference" name="reference" maxlength="100" value="{{ values.reference }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="deposit_account_id">Deposit to</label>
+            <select class="form-select" id="deposit_account_id" name="deposit_account_id" required>
+              {% for a in accounts %}
+              <option value="{{ a.id }}"{% if values.deposit_account_id == a.id | string %} selected{% endif %}>{{ a.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label" for="memo">Memo</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <h2 class="h6">Open invoices</h2>
+        {% if open_invoices %}
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>Invoice</th><th>Due</th><th class="num">Total</th><th class="num">Balance</th><th class="num">Apply</th></tr>
+          </thead>
+          <tbody>
+            {% for row in open_invoices %}
+            <tr>
+              <td><a href="/invoices/{{ row.invoice.id }}">#{{ row.invoice.number }}</a></td>
+              <td>{{ row.invoice.due_date }}</td>
+              <td class="num">{{ row.invoice.total | currency }}</td>
+              <td class="num">{{ row.balance | currency }}</td>
+              <td><input class="form-control form-control-sm num" name="apply_{{ row.invoice.id }}" inputmode="decimal" autocomplete="off" aria-label="Amount to apply to invoice {{ row.invoice.number }}" value="{{ typed.get(row.invoice.id | string, '') }}"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="oldest_first" name="oldest_first" value="1"{% if values.oldest_first %} checked{% endif %}>
+          <label class="form-check-label" for="oldest_first">Apply oldest first (used when no amounts are typed above)</label>
+        </div>
+        {% else %}
+        <p class="text-muted">This customer has no open invoices; the payment will be kept as credit.</p>
+        {% endif %}
+        <button type="submit" class="btn btn-success">Record payment</button>
+        <a class="btn btn-outline-secondary" href="/payments">Cancel</a>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -35,8 +35,20 @@
         </tbody>
         <tfoot>
           <tr class="fw-bold"><td colspan="4">Total</td><td class="num">{{ invoice.total | currency }}</td></tr>
+          {% if invoice.status == "open" %}
+          <tr><td colspan="4">Paid</td><td class="num" id="inv-paid">{{ applied | currency }}</td></tr>
+          <tr class="fw-bold"><td colspan="4">Balance due</td><td class="num" id="inv-balance">{{ balance | currency }}</td></tr>
+          {% endif %}
         </tfoot>
       </table>
+      {% if applications %}
+      <h2 class="h6">Payments applied</h2>
+      <ul class="list-unstyled">
+        {% for app, pay in applications %}
+        <li><a href="/payments/{{ pay.id }}">{{ pay.received_date }} {{ (pay.method or "") | capitalize }}{% if pay.reference %} {{ pay.reference }}{% endif %}</a>: {{ app.amount | currency }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
       <div class="no-print d-flex gap-2">
         {% if is_owner and invoice.status == "draft" %}
         <a class="btn btn-brand" href="/invoices/{{ invoice.id }}/edit">Edit draft</a>
@@ -51,6 +63,9 @@
         {% endif %}
         {% if is_owner and invoice.status == "open" and not has_payments %}
         <a class="btn btn-brand" href="/invoices/{{ invoice.id }}/edit">Edit invoice</a>
+        {% endif %}
+        {% if is_owner and invoice.status == "open" and balance > 0 %}
+        <a class="btn btn-success" href="/payments/new?customer_id={{ invoice.customer_id }}">Receive payment</a>
         {% endif %}
         <a class="btn btn-outline-secondary" href="/invoices">Back to invoices</a>
       </div>

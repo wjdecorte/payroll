@@ -109,3 +109,9 @@ class InvalidRefundError(AppBaseError):
 class ARNotConfiguredError(AppBaseError):
     message: str = "The Accounts Receivable account role is not set up"
     http_code: int = 422
+
+
+@dataclass
+class PaymentStateError(AppBaseError):
+    message: str = "The payment is not in a state that allows this"
+    http_code: int = 409

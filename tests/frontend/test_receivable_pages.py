@@ -11,6 +11,7 @@ from payroll.receivables.customers import CustomerService
 from payroll.receivables.invoices import InvoiceLineInput, InvoiceService
 from payroll.receivables.items import ItemService
 from payroll.receivables.models import Customer, Item, Payment, PaymentApplication
+from payroll.receivables.payments import PaymentService
 from payroll.receivables.settings import ReceivablesSettingsService
 from payroll.reports.periods import company_today
 from tests.ledger.conftest import chart  # noqa: F401
@@ -350,3 +351,201 @@ def test_viewer_gets_403_on_issue_void_replace(viewer_client, owner_user, sessio
     assert viewer_client.get(f"/invoices/{open_invoice.id}/edit").status_code == 403
     session.refresh(open_invoice)
     assert open_invoice.status == "open"
+
+
+# ---------------------------------------------------------------------------
+# Payments
+# ---------------------------------------------------------------------------
+
+
+def _invoice_for(session, owner_user, customer, item, price, day):
+    service = InvoiceService(session)
+    draft = service.create_draft(
+        actor=owner_user,
+        customer_id=customer.id,
+        invoice_date=day,
+        lines=[InvoiceLineInput(item.id, "Work", Decimal("1"), Decimal(price))],
+    )
+    return service.issue(draft.id, actor=owner_user)
+
+
+def _pay_form(customer, chart, **fields):
+    data = {
+        "customer_id": str(customer.id),
+        "received_date": "2026-03-10",
+        "amount": "100.00",
+        "method": "check",
+        "reference": "1001",
+        "memo": "",
+        "deposit_account_id": str(chart["Undeposited Funds"].id),
+    }
+    data.update(fields)
+    return data
+
+
+def _applied(session):
+    session.expire_all()
+    return {a.invoice_id: a.amount for a in session.exec(select(PaymentApplication)).all()}
+
+
+def test_record_payment_form_oldest_first(owner_client, owner_user, session, chart):
+    first, customer, item = _open_invoice(session, owner_user, chart)  # 300.00, due 2026-03-31
+    second = _invoice_for(session, owner_user, customer, item, "50.00", date(2026, 2, 1))
+    response = owner_client.post(
+        "/payments/new",
+        data=_pay_form(customer, chart, amount="320.00", oldest_first="1"),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    payment = session.exec(select(Payment)).one()
+    assert response.headers["location"] == f"/payments/{payment.id}"
+    assert _applied(session) == {second.id: Decimal("50.00"), first.id: Decimal("270.00")}
+    page = owner_client.get(response.headers["location"])
+    assert "1001" in page.text and "$0.00" in page.text
+    assert f"/invoices/{first.id}" in page.text
+    # the invoice page shows paid and balance, and links the payment
+    invoice_page = owner_client.get(f"/invoices/{first.id}")
+    assert 'id="inv-paid">$270.00' in invoice_page.text
+    assert 'id="inv-balance">$30.00' in invoice_page.text
+    assert f"/payments/{payment.id}" in invoice_page.text
+    assert f"/payments/new?customer_id={customer.id}" in invoice_page.text
+    assert "Acme" in owner_client.get("/payments").text
+
+
+def test_typed_amounts_override_oldest_first(owner_client, owner_user, session, chart):
+    first, customer, item = _open_invoice(session, owner_user, chart)
+    older = _invoice_for(session, owner_user, customer, item, "50.00", date(2026, 2, 1))
+    response = owner_client.post(
+        "/payments/new",
+        data=_pay_form(customer, chart, amount="100.00", oldest_first="1")
+        | {f"apply_{first.id}": "40.00"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert _applied(session) == {first.id: Decimal("40.00")}  # not the older invoice
+    assert older.id not in _applied(session)
+    payment = session.exec(select(Payment)).one()
+    # the 60.00 left over is applied later from the payment page, oldest first
+    page = owner_client.get(f"/payments/{payment.id}")
+    assert f'action="/payments/{payment.id}/apply"' in page.text
+    applied = owner_client.post(
+        f"/payments/{payment.id}/apply", data={"oldest_first": "1"}, follow_redirects=False
+    )
+    assert applied.status_code == 303
+    # 60.00 left: the older invoice takes 50.00; the first invoice already has a row for this
+    # payment (one row per payment and invoice), so it is skipped and 10.00 stays unapplied
+    assert _applied(session) == {first.id: Decimal("40.00"), older.id: Decimal("50.00")}
+
+
+def test_payment_form_errors_rerender_422(owner_client, owner_user, session, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart)
+    bad_amount = owner_client.post(
+        "/payments/new", data=_pay_form(customer, chart, amount="1.234", reference="keep-me")
+    )
+    assert bad_amount.status_code == 422 and 'value="keep-me"' in bad_amount.text
+    over = owner_client.post(
+        "/payments/new",
+        data=_pay_form(customer, chart, amount="900.00") | {f"apply_{invoice.id}": "400.00"},
+    )
+    assert over.status_code == 409 and 'value="400.00"' in over.text
+    no_date = owner_client.post("/payments/new", data=_pay_form(customer, chart, received_date=""))
+    assert no_date.status_code == 422 and "date received" in no_date.text
+    assert session.exec(select(Payment)).all() == []
+    assert owner_client.get("/payments/new?customer_id=99999").status_code == 404
+    assert owner_client.get("/payments/9999").status_code == 404
+
+
+def test_step_one_customer_picker_lists_open_invoices(owner_client, owner_user, session, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart)
+    other = CustomerService(session).create(actor=owner_user, name="Zed Co")
+    foreign = _invoice_for(session, owner_user, other, item, "77.00", date(2026, 3, 2))
+    picker = owner_client.get("/payments/new")
+    assert picker.status_code == 200
+    assert "Acme" in picker.text and "Zed Co" in picker.text and 'id="pay-form"' not in picker.text
+    form = owner_client.get(f"/payments/new?customer_id={customer.id}")
+    assert 'id="pay-form"' in form.text
+    assert f'name="apply_{invoice.id}"' in form.text and "#1001" in form.text
+    assert f'name="apply_{foreign.id}"' not in form.text
+    assert "$300.00" in form.text and "Undeposited Funds" in form.text
+    assert 'name="oldest_first" value="1" checked' in form.text
+    assert f'value="{company_today()}"' in form.text
+    selected = f'<option value="{chart["Undeposited Funds"].id}" selected>'
+    assert selected in form.text
+
+
+def test_void_payment_form_defaults_to_today(owner_client, owner_user, session, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart)
+    owner_client.post(
+        "/payments/new", data=_pay_form(customer, chart) | {f"apply_{invoice.id}": "100.00"}
+    )
+    payment = session.exec(select(Payment)).one()
+    page = owner_client.get(f"/payments/{payment.id}")
+    assert f'name="void_date" value="{company_today()}"' in page.text
+    bad = owner_client.post(f"/payments/{payment.id}/void", data={"void_date": ""})
+    assert bad.status_code == 422 and "Enter a void date" in bad.text
+    session.refresh(payment)
+    assert payment.status == "posted"
+    ok = owner_client.post(
+        f"/payments/{payment.id}/void",
+        data={"void_date": "2026-03-12", "memo": "Bounced"},
+        follow_redirects=False,
+    )
+    assert ok.status_code == 303
+    session.refresh(payment)
+    assert (payment.status, payment.void_date) == ("void", date(2026, 3, 12))
+    after = owner_client.get(f"/payments/{payment.id}")
+    assert "/void" not in after.text and "2026-03-12" in after.text
+    again = owner_client.post(f"/payments/{payment.id}/void", data={"void_date": "2026-03-12"})
+    assert again.status_code == 409
+    invoice_page = owner_client.get(f"/invoices/{invoice.id}")
+    assert 'id="inv-balance">$300.00' in invoice_page.text
+
+
+def test_xss_in_payment_reference_and_memo_escaped(owner_client, owner_user, session, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart)
+    created = owner_client.post(
+        "/payments/new",
+        data=_pay_form(customer, chart, reference=XSS[:60], memo=XSS)
+        | {f"apply_{invoice.id}": "100.00"},
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    payment = session.exec(select(Payment)).one()
+    for url in (f"/payments/{payment.id}", f"/invoices/{invoice.id}", "/payments"):
+        text = owner_client.get(url).text
+        assert "<script>alert(1)" not in text
+    assert (
+        "&lt;script&gt;alert(1)&lt;/script&gt;" in owner_client.get(f"/payments/{payment.id}").text
+    )
+    bad = owner_client.post(
+        "/payments/new", data=_pay_form(customer, chart, reference=XSS, memo=XSS, amount="x")
+    )
+    assert bad.status_code == 422 and "<script>alert(1)" not in bad.text
+
+
+def test_viewer_gets_403_on_record_apply_void(viewer_client, owner_user, session, chart):
+    invoice, customer, item = _open_invoice(session, owner_user, chart)
+    payment = PaymentService(session).record(
+        actor=owner_user,
+        customer_id=customer.id,
+        received_date=date(2026, 3, 10),
+        amount=Decimal("100.00"),
+        deposit_account_id=chart["Undeposited Funds"].id,
+        method="cash",
+    )
+    page = viewer_client.get(f"/payments/{payment.id}")
+    assert page.status_code == 200
+    assert "/void" not in page.text and "/apply" not in page.text
+    assert viewer_client.get("/payments").status_code == 200
+    assert viewer_client.get("/payments/new").status_code == 403
+    for path, data in (
+        ("/payments/new", _pay_form(customer, chart)),
+        (f"/payments/{payment.id}/apply", {f"apply_{invoice.id}": "10.00"}),
+        (f"/payments/{payment.id}/void", {"void_date": "2026-03-12"}),
+    ):
+        assert viewer_client.post(path, data=data).status_code == 403
+    session.expire_all()
+    assert session.exec(select(PaymentApplication)).all() == []
+    assert session.get(Payment, payment.id).status == "posted"
+    invoice_page = viewer_client.get(f"/invoices/{invoice.id}")
+    assert "Receive payment" not in invoice_page.text
