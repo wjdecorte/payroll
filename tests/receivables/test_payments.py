@@ -532,7 +532,7 @@ def test_void_refused_when_deposited(session, owner_user, customer, item, chart)
 
 
 def test_void_in_locked_period_rejected(session, owner_user, customer, item, chart):
-    payment = _record(session, owner_user, customer, chart)
+    payment = _record(session, owner_user, customer, chart, received_date=date(2026, 1, 10))
     _set_lock(session, date(2026, 3, 15))
     with pytest.raises(PeriodLockedError):
         PaymentService(session).void(payment.id, actor=owner_user, void_date=date(2026, 3, 20))
@@ -845,3 +845,19 @@ def test_four_account_void_then_repay_ends_exact(
     assert _balance(session, invoice) == D("0.00")
     assert _live_slices(session, invoice.id) == _expected(items, prices)
     assert _cash_income(session) == _expected(items, prices)
+
+
+def test_void_before_the_payment_date_refused_and_on_the_date_allowed(
+    session, owner_user, customer, item, chart
+):
+    payment = _record(session, owner_user, customer, chart)  # received 2026-03-01
+    entries = session.exec(select(func.count()).select_from(JournalEntry)).one()
+    with pytest.raises(InvalidPaymentError) as exc:
+        PaymentService(session).void(payment.id, actor=owner_user, void_date=date(2026, 2, 28))
+    assert exc.value.message == "The void date cannot be before the payment date (2026-03-01)"
+    session.refresh(payment)
+    assert payment.status == "posted" and payment.void_date is None
+    assert session.exec(select(func.count()).select_from(JournalEntry)).one() == entries
+    PaymentService(session).void(payment.id, actor=owner_user, void_date=DAY)
+    session.refresh(payment)
+    assert payment.status == "void" and payment.void_date == DAY

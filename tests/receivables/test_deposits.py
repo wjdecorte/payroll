@@ -357,3 +357,23 @@ def test_owner_only_and_audited(session, owner_user, customer, chart):
     assert created[0].after["payment_ids"] == [payment.id]
     assert voided[0].after["freed_payment_ids"] == [payment.id]
     assert voided[0].before["status"] == "posted"
+
+
+def test_deposit_void_before_the_deposit_date_refused_and_on_the_date_allowed(
+    session, owner_user, customer, chart
+):
+    payment = _pay(session, owner_user, customer, chart)
+    deposit = _deposit(session, owner_user, chart, [payment])
+    entries = _entry_count(session)
+    with pytest.raises(InvalidDepositError) as exc:
+        DepositService(session).void(
+            deposit.id, actor=owner_user, void_date=date(deposit.deposit_date.year, 1, 1)
+        )
+    assert exc.value.message == (
+        f"The void date cannot be before the deposit date ({deposit.deposit_date})"
+    )
+    session.refresh(deposit)
+    assert deposit.status == "posted" and _entry_count(session) == entries
+    DepositService(session).void(deposit.id, actor=owner_user, void_date=deposit.deposit_date)
+    session.refresh(deposit)
+    assert deposit.status == "void"

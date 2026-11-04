@@ -528,3 +528,23 @@ def test_backdated_payment_void_refused_when_past_credit_would_go_negative(
     PaymentService(session).void(p1.id, actor=owner_user, void_date=date(2026, 4, 5))
     assert _credit(session, customer) == D("0.00")
     assert _credit(session, customer, date(2026, 3, 25)) == D("0.00")
+
+
+def test_refund_void_before_the_refund_date_refused_and_on_the_date_allowed(
+    session, owner_user, customer, chart
+):
+    _pay(session, owner_user, customer, chart)
+    refund = _refund(session, owner_user, customer, chart)
+    entries = _entry_count(session)
+    with pytest.raises(InvalidRefundError) as exc:
+        RefundService(session).void(
+            refund.id, actor=owner_user, void_date=date(refund.refund_date.year, 1, 1)
+        )
+    assert exc.value.message == (
+        f"The void date cannot be before the refund date ({refund.refund_date})"
+    )
+    session.refresh(refund)
+    assert refund.status == "posted" and _entry_count(session) == entries
+    RefundService(session).void(refund.id, actor=owner_user, void_date=refund.refund_date)
+    session.refresh(refund)
+    assert refund.status == "void"

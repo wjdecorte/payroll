@@ -2,7 +2,7 @@
 
 import functools
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -13,6 +13,16 @@ from payroll.ledger.models import Account, SystemRole
 
 def utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)  # AppBaseModel stores naive UTC
+
+
+def check_void_date(
+    void_date: object, document_date: date, what: str, error_cls: type[AppBaseError]
+) -> None:
+    """Refuse a void dated before the document: the reversal would precede the original."""
+    if not isinstance(void_date, date) or void_date < document_date:
+        raise error_cls(
+            message=f"The void date cannot be before the {what} date ({document_date.isoformat()})"
+        )
 
 
 def conflict_safe[**P, R](

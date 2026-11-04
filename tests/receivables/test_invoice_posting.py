@@ -2,7 +2,7 @@
 
 # ruff: noqa: F811  (the ``chart`` fixture is re-exported by conftest and used as an argument)
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -371,7 +371,7 @@ def test_void_in_locked_period_rejected(session, owner_user, customer, item):
 
 
 def test_void_date_in_locked_period_rejected(session, owner_user, customer, item):
-    invoice = _issued(session, owner_user, customer, item, invoice_date=date(2026, 4, 2))
+    invoice = _issued(session, owner_user, customer, item, invoice_date=date(2026, 3, 1))
     _set_lock(session, date(2026, 3, 31))
     with pytest.raises(PeriodLockedError):
         InvoiceService(session).void(invoice.id, actor=owner_user, void_date=date(2026, 3, 15))
@@ -481,3 +481,19 @@ def test_issue_and_replace_skip_zero_amount_income_account(
     )
     assert [ln.credit for ln in _entry_lines(session, replaced.entry_id)] == [D("0.00"), D("60.00")]
     assert _ar_balance(session, chart) == D("60.00")
+
+
+def test_void_before_the_invoice_date_refused_and_on_the_date_allowed(
+    session, owner_user, customer, item
+):
+    invoice = _issued(session, owner_user, customer, item)
+    with pytest.raises(InvalidInvoiceError) as exc:
+        InvoiceService(session).void(
+            invoice.id, actor=owner_user, void_date=DAY - timedelta(days=1)
+        )
+    assert exc.value.message == f"The void date cannot be before the invoice date ({DAY})"
+    session.refresh(invoice)
+    assert invoice.status == "open" and invoice.void_date is None
+    InvoiceService(session).void(invoice.id, actor=owner_user, void_date=DAY)
+    session.refresh(invoice)
+    assert invoice.status == "void" and invoice.void_date == DAY

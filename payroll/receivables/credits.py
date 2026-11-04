@@ -27,7 +27,12 @@ from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import commit_or_rollback, locked_role_account, utcnow_naive
+from payroll.receivables._common import (
+    check_void_date,
+    commit_or_rollback,
+    locked_role_account,
+    utcnow_naive,
+)
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
     InvalidPaymentError,
@@ -270,6 +275,7 @@ class RefundService:
                 raise RefundNotFoundError()
             if refund.status != "posted":
                 raise RefundStateError(message="The refund is already void")
+            check_void_date(void_date, refund.refund_date, "refund", InvalidRefundError)
             before = self._snapshot(refund)
             reversal = LedgerPostingService(self.session).void(
                 refund.entry_id,  # type: ignore[arg-type]

@@ -28,7 +28,7 @@ from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import utcnow_naive
+from payroll.receivables._common import check_void_date, utcnow_naive
 from payroll.receivables.exceptions import (
     DepositError,
     DepositNotFoundError,
@@ -184,6 +184,7 @@ class DepositService:
                 raise DepositNotFoundError()
             if deposit.status != "posted":
                 raise DepositError(message="The deposit is already void")
+            check_void_date(void_date, deposit.deposit_date, "deposit", InvalidDepositError)
             payments = list(
                 self.session.exec(
                     select(Payment)

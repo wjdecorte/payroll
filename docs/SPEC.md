@@ -133,7 +133,8 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    re-recording it. Credit can never go negative on any past date.
 3. **No JSON API for receivables documents** (pages only). The A/R Aging CSV/PDF also appear
    under the M1 report API as read-only exports. Importers (M6) call the services directly.
-4. **Invoice rules.** Integer numbers assigned on issue from a settable next number (above
+4. **Void dates.** A void (invoice, payment, deposit or refund) must be dated on or after the document itself, so a reversal never precedes the original.
+4a. **Invoice rules.** Integer numbers assigned on issue from a settable next number (above
    every number used; voided numbers are never reused). Draft, Open, Void are stored; Partial,
    Paid and Overdue are derived. An open invoice can be edited only while nothing is applied
    (edit = reverse and re-post on the same date and number). Void needs no applied payments and

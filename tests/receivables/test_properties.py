@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
-from hypothesis import HealthCheck, Phase, example, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from payroll.exceptions import AppBaseError
@@ -360,28 +360,9 @@ def test_random_receivable_activity_keeps_trial_balance_balanced(world, ops):
         assert trial.total_debit == trial.total_credit
 
 
-# KNOWN DEFECT (reported with the Task 12 handoff, not fixed here): InvoiceService.void,
-# PaymentService.void and RefundService.void accept a void date EARLIER than the document's own
-# date. The reversing ledger entry then lands before the original, so for the dates between them
-# the ledger A/R balance and the subledger disagree. Minimal counterexamples:
-#   invoice dated 2026-04-01 (0.01), voided with void_date 2026-01-01  -> difference 0.01 at 03-31
-#   payment 57.64 received 2026-08-17, voided with void_date 2026-03-09 -> difference -57.64 at 03-31
-#   customer credit 100.00, refund 50.00 dated 2026-09-01 voided 2026-04-01 -> difference 50.00
-# The property itself is NOT weakened; it is marked strict xfail (so it fails loudly the moment the
-# defect is fixed and the marker must be removed) and shrinking is off because it takes minutes.
-KNOWN_VOID_DATE_DEFECT = pytest.mark.xfail(
-    strict=True,
-    reason="void dates before the document date are accepted (see the comment above)",
-)
-
-
-@KNOWN_VOID_DATE_DEFECT
-@settings(
-    parent=SETTINGS,
-    max_examples=60,
-    phases=[Phase.explicit, Phase.reuse, Phase.generate],
-    database=None,
-)
+# Regression cases: voids dated before the document are refused (the model skips them), so the
+# A/R subledger keeps matching the ledger on every date.
+@SETTINGS
 @example(
     ops=[("invoice", 0, date(2026, 4, 1), D("0.01"), 1), ("void_invoice", 0, date(2026, 1, 1))]
 )
@@ -483,3 +464,12 @@ def test_ar_subledger_property_is_not_vacuous_on_a_clean_scenario(world):
         assert aging.difference == ZERO
     mid = ar_aging(model.session, date(2026, 4, 1))
     assert mid.totals.total == D("60.00")
+
+
+def test_a_void_dated_before_the_document_is_refused_by_the_model_run(world):
+    model = world()
+    model.run(("invoice", 0, date(2026, 4, 1), D("5.00"), 1))
+    model.run(("void_invoice", 0, date(2026, 1, 1)))
+    assert len(model.live_invoices) == 1  # refused, still live
+    model.run(("void_invoice", 0, date(2026, 4, 1)))
+    assert not model.live_invoices

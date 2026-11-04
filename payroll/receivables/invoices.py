@@ -23,7 +23,7 @@ from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.money import round_money
 from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import utcnow_naive
+from payroll.receivables._common import check_void_date, utcnow_naive
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
     InvalidInvoiceError,
@@ -330,6 +330,7 @@ class InvoiceService:
 
         def work() -> Invoice:
             invoice = self._locked_open(invoice_id, "Only an open invoice can be voided")
+            check_void_date(void_date, invoice.invoice_date, "invoice", InvalidInvoiceError)
             self._require_no_applications(invoice, "voided")
             before = self._snapshot(invoice)
             reversal = LedgerPostingService(self.session).void(

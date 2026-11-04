@@ -77,7 +77,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="col-auto">
           <label class="form-label" for="void_date">Void date</label>
-          <input type="date" class="form-control" id="void_date" name="void_date" value="{{ today }}" required>
+          <input type="date" class="form-control" id="void_date" name="void_date" value="{{ void_default }}" required>
         </div>
         <div class="col-auto">
           <label class="form-label" for="void_memo">Memo (optional)</label>

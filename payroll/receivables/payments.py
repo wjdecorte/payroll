@@ -39,7 +39,7 @@ from payroll.ledger.models import (
     SystemRole,
 )
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import utcnow_naive
+from payroll.receivables._common import check_void_date, utcnow_naive
 from payroll.receivables.credits import min_credit_from
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
@@ -286,6 +286,7 @@ class PaymentService:
                 deposit = self.session.get(Deposit, payment.deposit_id)
                 if deposit is not None and deposit.status == "posted":
                     raise DepositError(message="Void the deposit first")
+            check_void_date(void_date, payment.received_date, "payment", InvalidPaymentError)
             if self._void_makes_credit_negative(payment, void_date):
                 raise PaymentStateError(
                     message="Part of this payment was refunded; void the refund first"

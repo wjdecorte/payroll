@@ -97,6 +97,8 @@ First use, as the owner:
 3. Add customers and items, then invoices, payments and deposits. `seed-demo` now also creates
    demo receivables; never run it against real books.
 
+Voiding an invoice, payment, deposit or refund needs a void date on or after the document's own date (an earlier date is refused).
+
 Cash-basis note: reports default to cash basis, where income appears when an invoice is paid
 (on the later of the payment and invoice dates). Applications cannot be created on or before the
 period-lock date, and a payment cannot be voided into a locked period; fix a misapplied payment
