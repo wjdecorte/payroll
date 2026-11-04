@@ -486,16 +486,18 @@ class PaymentService:
         return audit
 
     def _income_split(self, invoice: Invoice, amount: Decimal) -> list[tuple[int, Decimal]]:
-        """Split ``amount`` over the invoice's income accounts, cumulatively.
+        """Split ``amount`` over the invoice's income accounts, cumulatively and capped.
 
         ``prior`` is what live (posted-payment) applications already cover and ``prior_A`` the
-        slices they stored for account ``A``. After this application ``A`` should have
-        ``round_money((prior + amount) x total_A / invoice_total)``; the slice is the
-        difference (never negative, never more than what is left of ``amount``) for every
-        account but the last (by number, then id), which takes the remainder so the slices sum
-        exactly to ``amount``. Rounding therefore never accumulates: once the invoice is fully
-        applied each account's slices sum exactly to its invoice total. Zero slices are not
-        stored.
+        slices they stored for account ``A``; ``cap_A = total_A - prior_A`` is what ``A`` can
+        still take. Each slice starts at ``round_money((prior + amount) x total_A / G) -
+        prior_A`` limited to ``0..cap_A``. The cents that rounding leaves over (or adds) are
+        then handed out (or taken back) so the slices sum to ``amount`` exactly, never going
+        outside ``0..cap_A``: extra cents go to the accounts with the largest rounding
+        shortfall first, take-backs from the smallest. Since the caps sum to at least
+        ``amount``, there is always room, and a payment that clears the invoice fills every
+        cap, so each account's live slices end exactly at its invoice total, for any number of
+        accounts and any installment sizes. Zero slices are not stored.
         """
         totals: dict[int, Decimal] = {}
         for line in self.session.exec(
@@ -527,18 +529,30 @@ class PaymentService:
                 .group_by(col(ApplicationIncome.account_id))
             ).all()
         }
-        remaining = amount
-        out: list[tuple[int, Decimal]] = []
-        for position, aid in enumerate(ordered):
-            if position == len(ordered) - 1:
-                piece = remaining
-            else:
-                target = round_money((prior + amount) * totals[aid] / grand)
-                piece = max(ZERO, min(target - prior_by_account.get(aid, ZERO), remaining))
-            remaining -= piece
-            if piece > 0:
-                out.append((aid, piece))
-        return out
+        cap = {aid: totals[aid] - prior_by_account.get(aid, ZERO) for aid in ordered}
+        slices: dict[int, Decimal] = {}
+        shortfall: dict[int, Decimal] = {}
+        for aid in ordered:
+            exact = (prior + amount) * totals[aid] / grand - prior_by_account.get(aid, ZERO)
+            wanted = round_money(exact)
+            slices[aid] = max(ZERO, min(wanted, cap[aid]))
+            shortfall[aid] = exact - slices[aid]
+        # largest shortfall first (ties: account number, then id; ``ordered`` is stable)
+        by_shortfall = sorted(ordered, key=lambda aid: -shortfall[aid])
+        leftover = amount - sum(slices.values(), ZERO)
+        for aid in by_shortfall:
+            if leftover <= 0:
+                break
+            add = min(cap[aid] - slices[aid], leftover)
+            slices[aid] += add
+            leftover -= add
+        for aid in reversed(by_shortfall):
+            if leftover >= 0:
+                break
+            take = min(slices[aid], -leftover)
+            slices[aid] -= take
+            leftover += take
+        return [(aid, slices[aid]) for aid in ordered if slices[aid] > 0]
 
     def _post_entry(
         self, payment: Payment, customer: Customer, deposit: Account, ar: Account, actor: User

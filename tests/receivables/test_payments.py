@@ -247,9 +247,10 @@ def test_application_income_split_sums_exactly(session, owner_user, customer, ch
     slices, app = _split(
         session, owner_user, customer, chart, three_incomes, ["33.34", "33.33", "33.33"], "99.99"
     )
-    # shares of 99.99 over 33.34/33.33/33.33 of 100.00: 33.34 / 33.33 / remainder 33.32
+    # true shares of 99.99: 33.3367 / 33.3267 / 33.3267; rounding gives 100.00, one cent too
+    # much, which is taken back from the account rounded up the most
     assert sum(slices) == D("99.99") and len(slices) == 3
-    assert slices == [D("33.34"), D("33.33"), D("33.32")]
+    assert slices == [D("33.33"), D("33.33"), D("33.33")]
 
     equal, _ = _split(
         session, owner_user, customer, chart, three_incomes, ["33.33", "33.33", "33.33"], "33.33"
@@ -754,3 +755,93 @@ def test_void_then_repay_ends_with_exact_live_and_cash_basis_totals(
         )
     }
     assert totals == _expected(items, prices)
+
+
+def _pay_checked(session, owner_user, customer, chart, invoice, items, prices, parts):
+    """Pay in installments; per application: 0 < slice <= remaining cap, slices sum to amount."""
+    expected = _expected(items, prices)
+    for part in parts:
+        caps = {
+            a: t - _live_slices(session, invoice.id).get(a, D("0.00")) for a, t in expected.items()
+        }
+        payment = _record(
+            session, owner_user, customer, chart, part, applications=_apps((invoice, part))
+        )
+        app = session.exec(
+            select(PaymentApplication).where(PaymentApplication.payment_id == payment.id)
+        ).one()
+        rows = session.exec(
+            select(ApplicationIncome).where(ApplicationIncome.application_id == app.id)
+        ).all()
+        assert sum((r.amount for r in rows), D("0.00")) == D(part)
+        for r in rows:
+            assert D("0.00") < r.amount <= caps[r.account_id]
+    return payment
+
+
+def _cash_income(session):
+    from payroll.reports import queries
+    from payroll.reports.basis import Basis
+
+    return {
+        t.account.id: t.credit - t.debit
+        for t in queries.account_totals(
+            session, basis=Basis.CASH, account_types=[AccountType.INCOME], end=date(2026, 12, 31)
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    ("prices", "parts"),
+    [
+        (["30.00", "30.00", "30.00", "10.01"], ["99.99", "0.02"]),
+        (["33.33", "33.33", "33.33", "0.02"], ["37.53", "37.53", "24.95"]),
+    ],
+)
+def test_four_account_counterexamples_end_exact(
+    session, owner_user, customer, chart, make_incomes, prices, parts
+):
+    items = make_incomes(4)
+    invoice = _issue(session, owner_user, customer, items, prices)
+    _pay_checked(session, owner_user, customer, chart, invoice, items, prices, parts)
+    assert _balance(session, invoice) == D("0.00")
+    assert _live_slices(session, invoice.id) == _expected(items, prices)
+    assert _cash_income(session) == _expected(items, prices)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_random_four_and_five_accounts_with_tiny_lines_are_exact(
+    session, owner_user, customer, chart, make_incomes, seed
+):
+    import random
+
+    rng = random.Random(1000 + seed)
+    n = rng.choice([4, 5])
+    cents = [rng.randint(1, 3) if rng.random() < 0.5 else rng.randint(100, 4000) for _ in range(n)]
+    cents[rng.choice([n - 1, rng.randrange(n)])] = rng.randint(1, 3)
+    items = make_incomes(n)
+    prices = [f"{c / 100:.2f}" for c in cents]
+    total = sum(cents)
+    cuts = sorted(rng.sample(range(1, total), rng.randint(1, min(7, total - 1))))
+    parts = [f"{(b - a) / 100:.2f}" for a, b in zip([0, *cuts], [*cuts, total])]
+    invoice = _issue(session, owner_user, customer, items, prices)
+    _pay_checked(session, owner_user, customer, chart, invoice, items, prices, parts)
+    assert _balance(session, invoice) == D("0.00")
+    assert _live_slices(session, invoice.id) == _expected(items, prices)
+
+
+def test_four_account_void_then_repay_ends_exact(
+    session, owner_user, customer, chart, make_incomes
+):
+    items = make_incomes(4)
+    prices = ["30.00", "30.00", "30.00", "10.01"]
+    invoice = _issue(session, owner_user, customer, items, prices)
+    _record(session, owner_user, customer, chart, "50.00", applications=_apps((invoice, "50.00")))
+    bad = _record(
+        session, owner_user, customer, chart, "49.99", applications=_apps((invoice, "49.99"))
+    )
+    PaymentService(session).void(bad.id, actor=owner_user, void_date=DAY)
+    _pay_checked(session, owner_user, customer, chart, invoice, items, prices, ["0.02", "49.99"])
+    assert _balance(session, invoice) == D("0.00")
+    assert _live_slices(session, invoice.id) == _expected(items, prices)
+    assert _cash_income(session) == _expected(items, prices)
