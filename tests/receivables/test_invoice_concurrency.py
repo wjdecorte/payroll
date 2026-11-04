@@ -1,6 +1,7 @@
 """Issuing invoices under real concurrency: separate sessions, real COMMITs."""
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
@@ -18,6 +19,7 @@ from payroll.ledger.models import (
     AccountType,
     JournalEntry,
     JournalLine,
+    SourceType,
     SystemRole,
 )
 from payroll.migrations import alembic_runner
@@ -155,10 +157,11 @@ def test_rebind_waits_for_in_flight_issue(invoice_db):
     holder.close()
 
 
-@pytest.mark.parametrize("round_no", range(5))
-def test_issue_racing_rebind_never_posts_to_a_non_ar_account(invoice_db, round_no):
-    engine, ids = invoice_db
-    old_ar = _ar_id(engine)
+def _race_issue_and_rebind(engine, ids, *, issue_delay=0.0, rebind_delay=0.0):
+    """Issue one draft while another session rebinds A/R; returns what happened.
+
+    A delay holds one side back after the barrier so a test can force an interleaving.
+    """
     with Session(engine) as db:
         new_ar = Account(name="A/R 2", type=AccountType.ASSET)
         db.add(new_ar)
@@ -172,6 +175,7 @@ def test_issue_racing_rebind_never_posts_to_a_non_ar_account(invoice_db, round_n
         with Session(engine) as db:
             actor = db.get(User, ids[0])
             barrier.wait(timeout=30)
+            time.sleep(issue_delay)
             try:
                 InvoiceService(db).issue(invoice_id, actor=actor)
                 outcome["issue"] = "ok"
@@ -182,6 +186,7 @@ def test_issue_racing_rebind_never_posts_to_a_non_ar_account(invoice_db, round_n
         with Session(engine) as db:
             actor = db.get(User, ids[0])
             barrier.wait(timeout=30)
+            time.sleep(rebind_delay)
             try:
                 AccountService(db).bind_role(SystemRole.ACCOUNTS_RECEIVABLE, new_id, actor=actor)
                 outcome["rebind"] = "ok"
@@ -194,17 +199,59 @@ def test_issue_racing_rebind_never_posts_to_a_non_ar_account(invoice_db, round_n
     for t in threads:
         t.join(timeout=60)
     assert set(outcome) == {"issue", "rebind"}
+    return invoice_id, new_id, outcome
+
+
+def _assert_issue_rebind_invariant(engine, invoice_id, old_ar, new_id, outcome):
+    """Whatever the interleaving: an invoice is only ever posted to the account that holds
+    the A/R role at the end, and a refused/failed side wrote nothing."""
+    current_ar = _ar_id(engine)
     with Session(engine) as db:
         invoice = db.get(Invoice, invoice_id)
-        current_ar = _ar_id(engine)
         if invoice.status == "open":
+            assert outcome["issue"] == "ok"
             debit_account = db.exec(
                 select(JournalLine.account_id).where(
                     JournalLine.entry_id == invoice.entry_id, JournalLine.debit > 0
                 )
             ).one()
-            assert debit_account == old_ar == current_ar
-            assert outcome["rebind"] == "InvalidAccountError"
+            assert debit_account == current_ar
+            if outcome["rebind"] == "ok":
+                assert current_ar == new_id == debit_account  # rebind first, issue posted to it
+            else:
+                assert outcome["rebind"] == "InvalidAccountError"
+                assert current_ar == old_ar == debit_account  # issue first, rebind refused
         else:
             assert outcome["issue"] != "ok"
+            assert invoice.entry_id is None
+            assert outcome["rebind"] == "ok"
             assert current_ar == new_id
+        entries = db.exec(
+            select(JournalEntry).where(JournalEntry.source_type == SourceType.INVOICE)
+        ).all()
+        assert len(entries) == (1 if invoice.status == "open" else 0)
+
+
+@pytest.mark.parametrize("round_no", range(5))
+def test_issue_racing_rebind_never_posts_to_a_non_ar_account(invoice_db, round_no):
+    engine, ids = invoice_db
+    old_ar = _ar_id(engine)
+    invoice_id, new_id, outcome = _race_issue_and_rebind(engine, ids)
+    _assert_issue_rebind_invariant(engine, invoice_id, old_ar, new_id, outcome)
+
+
+def test_issue_wins_the_race_when_the_rebind_is_held_back(invoice_db):
+    engine, ids = invoice_db
+    old_ar = _ar_id(engine)
+    invoice_id, new_id, outcome = _race_issue_and_rebind(engine, ids, rebind_delay=1.0)
+    assert outcome == {"issue": "ok", "rebind": "InvalidAccountError"}  # the forced order
+    _assert_issue_rebind_invariant(engine, invoice_id, old_ar, new_id, outcome)
+
+
+def test_rebind_wins_the_race_when_the_issue_is_held_back(invoice_db):
+    engine, ids = invoice_db
+    old_ar = _ar_id(engine)
+    invoice_id, new_id, outcome = _race_issue_and_rebind(engine, ids, issue_delay=1.0)
+    assert outcome == {"issue": "ok", "rebind": "ok"}  # the forced order
+    assert _ar_id(engine) == new_id != old_ar
+    _assert_issue_rebind_invariant(engine, invoice_id, old_ar, new_id, outcome)
