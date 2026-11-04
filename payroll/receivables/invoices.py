@@ -23,7 +23,7 @@ from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.money import round_money
 from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import check_void_date, utcnow_naive
+from payroll.receivables._common import check_void_date, utcnow_naive, void_memo
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
     InvalidInvoiceError,
@@ -304,7 +304,12 @@ class InvoiceService:
             customer = self.session.get(Customer, invoice.customer_id)
             old_entry = self.session.get(JournalEntry, invoice.entry_id)
             ledger = LedgerPostingService(self.session)
-            ledger.void(old_entry.id, entry_date=old_entry.entry_date, actor=actor)  # type: ignore[union-attr,arg-type]
+            ledger.void(
+                old_entry.id,  # type: ignore[union-attr,arg-type]
+                entry_date=old_entry.entry_date,  # type: ignore[union-attr]
+                actor=actor,
+                memo=f"Replaced invoice #{invoice.number}",
+            )
             new_lines = self.lines(invoice.id)  # type: ignore[arg-type]
             entry = self._post_entry(invoice, customer, new_lines, invoice.number, ar, actor)  # type: ignore[arg-type]
             invoice.entry_id = entry.id
@@ -337,7 +342,7 @@ class InvoiceService:
                 invoice.entry_id,  # type: ignore[arg-type]
                 entry_date=void_date,
                 actor=actor,
-                memo=memo,
+                memo=void_memo(memo, f"Void of invoice #{invoice.number}"),
             )
             invoice.status = "void"
             invoice.void_date = void_date

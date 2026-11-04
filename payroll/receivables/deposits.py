@@ -28,7 +28,7 @@ from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import check_void_date, utcnow_naive
+from payroll.receivables._common import check_void_date, utcnow_naive, void_memo
 from payroll.receivables.exceptions import (
     DepositError,
     DepositNotFoundError,
@@ -199,7 +199,7 @@ class DepositService:
                 deposit.entry_id,  # type: ignore[arg-type]
                 entry_date=void_date,
                 actor=actor,
-                memo=memo,
+                memo=void_memo(memo, f"Void of deposit {deposit.deposit_date.isoformat()}"),
             )
             deposit.status = "void"
             deposit.void_date = void_date

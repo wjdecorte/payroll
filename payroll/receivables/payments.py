@@ -39,7 +39,7 @@ from payroll.ledger.models import (
     SystemRole,
 )
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import check_void_date, utcnow_naive
+from payroll.receivables._common import check_void_date, utcnow_naive, void_memo
 from payroll.receivables.credits import min_credit_from
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
@@ -296,7 +296,7 @@ class PaymentService:
                 payment.entry_id,  # type: ignore[arg-type]
                 entry_date=void_date,
                 actor=actor,
-                memo=memo,
+                memo=void_memo(memo, self._void_default_memo(payment)),
             )
             payment.status = "void"
             payment.void_date = void_date
@@ -584,6 +584,11 @@ class PaymentService:
             self.session.rollback()
             raise
         return result
+
+    def _void_default_memo(self, payment: Payment) -> str:
+        customer = self.session.get(Customer, payment.customer_id)
+        name = f" - {customer.name}" if customer is not None else ""
+        return f"Void of payment {payment.received_date.isoformat()}{name}"
 
     @staticmethod
     def _snapshot(payment: Payment) -> dict[str, Any]:

@@ -15,6 +15,19 @@ def utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)  # AppBaseModel stores naive UTC
 
 
+MAX_MEMO = 500
+
+
+def void_memo(memo: str | None, default: str) -> str:
+    """The memo of a void's reversal entry: the caller's own, else a readable default.
+
+    The ledger's own default quotes the journal entry number, which is easily mistaken
+    for the document number; reversal rows are immutable, so the default names the
+    document instead.
+    """
+    return memo or default[:MAX_MEMO]
+
+
 def check_void_date(
     void_date: object, document_date: date, what: str, error_cls: type[AppBaseError]
 ) -> None:

@@ -32,6 +32,7 @@ from payroll.receivables._common import (
     commit_or_rollback,
     locked_role_account,
     utcnow_naive,
+    void_memo,
 )
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
@@ -281,7 +282,7 @@ class RefundService:
                 refund.entry_id,  # type: ignore[arg-type]
                 entry_date=void_date,
                 actor=actor,
-                memo=memo,
+                memo=void_memo(memo, self._void_default_memo(refund)),
             )
             refund.status = "void"
             refund.void_date = void_date
@@ -303,6 +304,11 @@ class RefundService:
         return commit_or_rollback(self.session, work)
 
     # ---------------------------------------------------------------- helpers
+
+    def _void_default_memo(self, refund: CustomerRefund) -> str:
+        customer = self.session.get(Customer, refund.customer_id)
+        name = f" - {customer.name}" if customer is not None else ""
+        return f"Void of refund {refund.refund_date.isoformat()}{name}"
 
     def _lock_customer_payments(self, customer_id: int) -> None:
         """FOR UPDATE on the customer's payments in id order (same order as other services)."""
