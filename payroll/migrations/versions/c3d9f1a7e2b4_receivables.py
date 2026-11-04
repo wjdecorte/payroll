@@ -9,8 +9,11 @@ New tables only. Integrity enforced in the database:
     rejected);
   * a deferred constraint trigger on payment_application rejects, at COMMIT, a payment
     applied for more than its amount, or an invoice applied (from posted payments) for
-    more than its total. It locks the payment / invoice row first, so concurrent
-    transactions are checked one after the other against committed data.
+    more than its total. The trigger takes FOR NO KEY UPDATE on the payment / invoice row
+    before summing: it conflicts with itself (so concurrent commits are checked one after
+    the other, each seeing the other's committed applications) but not with the FOR KEY
+    SHARE the foreign-key checks hold until the transaction ends (FOR UPDATE would
+    deadlock two committing transactions). The loser fails with an over-applied error.
 The settings row (next invoice number 1001) is inserted here. The downgrade drops the
 triggers, functions and tables (all receivables data).
 """
@@ -250,9 +253,9 @@ def upgrade() -> None:
             inv_total numeric;
             applied numeric;
         BEGIN
-            -- Lock the parent rows first so concurrent commits are checked one at a
-            -- time, each against the other's committed applications.
-            SELECT amount INTO pay_amount FROM payment WHERE id = NEW.payment_id FOR UPDATE;
+            -- FOR NO KEY UPDATE serializes concurrent commits without clashing with the
+            -- FK checks' FOR KEY SHARE locks (FOR UPDATE would deadlock).
+            SELECT amount INTO pay_amount FROM payment WHERE id = NEW.payment_id FOR NO KEY UPDATE;
             SELECT coalesce(sum(amount), 0) INTO applied
               FROM payment_application WHERE payment_id = NEW.payment_id;
             IF applied > pay_amount THEN
@@ -260,7 +263,7 @@ def upgrade() -> None:
                     NEW.payment_id, applied, pay_amount;
             END IF;
 
-            SELECT total INTO inv_total FROM invoice WHERE id = NEW.invoice_id FOR UPDATE;
+            SELECT total INTO inv_total FROM invoice WHERE id = NEW.invoice_id FOR NO KEY UPDATE;
             SELECT coalesce(sum(a.amount), 0) INTO applied
               FROM payment_application a JOIN payment p ON p.id = a.payment_id
              WHERE a.invoice_id = NEW.invoice_id AND p.status = 'posted';
