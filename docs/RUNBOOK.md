@@ -90,6 +90,8 @@ First use, as the owner:
 1. In Settings > Ledger bind **Accounts receivable** and **Undeposited Funds** to the right
    accounts. Do this before the first invoice or payment: once an invoice, payment or refund has
    been recorded (voided ones count) the A/R binding is frozen (Undeposited Funds can still move).
+   Warning: rebinding Undeposited Funds while payments are still undeposited strands them (they
+   vanish from the deposit page and a deposit refuses them), so deposit them first.
 2. In Settings > Receivables set the **next invoice number** to continue QBO's sequence (it must
    be above every number already used; numbers of voided invoices are never reused, so a void
    leaves a gap), and enter the **company details** (name, address, remit-to, footer) printed on
@@ -102,7 +104,9 @@ Voiding an invoice, payment, deposit or refund needs a void date on or after the
 Cash-basis note: reports default to cash basis, where income appears when an invoice is paid
 (on the later of the payment and invoice dates). Applications cannot be created on or before the
 period-lock date, and a payment cannot be voided into a locked period; fix a misapplied payment
-by voiding it and recording it again.
+by voiding it and recording it again. The ledger also refuses to void a document whose own
+date is on or before the lock: to correct it, move the lock back, void, and lock again, or post a
+reversal dated after the lock through a manual journal (see Locking a closed year).
 
 ## Upgrading to v2.1.0 (ledger and reports, M1)
 

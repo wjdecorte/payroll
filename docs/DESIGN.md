@@ -172,7 +172,8 @@ receivables_settings  one row: next_invoice_no, company_name, company_address,
 - The A/R system role is frozen once any invoice, payment or refund has been recorded, voided
   ones included (they all post to A/R, and rebinding would split the subledger from the ledger
   and strand the cash-basis rows); Undeposited Funds can still be rebound.
-- Documents that are voided keep a `void_date` (the date of the reversing entry).
+- Documents that are voided keep a `void_date` (the date of the reversing entry). A void date
+  is never before the document's own date.
 
 Derived at query time (never stored): invoice paid amount (applications whose payment is
 posted), balance and display status (`partial`, `paid`, `overdue`); a customer's unapplied
@@ -287,8 +288,8 @@ A single `ReportEngine` runs SQL aggregates over `journal_line` joined to
   pairs**: each `payment_application` adds, on its `recognized_date`, a debit of its amount to
   its A/R account and a credit of each `application_income` slice to that income account. When
   the payment is void, a mirror pair is added on the payment's `void_date`, dated
-  `greatest(void_date, recognized_date)` so an application voided before it was recognized never
-  reaches income. Each pair balances on its own date, so cash-basis debits equal credits on
+  the later of the void date and the application's `recognized_date`, so an application voided
+  before it was recognized never reaches income. Each pair balances on its own date, so cash-basis debits equal credits on
   every date and the Balance Sheet balances. Money received but not applied stays in A/R as a
   credit; it is not income. **Cash is the default view** (owner's decision); accrual is the
   toggle. Drill-down on cash basis lists these rows (memo `Invoice #n paid`).

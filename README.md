@@ -78,7 +78,9 @@ applications behind it.
 
 Before the first invoice: bind Accounts receivable and Undeposited Funds in Settings > Ledger
 (the A/R binding is frozen once any invoice, payment or refund has been recorded), set the next invoice number in
-Settings > Receivables to continue your QBO sequence, and enter the company details.
+Settings > Receivables to continue your QBO sequence, and enter the company details. Do not rebind
+Undeposited Funds while payments are still undeposited: they would be stranded (hidden from the
+deposit page, refused by a deposit), so deposit them first.
 There is no JSON API for receivables documents; the A/R Aging CSV/PDF are also exposed
 read-only under the report API.
 

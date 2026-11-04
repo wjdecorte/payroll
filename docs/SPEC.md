@@ -126,26 +126,32 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    payment to an invoice adds, on its recognition date (the later of the payment and invoice
    dates), a debit to A/R and credits to the invoice's income accounts, allocated cumulatively
    per account with caps so a fully paid invoice yields exactly its per-account income. A void
-   payment adds the mirror pair on its void date. Unapplied money stays a credit in A/R (not
-   income).
+   payment adds the mirror pair dated the later of the void date and the application's
+   recognition date (so an application voided before it was recognized never reaches income).
+   Unapplied money stays a credit in A/R (not income).
 2. **Applications are append-only and refused on or before the lock date** (they would change
    a closed period on cash basis). Misapplied money is fixed by voiding the payment and
    re-recording it. Credit can never go negative on any past date.
 3. **No JSON API for receivables documents** (pages only). The A/R Aging CSV/PDF also appear
    under the M1 report API as read-only exports. Importers (M6) call the services directly.
-4. **Void dates.** A void (invoice, payment, deposit or refund) must be dated on or after the document itself, so a reversal never precedes the original.
-4a. **Invoice rules.** Integer numbers assigned on issue from a settable next number (above
+4. **Void dates.** A void (invoice, payment, deposit or refund) must be dated on or after the
+   document itself, so a reversal never precedes the original. It must also be dated after the
+   period lock, and the M1 ledger additionally refuses to void a document whose own date is on
+   or before the lock (a void erases it from its own period). To correct a document in a locked
+   period, move the lock back, void, and lock again, or post a reversal dated after the lock
+   through a manual journal (see the RUNBOOK).
+5. **Invoice rules.** Integer numbers assigned on issue from a settable next number (above
    every number used; voided numbers are never reused). Draft, Open, Void are stored; Partial,
    Paid and Overdue are derived. An open invoice can be edited only while nothing is applied
    (edit = reverse and re-post on the same date and number). Void needs no applied payments and
-   takes a date after the lock.
-5. **Terms are net days only.** No discounts, late fees, credit memos or sales tax (§3.4).
-6. **Refunds of unapplied credit** use the journal source type `refund`.
-7. **The A/R role is frozen** once any invoice, payment or refund has been recorded (voided
+   takes a date on or after the invoice date and after the lock.
+6. **Terms are net days only.** No discounts, late fees, credit memos or sales tax (§3.4).
+7. **Refunds of unapplied credit** use the journal source type `refund`.
+8. **The A/R role is frozen** once any invoice, payment or refund has been recorded (voided
    ones included); Undeposited Funds can still move.
-8. **Reports in M2:** A/R Aging with an open-invoice detail. Customer Statement and
+9. **Reports in M2:** A/R Aging with an open-invoice detail. Customer Statement and
    attachments stay for later.
-9. **Owner-only mutations;** accountants and viewers read everything (as in M1). Company
+10. **Owner-only mutations;** accountants and viewers read everything (as in M1). Company
    details (name, address, remit-to, footer) and the next invoice number live in
    Settings > Receivables.
 
