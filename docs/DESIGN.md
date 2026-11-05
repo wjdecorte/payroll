@@ -133,24 +133,52 @@ audit_log             (append-only) ts, user_id, action, entity, entity_id, befo
 transaction: the prior entry is voided with a reversal and a new entry is
 posted; the audit log keeps both. (Simpler and safer than in-place mutation.)
 
-### 4.2 Receivables
+### 4.2 Receivables (built in M2, v2.2.0)
 
 ```
-customer       id, name, email, billing_address, terms_days, is_active
-item           id, name, description, unit_price, income_account_id
-invoice        id, number, customer_id, invoice_date, due_date, terms_days,
-               status (draft|open|void), memo, subtotal, total, entry_id
-invoice_line   id, invoice_id, item_id, description, qty, unit_price, amount
-payment        id, customer_id, received_date, method, reference, amount,
-               deposit_to_account_id (bank | undeposited_funds), entry_id, status
-payment_application   id, payment_id, invoice_id, amount
-deposit        id, deposit_date, bank_account_id, total, entry_id
-deposit_payment  deposit_id, payment_id
+customer       id, name, email, phone, billing_address, terms_days, is_active
+item           id, name, description, unit_price, income_account_id, is_active
+invoice        id, number (integer, assigned on issue), customer_id, invoice_date,
+               due_date, terms_days, status (draft|open|void), memo, total,
+               entry_id, void_date
+invoice_line   id, invoice_id, line_no, item_id, description, qty (3 dp),
+               unit_price, amount, income_account_id (copied from the item)
+payment        id, customer_id, received_date, method, reference, memo, amount,
+               deposit_account_id (bank | Undeposited Funds), entry_id,
+               status (posted|void), void_date, deposit_id
+payment_application  id, payment_id, invoice_id, amount, recognized_date,
+               ar_account_id
+application_income   id, application_id, account_id, amount
+deposit        id, deposit_date, bank_account_id, memo, total, entry_id,
+               status (posted|void), void_date
+customer_refund id, customer_id, refund_date, method, reference, memo, amount,
+               bank_account_id, entry_id, status (posted|void), void_date
+receivables_settings  one row: next_invoice_no, company_name, company_address,
+               remit_to, invoice_footer
 ```
 
-Derived at query time (not stored): invoice `paid_amount` = Σ applications,
-`balance`, display status (`partial`, `paid`, `overdue`). Unapplied credit =
-payment amount − Σ applications.
+- Every document (invoice, payment, deposit, refund) owns exactly one live journal entry
+  (`source_type` `invoice`, `payment`, `deposit`, `refund`; `source_id` the document id).
+  Editing or voiding reverses the entry through `LedgerPostingService`; the document row
+  never rewrites a posted line.
+- A deposit moves the payments it lists from Undeposited Funds to a bank account
+  (`payment.deposit_id`). A payment recorded straight to a bank account is never deposited.
+- `payment_application` rows are **append-only** (database trigger). Each stores its
+  `recognized_date` (the later of the payment date and the invoice date) and the A/R account
+  it was made against; `application_income` stores its split across the invoice's income
+  accounts. Slices are allocated **cumulatively** with a cap per account, so once an invoice is
+  fully paid each of its accounts has received exactly its own income and no rounding drifts.
+  Applications are refused on or before the period-lock date.
+- The A/R system role is frozen once any invoice, payment or refund has been recorded, voided
+  ones included (they all post to A/R, and rebinding would split the subledger from the ledger
+  and strand the cash-basis rows); Undeposited Funds can still be rebound.
+- Documents that are voided keep a `void_date` (the date of the reversing entry). A void date
+  is never before the document's own date.
+
+Derived at query time (never stored): invoice paid amount (applications whose payment is
+posted), balance and display status (`partial`, `paid`, `overdue`); a customer's unapplied
+credit = payments received − applications − refunds. Credit can never go negative on any past
+date: refunds, applications and payment voids check the minimum over their event dates.
 
 ### 4.3 Expenses
 
@@ -252,11 +280,19 @@ A single `ReportEngine` runs SQL aggregates over `journal_line` joined to
   period; **Balance Sheet:** Σ up to the as-of date for asset/liability/equity,
   plus *current-year earnings* synthesized into equity so it balances before
   year-end close.
-- **Cash basis (default):** recognizes income/expense when the linked payment (for
-  invoices) or payment date (for expenses) occurs; implemented by
-  attributing each invoice/expense line to payment dates in proportion to
-  applications. **Cash is the default view** (owner's decision); accrual is the
-  toggle and is the plain ledger sum. Both are built and tested in M1.
+- **Cash basis (default):** `payroll.reports.basis.row_source` is the single place that
+  decides which rows a basis reads. Accrual and every ledger-as-is report (trial balance,
+  registers, journal) read the plain `journal_line` joined to `journal_entry`. Cash reads the
+  same columns from every ledger line **except those of invoice entries** (reversals and
+  replacements copy `source_type='invoice'`, so they go too), **plus per-application row
+  pairs**: each `payment_application` adds, on its `recognized_date`, a debit of its amount to
+  its A/R account and a credit of each `application_income` slice to that income account. When
+  the payment is void, a mirror pair is added on the payment's `void_date`, dated
+  the later of the void date and the application's `recognized_date`, so an application voided
+  before it was recognized never reaches income. Each pair balances on its own date, so cash-basis debits equal credits on
+  every date and the Balance Sheet balances. Money received but not applied stays in A/R as a
+  credit; it is not income. **Cash is the default view** (owner's decision); accrual is the
+  toggle. Drill-down on cash basis lists these rows (memo `Invoice #n paid`).
 - **Comparison columns** run the same query twice and diff.
 - **Drill-down:** report rows carry `(account_id, start, end)` links to the
   account register, whose rows link to `source_type/source_id` documents.

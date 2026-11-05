@@ -1,0 +1,11 @@
+{# Sales tabs. ``tab`` names the active one; pages added in later tasks are plain links. #}
+<ul class="nav nav-tabs mb-3 no-print">
+  {% for key, label, href in [("invoices", "Invoices", "/invoices"), ("payments", "Payments", "/payments"), ("deposits", "Deposits", "/deposits"), ("customers", "Customers", "/customers"), ("items", "Items", "/items")] %}
+  <li class="nav-item">
+    <a class="nav-link{% if tab == key %} active{% endif %}" href="{{ href }}"{% if tab == key %} aria-current="page"{% endif %}>{{ label }}</a>
+  </li>
+  {% endfor %}
+  <li class="nav-item ms-auto">
+    <a class="nav-link" href="/settings/receivables"><i class="bi bi-gear me-1"></i>Sales settings</a>
+  </li>
+</ul>

@@ -79,7 +79,7 @@ def test_compare_previous_period_and_year(owner_client, ledger):
 def test_accrual_basis_selected_and_note_shown(owner_client, ledger):
     page = owner_client.get("/reports/profit-and-loss?basis=accrual").text
     assert re.search(r'value="accrual"[^>]*checked', page)
-    assert "Cash and accrual agree" in page
+    assert "Cash basis recognizes income when an invoice is paid." in page
 
 
 @pytest.mark.parametrize(
@@ -132,7 +132,7 @@ def test_account_rows_drill_down_to_register_with_same_total(owner_client, ledge
     page = owner_client.get("/reports/profit-and-loss").text
     sales = ledger.chart["Services Revenue"].id
     link = f"/accounts/{sales}/register?start=2026-02-01&end=2026-02-28"
-    assert link in _hrefs(page)
+    assert f"{link}&basis=cash" in _hrefs(page)
     register = owner_client.get(link)
     assert register.status_code == 200 and "$2,500.00" in register.text
 
@@ -143,7 +143,7 @@ def test_balance_sheet_defaults_to_today_and_links_from_fiscal_year_start(
     page = owner_client.get("/reports/balance-sheet").text
     assert "As of 2026-02-15" in page
     chk = ledger.chart["Business Checking"].id
-    assert f"/accounts/{chk}/register?start=2026-01-01&end=2026-02-15" in _hrefs(page)
+    assert f"/accounts/{chk}/register?start=2026-01-01&end=2026-02-15&basis=cash" in _hrefs(page)
     statement = ReportService(session)
     rows = statement.balance_sheet(date(2026, 2, 15)).rows
     linked = [h for h in _hrefs(page) if h.startswith("/accounts/")]

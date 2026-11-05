@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Invoice · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-receipt me-2"></i>Invoice{% if invoice.number is not none %} #{{ invoice.number }}{% endif %}</span>
+      <span class="badge {{ 'bg-secondary' if state.status == 'void' else 'bg-info text-dark' if state.status == 'draft' else 'bg-danger' if state.status == 'overdue' else 'bg-warning text-dark' if state.status == 'partial' else 'bg-success' }}" id="inv-status">{{ state.status | capitalize }}</span>
+    </div>
+    <div class="card-body">
+      <dl class="row mb-3">
+        <dt class="col-sm-2">Customer</dt><dd class="col-sm-10">{{ customer.name }}</dd>
+        <dt class="col-sm-2">Invoice date</dt><dd class="col-sm-10">{{ invoice.invoice_date }}</dd>
+        <dt class="col-sm-2">Due date</dt><dd class="col-sm-10">{{ invoice.due_date }} (net {{ invoice.terms_days }})</dd>
+        {% if invoice.status == "void" and invoice.void_date %}<dt class="col-sm-2">Voided</dt><dd class="col-sm-10">{{ invoice.void_date }}</dd>{% endif %}
+        {% if invoice.memo %}<dt class="col-sm-2">Memo</dt><dd class="col-sm-10">{{ invoice.memo }}</dd>{% endif %}
+      </dl>
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr><th>#</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr>
+        </thead>
+        <tbody>
+          {% for line in lines %}
+          <tr>
+            <td>{{ line.line_no }}</td>
+            <td>{{ line.description or "" }}</td>
+            <td class="num">{{ "{:f}".format(line.qty.normalize()) }}</td>
+            <td class="num">{{ line.unit_price | currency }}</td>
+            <td class="num">{{ line.amount | currency }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><td colspan="4">Total</td><td class="num">{{ invoice.total | currency }}</td></tr>
+          {% if invoice.status == "open" %}
+          <tr><td colspan="4">Paid</td><td class="num" id="inv-paid">{{ state.paid | currency }}</td></tr>
+          <tr class="fw-bold"><td colspan="4">Balance due</td><td class="num" id="inv-balance">{{ state.balance | currency }}</td></tr>
+          {% endif %}
+        </tfoot>
+      </table>
+      {% if applications %}
+      <h2 class="h6">Payments applied</h2>
+      <ul class="list-unstyled">
+        {% for app, pay in applications %}
+        <li><a href="/payments/{{ pay.id }}">{{ pay.received_date }} {{ (pay.method or "") | capitalize }}{% if pay.reference %} {{ pay.reference }}{% endif %}</a>: {{ app.amount | currency }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <div class="no-print d-flex gap-2">
+        {% if is_owner and invoice.status == "draft" %}
+        <a class="btn btn-brand" href="/invoices/{{ invoice.id }}/edit">Edit draft</a>
+        <form method="post" action="/invoices/{{ invoice.id }}/discard" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-outline-danger">Discard draft</button>
+        </form>
+        <form method="post" action="/invoices/{{ invoice.id }}/issue" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-success">Issue invoice</button>
+        </form>
+        {% endif %}
+        {% if is_owner and invoice.status == "open" and not has_payments %}
+        <a class="btn btn-brand" href="/invoices/{{ invoice.id }}/edit">Edit invoice</a>
+        {% endif %}
+        {% if is_owner and invoice.status == "open" and balance > 0 %}
+        <a class="btn btn-success" href="/payments/new?customer_id={{ invoice.customer_id }}">Receive payment</a>
+        {% endif %}
+        {% if invoice.status in ("open", "void") %}
+        <a class="btn btn-outline-primary" id="download-pdf" href="/invoices/{{ invoice.id }}.pdf"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>
+        {% endif %}
+        <a class="btn btn-outline-secondary" href="/invoices">Back to invoices</a>
+      </div>
+      {% if is_owner and invoice.status == "open" and not has_payments %}
+      <form method="post" action="/invoices/{{ invoice.id }}/void" class="no-print row g-2 align-items-end mt-3" id="void-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-auto">
+          <label class="form-label" for="void_date">Void date</label>
+          <input type="date" class="form-control" id="void_date" name="void_date" value="{{ void_default }}" required>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="void_memo">Memo (optional)</label>
+          <input type="text" class="form-control" id="void_memo" name="memo" maxlength="500">
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-outline-danger">Void invoice</button>
+        </div>
+      </form>
+      {% elif is_owner and has_payments %}
+      <p class="text-muted mt-3 mb-0">Payments are applied to this invoice; void the payment before editing or voiding it.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

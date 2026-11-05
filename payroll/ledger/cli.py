@@ -9,7 +9,10 @@ Commands (no password is ever prompted: the actor is the owner found by email):
   balanced journal entries, with reversals and a void) for exploring the reports.
   Refuses (exit 1) when any journal entry already exists unless ``--force``; even
   then it only adds entries and never touches existing ones. It also seeds the
-  default chart first (idempotent), since the entries need those accounts.
+  default chart first (idempotent), since the entries need those accounts. It also adds
+  receivables: four customers, three items, invoices (open, partial, paid, overdue, void),
+  payments (to Undeposited Funds and straight to the bank, one overpayment), a deposit and a
+  refund, so the aging page and every report on both bases have something to show.
 
 When run as a program the CLI first applies pending migrations, like
 ``payroll.auth.cli``. Exit codes: 0 ok, 1 error (message on stderr), 2 usage error.
@@ -32,8 +35,15 @@ from payroll.auth.models import User, UserRole
 from payroll.exceptions import AppBaseError
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.default_chart import seed_default_chart
-from payroll.ledger.models import JournalEntry, SourceType
+from payroll.ledger.models import AccountType, JournalEntry, SourceType
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
+from payroll.receivables.credits import RefundService
+from payroll.receivables.customers import CustomerService
+from payroll.receivables.deposits import DepositService
+from payroll.receivables.invoices import InvoiceLineInput, InvoiceService
+from payroll.receivables.items import ItemService
+from payroll.receivables.models import Customer
+from payroll.receivables.payments import ApplicationInput, PaymentService
 from payroll.reports.statements import ReportService
 
 DEMO_YEAR = 2026
@@ -211,6 +221,111 @@ def _post_demo_year(db: Session, actor: User, accounts_created: int) -> DemoSumm
     )
 
 
+@dataclass(frozen=True)
+class ReceivablesSummary:
+    customers: int
+    items: int
+    invoices: int
+    payments: int
+    deposits: int
+    refunds: int
+
+
+def _post_demo_receivables(db: Session, actor: User) -> ReceivablesSummary:
+    """
+    Receivables for the demo year, built through the real services (each commits itself).
+
+    At 2026-12-31 the invoices are: two paid (Acme in January and June), one overdue (Cedar,
+    unpaid since March), one void (Delta, April), one paid after an overpayment (Delta, July),
+    one partial (Birch, December) and one open (Acme, due the day after year end).
+    """
+    accounts = AccountService(db)
+    ids = {n.full_name: n.account.id for n in accounts.tree(include_inactive=True)}
+    if "Training Revenue" not in ids:
+        ids["Training Revenue"] = accounts.create(
+            actor=actor, name="Training Revenue", type=AccountType.INCOME, number="4100"
+        ).id
+    customers = CustomerService(db)
+    acme, birch, cedar, delta = (
+        customers.create(actor=actor, name=name, email=email, terms_days=terms)
+        for name, email, terms in (
+            ("Acme Corp", "ap@acme.example", 30),
+            ("Birch Design", "billing@birch.example", 30),
+            ("Cedar Health", "payables@cedar.example", 45),
+            ("Delta Logistics", "ap@delta.example", 30),
+        )
+    )
+    item_service = ItemService(db)
+    consulting, retainer, workshop = (
+        item_service.create(
+            actor=actor, name=name, income_account_id=ids[account], unit_price=D(price)
+        )
+        for name, account, price in (
+            ("Consulting (hourly)", "Services Revenue", "150.00"),
+            ("Monthly Retainer", "Services Revenue", "2500.00"),
+            ("Training Workshop", "Training Revenue", "1200.00"),
+        )
+    )
+    invoices = InvoiceService(db)
+    payments = PaymentService(db)
+    bank, undeposited = ids["Business Checking"], ids["Undeposited Funds"]
+
+    def invoice(customer, when: date, *lines: tuple, void_on: date | None = None):
+        draft = invoices.create_draft(
+            actor=actor,
+            customer_id=customer.id,
+            invoice_date=when,
+            lines=[
+                InvoiceLineInput(item.id, item.name, D(qty), item.unit_price) for item, qty in lines
+            ],
+        )
+        issued = invoices.issue(draft.id, actor=actor)
+        if void_on is not None:
+            invoices.void(issued.id, actor=actor, void_date=void_on, memo="Entered in error")
+        return issued
+
+    def pay(customer, when: date, amount: str, account: int, method: str, *applied):
+        return payments.record(
+            actor=actor,
+            customer_id=customer.id,
+            received_date=when,
+            amount=D(amount),
+            deposit_account_id=account,
+            method=method,
+            applications=[ApplicationInput(inv.id, D(value)) for inv, value in applied],
+        )
+
+    inv1 = invoice(acme, date(DEMO_YEAR, 1, 5), (consulting, "20"))  # 3,000.00
+    pay1 = pay(acme, date(DEMO_YEAR, 2, 3), "3000.00", undeposited, "check", (inv1, "3000.00"))
+    DepositService(db).create(
+        actor=actor,
+        deposit_date=date(DEMO_YEAR, 2, 5),
+        bank_account_id=bank,
+        payment_ids=[pay1.id],
+        memo="February deposit",
+    )
+    invoice(cedar, date(DEMO_YEAR, 3, 15), (consulting, "10"), (workshop, "1"))  # overdue
+    invoice(delta, date(DEMO_YEAR, 4, 2), (consulting, "8.5"), void_on=date(DEMO_YEAR, 4, 20))
+    inv4 = invoice(acme, date(DEMO_YEAR, 6, 1), (consulting, "5"))  # 750.00
+    pay(acme, date(DEMO_YEAR, 6, 20), "750.00", bank, "ach", (inv4, "750.00"))
+    inv_delta = invoice(delta, date(DEMO_YEAR, 7, 1), (retainer, "1"))  # 2,500.00
+    # An overpayment: 500.00 stays as customer credit, of which 200.00 is refunded.
+    pay(delta, date(DEMO_YEAR, 7, 20), "3000.00", bank, "ach", (inv_delta, "2500.00"))
+    RefundService(db).record(
+        actor=actor,
+        customer_id=delta.id,
+        refund_date=date(DEMO_YEAR, 8, 5),
+        amount=D("200.00"),
+        bank_account_id=bank,
+        method="check",
+        memo="Refund of part of the overpayment",
+    )
+    invoice(acme, date(DEMO_YEAR, 12, 1), (retainer, "1"))  # open, not yet due
+    inv6 = invoice(birch, date(DEMO_YEAR, 12, 10), (retainer, "1"), (workshop, "1"))  # 3,700.00
+    pay(birch, date(DEMO_YEAR, 12, 15), "1500.00", undeposited, "check", (inv6, "1500.00"))
+    return ReceivablesSummary(customers=4, items=3, invoices=7, payments=4, deposits=1, refunds=1)
+
+
 # ----------------------------------------------------------------------
 # Commands
 # ----------------------------------------------------------------------
@@ -248,12 +363,25 @@ def _run(args: argparse.Namespace, db: Session) -> str:
             summary = _post_demo_year(db, actor, accounts_created)
     except AppBaseError as exc:
         raise CliError(f"Could not post the demo year: {exc.message}") from exc
+    db.commit()  # the receivables services commit as they go; keep the year already posted
+    if db.exec(select(func.count()).select_from(Customer)).one():
+        receivables = "Receivables not added: customers already exist."
+    else:
+        try:
+            rec = _post_demo_receivables(db, actor)
+        except AppBaseError as exc:
+            raise CliError(f"Posted the demo year but not the receivables: {exc.message}") from exc
+        receivables = (
+            f"Receivables: {rec.customers} customers, {rec.items} items, {rec.invoices} invoices, "
+            f"{rec.payments} payments, {rec.deposits} deposit, {rec.refunds} refund."
+        )
     return (
         f"Posted {summary.entries} demo journal entries for {DEMO_YEAR} "
         f"({summary.reversals} reversals, {summary.voided} voided); "
         f"created {summary.accounts_created} account(s). "
         f"Trial balance at {DEMO_YEAR}-12-31: debits {summary.total_debits}, "
-        f"{'balanced' if summary.balanced else 'NOT balanced'}."
+        f"{'balanced' if summary.balanced else 'NOT balanced'}. "
+        f"{receivables}"
     )
 
 

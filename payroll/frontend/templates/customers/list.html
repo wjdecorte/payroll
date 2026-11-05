@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Customers · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-people me-2"></i>Customers</span>
+      <span class="d-flex gap-2 align-items-center">
+        {% if inactive %}
+        <a class="btn btn-sm btn-outline-light" href="/customers">Hide inactive</a>
+        {% else %}
+        <a class="btn btn-sm btn-outline-light" href="/customers?inactive=1">Show inactive</a>
+        {% endif %}
+        {% if is_owner %}
+        <a class="btn btn-sm btn-light" href="/customers/new"><i class="bi bi-plus-lg me-1"></i>New customer</a>
+        {% endif %}
+      </span>
+    </div>
+    <div class="card-body p-0">
+      {% if error %}<div class="alert alert-danger m-3 py-2" role="alert">{{ error }}</div>{% endif %}
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr><th>Name</th><th>Email</th><th>Phone</th><th class="num">Terms</th><th>Status</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for c in customers %}
+          <tr class="{% if not c.is_active %}acct-inactive{% endif %}">
+            <td><a href="/customers/{{ c.id }}">{{ c.name }}</a></td>
+            <td>{{ c.email or "" }}</td>
+            <td>{{ c.phone or "" }}</td>
+            <td class="num">Net {{ c.terms_days }}</td>
+            <td>{{ "Active" if c.is_active else "Inactive" }}</td>
+            <td class="no-print text-end">
+              {% if is_owner %}
+              <a class="btn btn-sm btn-outline-secondary" href="/customers/{{ c.id }}/edit">Edit</a>
+              <form method="post" action="/customers/{{ c.id }}/active" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="active" value="{{ 0 if c.is_active else 1 }}">
+                <button type="submit" class="btn btn-sm btn-outline-secondary">{{ "Deactivate" if c.is_active else "Reactivate" }}</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-4">No customers yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

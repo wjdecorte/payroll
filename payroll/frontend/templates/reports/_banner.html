@@ -1,5 +1,5 @@
 {# Invariant banner. Context: invariants (list of name/ok/detail) #}
-{% set labels = {"assets_equal_liabilities_plus_equity": "Assets = Liabilities + Equity", "trial_balance_balanced": "Debits = Credits"} %}
+{% set labels = {"assets_equal_liabilities_plus_equity": "Assets = Liabilities + Equity", "trial_balance_balanced": "Debits = Credits", "ar_subledger_matches_ledger": "A/R subledger = ledger"} %}
 {% for inv in invariants %}
 {% if inv.ok %}
 <div class="alert alert-success py-2" role="status"><i class="bi bi-check-circle-fill me-1"></i><strong>Balanced</strong> · {{ labels.get(inv.name, inv.name) }}: {{ inv.detail }}</div>

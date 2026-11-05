@@ -6,7 +6,7 @@ import pytest
 from payroll.ledger.models import SourceType
 from payroll.ledger.services import EntryDraft, LineDraft
 from payroll.reports import queries
-from payroll.reports.basis import BASIS_NOTE, Basis, recognized_lines
+from payroll.reports.basis import BASIS_NOTE, Basis
 from payroll.reports.periods import InvalidPeriodError, Period
 from payroll.reports.statements import ReportService, pct_change
 
@@ -314,9 +314,7 @@ def test_empty_ledger_statements_have_zero_totals_and_ok_invariants(session, cha
         }
 
 
-def test_basis_default_is_cash_and_accrual_equal_in_m1(session, books):
-    assert recognized_lines(Basis.CASH) is None
-    assert recognized_lines(Basis.ACCRUAL) is None
+def test_basis_default_is_cash_and_cash_equals_accrual_without_invoices(session, books):
     service = ReportService(session)
     cash = service.profit_and_loss(YEAR)
     accrual = service.profit_and_loss(YEAR, basis=Basis.ACCRUAL)
@@ -324,55 +322,48 @@ def test_basis_default_is_cash_and_accrual_equal_in_m1(session, books):
     assert accrual.basis == Basis.ACCRUAL
     assert cash.rows == accrual.rows
     assert cash.basis_note == accrual.basis_note == BASIS_NOTE
-    assert BASIS_NOTE == (
-        "Cash and accrual agree until invoices are entered; "
-        "the difference starts with Receivables (M2)."
-    )
+    assert BASIS_NOTE.startswith("Cash basis recognizes income when an invoice is paid.")
     bs_cash = service.balance_sheet(date(2026, 12, 31))
     bs_accrual = service.balance_sheet(date(2026, 12, 31), basis=Basis.ACCRUAL)
     assert bs_cash.basis == Basis.CASH
     assert bs_cash.rows == bs_accrual.rows
 
 
-def test_cash_predicate_narrows_statements_but_not_ledger_reports(session, books, monkeypatch):
-    """The basis hook reaches the P&L and Balance Sheet; ledger-as-is reports ignore it."""
-    from sqlmodel import col
-
-    from payroll.ledger.models import JournalEntry
-
+def test_cash_basis_narrows_statements_but_not_ledger_reports(session, books):
+    """Invoice-sourced lines leave the cash statements; ledger-as-is reports keep them."""
     service = ReportService(session)
     chk = books.chart["Business Checking"].id
+    ar = books.chart["Accounts Receivable"].id
     end = date(2026, 12, 31)
-    before = (
-        service.trial_balance(end),
-        service.account_register(chk, YEAR.start, YEAR.end),
-        service.general_ledger(YEAR.start, YEAR.end),
-        service.journal(YEAR.start, YEAR.end),
-        service.balance_sheet(end).invariants[1],
+    books.post(
+        date(2026, 1, 25),
+        "Accounts Receivable",
+        "Services Revenue",
+        "700.00",
+        "Billed",
+        SourceType.INVOICE,
     )
-
-    def cash_only_january(basis):
-        if basis == Basis.CASH:
-            return col(JournalEntry.entry_date) < date(2026, 2, 1)
-        return None
-
-    monkeypatch.setattr(queries, "recognized_lines", cash_only_january)
-    assert _amounts(service.profit_and_loss(YEAR))["Net Income"] == [D("2799.50")]
+    assert _amounts(service.profit_and_loss(YEAR))["Net Income"] == [D("4999.25")]
     assert _amounts(service.profit_and_loss(YEAR, basis=Basis.ACCRUAL))["Net Income"] == [
-        D("4999.25")
+        D("5699.25")
     ]
-    bs = service.balance_sheet(end)
-    assert _amounts(bs)["Business Checking"] == [D("12799.50")]
-    after = (
-        service.trial_balance(end),
-        service.account_register(chk, YEAR.start, YEAR.end),
-        service.general_ledger(YEAR.start, YEAR.end),
-        service.journal(YEAR.start, YEAR.end),
-        bs.invariants[1],
-    )
-    assert after == before  # the A = L + E check follows the chosen basis; TB does not
-    assert bs.invariants[1].name == "trial_balance_balanced"
-    assert bs.invariants[1].detail == "As of 2026-12-31: debits 18200.73 = credits 18200.73"
+    cash_bs = service.balance_sheet(end)
+    accrual_bs = service.balance_sheet(end, basis=Basis.ACCRUAL)
+    assert "Accounts Receivable" not in _amounts(cash_bs)
+    assert _amounts(accrual_bs)["Accounts Receivable"] == [D("700.00")]
+    assert _amounts(cash_bs)["Business Checking"] == [D("14999.25")]
+    tb = {r.account_id: (r.debit, r.credit) for r in service.trial_balance(end).rows}
+    assert tb[ar] == (D("700.00"), ZERO)
+    assert service.account_register(ar, YEAR.start, YEAR.end).closing_balance == D("700.00")
+    assert service.account_register(chk, YEAR.start, YEAR.end).closing_balance == D("14999.25")
+    ledger_accounts = {r.account_id for r in service.general_ledger(YEAR.start, YEAR.end).accounts}
+    assert ar in ledger_accounts
+    assert "invoice" in {e.source_type for e in service.journal(YEAR.start, YEAR.end)}
+    # The trial-balance invariant reads the ledger as posted on both bases.
+    assert cash_bs.invariants[1] == accrual_bs.invariants[1]
+    assert cash_bs.invariants[1].name == "trial_balance_balanced"
+    assert cash_bs.invariants[1].detail == "As of 2026-12-31: debits 18900.73 = credits 18900.73"
+    assert [i.ok for i in cash_bs.invariants] == [True, True]
 
 
 def test_invariant_failure_is_reported_not_raised(session, books, monkeypatch):

@@ -30,7 +30,7 @@ rendered by WeasyPrint, which needs the Pango native libraries (`libpango-1.0-0`
 tests skip).
 
 "Today" and period boundaries use `COMPANY_TIMEZONE` (default `America/New_York`).
-Reports default to cash basis with an accrual toggle; figures are identical until receivables exist (M2).
+Reports default to cash basis with an accrual toggle (see Receivables below for what each means).
 
 ### Ledger CLI
 
@@ -42,9 +42,47 @@ docker compose exec api python -m payroll.ledger.cli seed-chart --email you@exam
 ```
 
 The actor is an existing owner (looked up by email; nothing is prompted). `seed-demo`
-posts about forty balanced 2026 entries (with reversals and a void) so the reports have
+posts about forty balanced 2026 entries (with reversals and a void) and a set of receivables
+(four customers, three items, invoices that are open, partial, paid, overdue and void,
+payments, one overpayment, a deposit and a refund) so every report and the aging page have
 something to show. It refuses to run when any journal entry exists unless `--force`, and
 even then only adds: never run it against real books.
+
+## Receivables (M2): customers to deposits
+
+Release 2.2.0 adds receivables on top of the ledger. Only the owner can create or change
+anything; accountants and viewers read every page and report.
+
+| Page | Purpose |
+|------|---------|
+| `/customers` | Customers (name, contact, billing address, net-days terms); the detail page shows invoices, payments, credit and refunds |
+| `/items` | Products and services with a default price and the income account they post to |
+| `/invoices` | Draft, issue (assigns the number and posts to the ledger), edit while unpaid, void; send-ready PDF at `/invoices/{id}.pdf` |
+| `/payments` | Record a customer payment (to Undeposited Funds or straight to a bank account), apply it to invoices, void it |
+| `/deposits` | Group payments held in Undeposited Funds into one bank deposit |
+| `/reports/ar-aging` | A/R Aging with the open-invoice detail and customer credit; CSV and PDF |
+| `/settings/receivables` | Company details printed on invoices and the next invoice number |
+
+Workflow: **customers, then items, then invoices, then payments, then deposits.** Create the
+customer, define the items (each ties to an income account), draft and issue an invoice,
+record the payment when it arrives (apply it to invoices now or later), and group undeposited
+payments into a deposit when you take them to the bank. Money received but not applied stays in
+A/R as customer credit and can be applied later or refunded (from the customer page).
+
+**Cash vs accrual.** Accrual recognizes income when an invoice is issued. Cash (the default on
+every report) recognizes it when the invoice is paid: each application of a payment to an
+invoice adds income on the later of the payment and invoice dates, split across the invoice's
+income accounts. Unapplied money is not income. Both bases are tested to balance; the Balance
+Sheet and Trial Balance always balance. On cash basis an income row drills down to the
+applications behind it.
+
+Before the first invoice: bind Accounts receivable and Undeposited Funds in Settings > Ledger
+(the A/R binding is frozen once any invoice, payment or refund has been recorded), set the next invoice number in
+Settings > Receivables to continue your QBO sequence, and enter the company details. Do not rebind
+Undeposited Funds while payments are still undeposited: they would be stranded (hidden from the
+deposit page, refused by a deposit), so deposit them first.
+There is no JSON API for receivables documents; the A/R Aging CSV/PDF are also exposed
+read-only under the report API.
 
 ## Authentication and roles
 
@@ -151,6 +189,7 @@ payroll/
 │   ├── common/              Shared infrastructure: money (Decimal), crypto, middleware, deps
 │   ├── frontend/            Web UI: templates, static files, in-process routes
 │   ├── ledger/              Chart of accounts, journal entries, period lock, ledger CLI
+│   ├── receivables/         Customers, items, invoices, payments, deposits, refunds, A/R aging
 │   ├── reports/             Trial balance, P&L, balance sheet, GL, journal; CSV/PDF export
 │   ├── tax/                 Pure calculation engine (no I/O)
 │   │   ├── constants.py     ← Update tax rates here each January

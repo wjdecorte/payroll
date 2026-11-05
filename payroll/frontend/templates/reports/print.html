@@ -69,6 +69,39 @@
   </tbody>
   <tfoot><tr><td>Total</td><td class="num">{{ trial.total_debit | currency }}</td><td class="num">{{ trial.total_credit | currency }}</td></tr></tfoot>
 </table>
+{% elif aging %}
+<p class="sub">As of {{ aging.as_of }}. Ledger A/R balance {{ aging.ledger_ar_balance | currency }}.</p>
+<table>
+  <thead><tr><th>Customer</th><th class="num">Current</th><th class="num">1-30</th><th class="num">31-60</th><th class="num">61-90</th><th class="num">91+</th><th class="num">Total</th><th class="num">Credit</th></tr></thead>
+  <tbody>
+    {% set names = {} %}
+    {% for r in aging.rows %}
+    {% set _ = names.update({r.customer_id: r.customer_name}) %}
+    <tr>
+      <td>{{ r.customer_name }}</td>
+      <td class="num">{{ r.current | currency }}</td><td class="num">{{ r.d1_30 | currency }}</td><td class="num">{{ r.d31_60 | currency }}</td><td class="num">{{ r.d61_90 | currency }}</td><td class="num">{{ r.d91_plus | currency }}</td><td class="num">{{ r.total | currency }}</td><td class="num">{{ r.credit | currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr>
+    <td>Total</td>
+    <td class="num">{{ aging.totals.current | currency }}</td><td class="num">{{ aging.totals.d1_30 | currency }}</td><td class="num">{{ aging.totals.d31_60 | currency }}</td><td class="num">{{ aging.totals.d61_90 | currency }}</td><td class="num">{{ aging.totals.d91_plus | currency }}</td><td class="num">{{ aging.totals.total | currency }}</td><td class="num">{{ aging.totals.credit | currency }}</td>
+  </tr></tfoot>
+</table>
+<h2>Open invoices</h2>
+<table>
+  <thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Due</th><th class="num">Days overdue</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th></tr></thead>
+  <tbody>
+    {% for s in aging.invoices %}
+    <tr>
+      <td>#{{ s.invoice.number }}</td><td>{{ names[s.invoice.customer_id] }}</td><td>{{ s.invoice.invoice_date }}</td><td>{{ s.invoice.due_date }}</td>
+      <td class="num">{{ s.days_overdue }}</td><td class="num">{{ s.invoice.total | currency }}</td><td class="num">{{ s.paid | currency }}</td><td class="num">{{ s.balance | currency }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="muted">No open invoices.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% elif ledger %}
 <p class="sub">{{ ledger.start }} to {{ ledger.end }}</p>
 {% for reg in ledger.accounts %}

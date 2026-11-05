@@ -47,7 +47,7 @@ ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
         ("POST", "/enroll"),
     }
 )
-MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19  # the M2 receivables routes added 19
 # The ledger (M1) mutating routes: all owner-only. The sweep test below checks this
 # list against the app's real routes, so a new ledger route cannot be left out.
 LEDGER = f"{PREFIX}/ledger"
@@ -71,6 +71,29 @@ LEDGER_UNSAFE_ENDPOINTS = (
     ("POST", "/journal"),
     ("POST", "/journal/1/reverse"),
     ("POST", "/journal/1/void"),
+)
+# The receivables (M2) mutating page routes: all owner-only.
+RECEIVABLES_UNSAFE_ENDPOINTS = (
+    ("POST", "/customers/new"),
+    ("POST", "/customers/1/edit"),
+    ("POST", "/customers/1/active"),
+    ("POST", "/customers/1/refund"),
+    ("POST", "/customers/1/refunds/1/void"),
+    ("POST", "/items/new"),
+    ("POST", "/items/1/edit"),
+    ("POST", "/items/1/active"),
+    ("POST", "/invoices/new"),
+    ("POST", "/invoices/1/edit"),
+    ("POST", "/invoices/1/discard"),
+    ("POST", "/invoices/1/issue"),
+    ("POST", "/invoices/1/void"),
+    ("POST", "/payments/new"),
+    ("POST", "/payments/1/apply"),
+    ("POST", "/payments/1/void"),
+    ("POST", "/deposits/new"),
+    ("POST", "/deposits/1/void"),
+    ("POST", "/settings/receivables/number"),
+    ("POST", "/settings/receivables/company"),
 )
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
@@ -184,6 +207,7 @@ def test_every_route_requires_auth(any_app):
         ("GET", "/reports/profit-and-loss"),
         ("GET", f"{LEDGER}/reports/balance-sheet.pdf"),
         *LEDGER_UNSAFE_ENDPOINTS,
+        *RECEIVABLES_UNSAFE_ENDPOINTS,
         *ANONYMOUS_ENDPOINTS,
     ]:
         assert known in endpoints, known
@@ -295,6 +319,46 @@ def _readable_ledger_pages() -> list[str]:
         ):
             found.append(path)
     return found
+
+
+def _receivables_unsafe_routes() -> set[tuple[str, str]]:
+    prefixes = (
+        "/customers",
+        "/items",
+        "/invoices",
+        "/payments",
+        "/deposits",
+        "/settings/receivables",
+    )
+    return {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS and path.startswith(prefixes)
+    }
+
+
+def _readable_receivable_pages() -> list[str]:
+    """Every receivables GET page (lists, forms and detail pages with a dummy id)."""
+    prefixes = (
+        "/customers",
+        "/items",
+        "/invoices",
+        "/payments",
+        "/deposits",
+        "/settings/receivables",
+    )
+    return sorted(
+        {
+            path
+            for method, path in _endpoints(app)
+            if method == "GET"
+            and (path.startswith(prefixes) or path.startswith("/reports/ar-aging"))
+        }
+    )
+
+
+def test_receivables_route_list_matches_the_app():
+    assert _receivables_unsafe_routes() == set(RECEIVABLES_UNSAFE_ENDPOINTS)
 
 
 def test_ledger_route_list_matches_the_app():
@@ -508,3 +572,113 @@ def test_require_role_rejects_unknown_or_missing_roles():
         require_role("admin")
     with pytest.raises(ValueError):
         require_role()
+
+
+def test_receivable_page_enumeration_knows_every_page():
+    pages = set(_readable_receivable_pages())
+    for known in (
+        "/customers",
+        "/customers/new",
+        "/customers/1",
+        "/customers/1/edit",
+        "/items",
+        "/items/new",
+        "/items/1/edit",
+        "/invoices",
+        "/invoices/new",
+        "/invoices/1",
+        "/invoices/1/edit",
+        "/invoices/1.pdf",
+        "/payments",
+        "/payments/new",
+        "/payments/1",
+        "/deposits",
+        "/deposits/new",
+        "/deposits/1",
+        "/settings/receivables",
+        "/reports/ar-aging",
+        "/reports/ar-aging.csv",
+        "/reports/ar-aging.pdf",
+    ):
+        assert known in pages, known
+
+
+@pytest.mark.parametrize("role_client", ["viewer_client", "accountant_client"])
+def test_viewer_and_accountant_read_all_receivable_pages_but_cannot_mutate(
+    request, role_client, anon_client, session
+):
+    client = request.getfixturevalue(role_client)
+    # A page that rolls back on an error (the invoice PDF 404) would otherwise take the
+    # uncommitted test user and session with it and sign the client out mid-loop.
+    session.commit()
+    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 20
+    for method, path in RECEIVABLES_UNSAFE_ENDPOINTS:
+        response = client.request(method, path, follow_redirects=False)
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json()["errors"][0]["type"] == "PermissionDeniedError", (method, path)
+        anonymous = anon_client.request(method, path, follow_redirects=False)
+        _assert_refused_unauthenticated(anonymous, method, path)
+    for path in _readable_receivable_pages():
+        response = client.get(path, follow_redirects=False)
+        if path.endswith(("/new", "/edit")):
+            # The create and edit forms are owner-only pages: readers never see a mutating form.
+            assert response.status_code == 403, (path, response.status_code)
+        elif path.endswith(".pdf") and not _pdf_available():
+            assert response.status_code not in (401, 403), path  # authorized; no Pango here
+        else:
+            # Authorized: a missing document (dummy id 1) is a 404, never a 401/403/500.
+            assert response.status_code in (200, 404), (path, response.status_code)
+        anonymous = anon_client.get(path, follow_redirects=False)
+        assert anonymous.status_code in (401, 303), path
+    # Not vacuous: some pages really render for a reader.
+    assert client.get("/invoices").status_code == 200
+    assert client.get("/settings/receivables").status_code == 200
+
+
+def test_receivable_routes_need_csrf(owner_client, session):
+    """A signed-in owner without the CSRF token is refused (403 CSRFError) and nothing is written."""
+    from sqlalchemy import func
+
+    from payroll.auth.dependencies import CSRF_HEADER
+    from payroll.receivables.models import (
+        Customer,
+        CustomerRefund,
+        Deposit,
+        Invoice,
+        Item,
+        Payment,
+    )
+
+    tables = (Customer, Item, Invoice, Payment, Deposit, CustomerRefund, AuditLog)
+
+    def counts() -> list[int]:
+        return [session.exec(select(func.count()).select_from(t)).one() for t in tables]
+
+    session.commit()
+    token = owner_client.headers.pop(CSRF_HEADER)  # a valid session, but no CSRF token header
+    assert token and CSRF_HEADER not in owner_client.headers
+    before = counts()
+    body = {
+        "name": "Csrf Probe",
+        "email": "probe@example.com",
+        "customer_id": "1",
+        "amount": "10.00",
+        "void_date": "2026-03-01",
+        "invoice_date": "2026-03-01",
+        "received_date": "2026-03-01",
+        "number": "5000",
+        "unit_price": "10.00",
+        "terms_days": "30",
+    }
+    assert len(RECEIVABLES_UNSAFE_ENDPOINTS) == 20
+    for method, path in RECEIVABLES_UNSAFE_ENDPOINTS:
+        response = owner_client.request(method, path, data=body, follow_redirects=False)
+        where = f"{method} {path} -> {response.status_code}"
+        assert response.status_code == 403, where
+        assert response.json() == {"detail": "CSRF token missing or invalid"}, where
+    assert counts() == before
+    # Control: the same session with the token is NOT refused as CSRF (so the 403s above are the CSRF check).
+    owner_client.headers[CSRF_HEADER] = token
+    ok = owner_client.post("/customers/new", data=body, follow_redirects=False)
+    assert ok.status_code != 403
+    assert counts()[0] == before[0] + 1

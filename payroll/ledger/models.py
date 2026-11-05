@@ -49,6 +49,7 @@ class SourceType(StrEnum):
     INVOICE = "invoice"
     PAYMENT = "payment"
     DEPOSIT = "deposit"
+    REFUND = "refund"
     EXPENSE = "expense"
     REIMBURSEMENT = "reimbursement"
     PAYROLL_RUN = "payroll_run"

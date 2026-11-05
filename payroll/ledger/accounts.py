@@ -23,7 +23,15 @@ from payroll.ledger.exceptions import (
     AccountNotFoundError,
     InvalidAccountError,
 )
-from payroll.ledger.models import NORMAL_DEBIT, Account, AccountType, JournalLine, SystemRole
+from payroll.ledger.models import (
+    NORMAL_DEBIT,
+    Account,
+    AccountType,
+    JournalEntry,
+    JournalLine,
+    SourceType,
+    SystemRole,
+)
 
 logger = logging.getLogger(f"{app_settings.logger_name}.ledger.accounts")
 
@@ -302,6 +310,12 @@ class AccountService:
         """Bind ``role`` to an account (moving it from any other); ``None`` unbinds."""
         ensure_role(actor, OWNER)
         current = self.account_by_role(role)
+        if role == SystemRole.ACCOUNTS_RECEIVABLE and current is not None:
+            # Wait for in-flight invoice/payment/refund postings (they hold this row FOR SHARE)
+            # so the freeze check below sees every document.
+            self.session.exec(
+                select(Account.id).where(Account.id == current.id).with_for_update()
+            ).one()
         target = self.get(account_id) if account_id is not None else None
         if target is not None:
             if target.type != ROLE_TYPES[role]:
@@ -312,6 +326,18 @@ class AccountService:
                 raise InvalidAccountError(message="A system role needs an active account")
             if target.system_role not in (None, role):
                 raise AccountConflictError(message="That account already holds another system role")
+        if (
+            role == SystemRole.ACCOUNTS_RECEIVABLE
+            and current is not None
+            and (target is None or target.id != current.id)
+            and self._receivables_activity()
+        ):
+            raise InvalidAccountError(
+                message=(
+                    "Accounts receivable cannot change after invoices, payments or refunds "
+                    "have been recorded"
+                )
+            )
         before = {"account_id": current.id if current else None}
         if current is not None and (target is None or current.id != target.id):
             current.system_role = None
@@ -337,6 +363,15 @@ class AccountService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _receivables_activity(self) -> bool:
+        """Any invoice, payment or refund entry exists (voided documents keep theirs)."""
+        stmt = select(JournalEntry.id).where(
+            col(JournalEntry.source_type).in_(
+                [SourceType.INVOICE, SourceType.PAYMENT, SourceType.REFUND]
+            )
+        )
+        return self.session.exec(stmt.limit(1)).first() is not None
 
     def _check_parent(self, account: Account | None, parent_id: int, new_type: AccountType) -> None:
         parent = self.get(parent_id)

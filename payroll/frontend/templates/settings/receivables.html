@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Sales Settings · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% set tab = "" %}
+  {% include "receivables/_tabs.html" %}
+  {% if saved %}<div class="alert alert-success py-2" role="status">{{ saved }}</div>{% endif %}
+  <div class="row g-3">
+    <div class="col-lg-5">
+      <div class="card">
+        <div class="card-header bg-primary">Invoice numbering</div>
+        <div class="card-body">
+          <p>The next invoice issued gets this number. It must be higher than every number already used.</p>
+          {% if number_error %}<div class="alert alert-danger py-2" role="alert">{{ number_error }}</div>{% endif %}
+          {% if is_owner %}
+          <form method="post" action="/settings/receivables/number">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mb-3">
+              <label class="form-label" for="next_invoice_no">Next invoice number</label>
+              <input class="form-control" id="next_invoice_no" name="next_invoice_no" inputmode="numeric" maxlength="12" required value="{{ number_value }}">
+            </div>
+            <button type="submit" class="btn btn-brand">Save number</button>
+          </form>
+          {% else %}
+          <p class="mb-0">Next invoice number: <strong>{{ number_value }}</strong></p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-7">
+      <div class="card">
+        <div class="card-header bg-primary">Company details on invoices</div>
+        <div class="card-body">
+          {% if company_error %}<div class="alert alert-danger py-2" role="alert">{{ company_error }}</div>{% endif %}
+          {% if is_owner %}
+          <form method="post" action="/settings/receivables/company">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mb-3">
+              <label class="form-label" for="company_name">Company name</label>
+              <input class="form-control" id="company_name" name="company_name" maxlength="500" value="{{ company.company_name }}">
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="company_address">Company address</label>
+              <textarea class="form-control" id="company_address" name="company_address" rows="3" maxlength="500">{{ company.company_address }}</textarea>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="remit_to">Remit payment to</label>
+              <textarea class="form-control" id="remit_to" name="remit_to" rows="3" maxlength="500">{{ company.remit_to }}</textarea>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="invoice_footer">Invoice footer</label>
+              <textarea class="form-control" id="invoice_footer" name="invoice_footer" rows="2" maxlength="500">{{ company.invoice_footer }}</textarea>
+            </div>
+            <button type="submit" class="btn btn-brand">Save company details</button>
+          </form>
+          {% else %}
+          <dl class="mb-0">
+            <dt>Company name</dt><dd>{{ company.company_name or "Not set" }}</dd>
+            <dt>Company address</dt><dd>{{ company.company_address or "Not set" }}</dd>
+            <dt>Remit payment to</dt><dd>{{ company.remit_to or "Not set" }}</dd>
+            <dt>Invoice footer</dt><dd>{{ company.invoice_footer or "Not set" }}</dd>
+          </dl>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

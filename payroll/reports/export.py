@@ -8,7 +8,8 @@ Cells are typed. A ``str`` is *text* (account names, memos, labels) and goes thr
 debits and credits are left blank, as on the pages.
 
 PDF: :func:`to_pdf` renders an HTML string with WeasyPrint, which is given a URL
-fetcher that always refuses, so no ``file://`` or network resource can ever be read.
+fetcher that refuses everything but inline ``data:`` URIs, so no ``file://`` or network
+resource can ever be read.
 WeasyPrint is imported lazily: it needs the native Pango libraries, and the CSV side
 must work without them.
 """
@@ -18,6 +19,7 @@ import io
 from datetime import date
 from decimal import Decimal
 
+from payroll.receivables.balances import AgingRow, ARAging
 from payroll.reports.schemas import (
     GeneralLedger,
     JournalReport,
@@ -170,6 +172,68 @@ def _journal(journal: JournalReport) -> list[list[Cell]]:
     return rows
 
 
+def _aging_row(row: AgingRow, name: str) -> list[Cell]:
+    return [
+        name,
+        row.current,
+        row.d1_30,
+        row.d31_60,
+        row.d61_90,
+        row.d91_plus,
+        row.total,
+        row.credit,
+    ]
+
+
+def _ar_aging(aging: ARAging) -> list[list[Cell]]:
+    rows: list[list[Cell]] = [
+        ["A/R Aging"],
+        ["As of", aging.as_of],
+        [],
+        ["Customer", "Current", "1-30", "31-60", "61-90", "91+", "Total", "Unapplied credit"],
+    ]
+    rows += [_aging_row(r, r.customer_name) for r in aging.rows]
+    rows.append(_aging_row(aging.totals, "Total"))
+    rows += [
+        [],
+        ["Open invoices"],
+        [
+            "Invoice",
+            "Customer",
+            "Invoice date",
+            "Due date",
+            "Days overdue",
+            "Total",
+            "Paid",
+            "Balance",
+        ],
+    ]
+    names = {r.customer_id: r.customer_name for r in aging.rows}
+    for s in aging.invoices:
+        inv = s.invoice
+        rows.append(
+            [
+                inv.number,
+                names.get(inv.customer_id, ""),
+                inv.invoice_date,
+                inv.due_date,
+                s.days_overdue,
+                inv.total,
+                s.paid,
+                s.balance,
+            ]
+        )
+    rows += [
+        [],
+        ["Ledger A/R balance", aging.ledger_ar_balance],
+        ["Difference", aging.difference],
+        [],
+        ["Checks"],
+    ]
+    rows += [[i.name, "OK" if i.ok else "FAILED", i.detail] for i in aging.invariants]
+    return rows
+
+
 def _table(report: object) -> list[list[Cell]]:
     if isinstance(report, Statement):
         return _statement(report)
@@ -179,10 +243,14 @@ def _table(report: object) -> list[list[Cell]]:
         return _general_ledger(report)
     if isinstance(report, JournalReport):
         return _journal(report)
+    if isinstance(report, ARAging):
+        return _ar_aging(report)
     raise TypeError(f"Cannot export {type(report).__name__} as CSV")
 
 
-def to_csv(report: Statement | TrialBalance | GeneralLedger | JournalReport) -> str:
+def to_csv(
+    report: Statement | TrialBalance | GeneralLedger | JournalReport | ARAging,
+) -> str:
     """The report as CSV text (UTF-8 by the caller, ``\\r\\n`` line ends)."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
@@ -196,7 +264,11 @@ class FetchBlockedError(Exception):
 
 
 class NoFetch:
-    """A WeasyPrint URL fetcher that refuses everything (``file:``, ``http:``, ``data:``).
+    """A WeasyPrint URL fetcher that refuses everything except ``data:`` URIs.
+
+    A ``data:`` URI carries its bytes inline (the invoice logo), so decoding it reads no
+    file and touches no network. Every other scheme (``file:``, ``http:``, ``https:``,
+    ``ftp:``, ...) is refused, whatever its case or surrounding whitespace.
 
     WeasyPrint 68+ expects a callable taking the URL and carrying ``_fail_on_errors``;
     ``False`` makes a refused resource a logged warning (it is skipped) rather than
@@ -206,7 +278,16 @@ class NoFetch:
     _fail_on_errors = False
 
     def __call__(self, url: str, *args: object, **kwargs: object) -> object:
+        cleaned = url.strip()
+        if cleaned[:5].lower() == "data:":
+            return self._decode_data(cleaned)
         raise FetchBlockedError("blocked: PDF rendering never fetches resources")
+
+    @staticmethod
+    def _decode_data(url: str) -> object:
+        from weasyprint.urls import URLFetcher  # lazy: needs the native Pango libraries
+
+        return URLFetcher(allowed_protocols={"data"}).fetch(url)
 
 
 def to_pdf(html: str) -> bytes:

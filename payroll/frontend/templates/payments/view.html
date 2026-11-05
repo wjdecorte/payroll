@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Payment · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-cash-coin me-2"></i>Payment</span>
+      <span class="badge {{ 'bg-secondary' if payment.status == 'void' else 'bg-success' }}">{{ payment.status | capitalize }}</span>
+    </div>
+    <div class="card-body">
+      <dl class="row mb-3">
+        <dt class="col-sm-2">Customer</dt><dd class="col-sm-10">{{ customer.name }}</dd>
+        <dt class="col-sm-2">Date received</dt><dd class="col-sm-10">{{ payment.received_date }}</dd>
+        <dt class="col-sm-2">Amount</dt><dd class="col-sm-10">{{ payment.amount | currency }}</dd>
+        <dt class="col-sm-2">Method</dt><dd class="col-sm-10">{{ (payment.method or "") | capitalize }}</dd>
+        {% if payment.reference %}<dt class="col-sm-2">Reference</dt><dd class="col-sm-10">{{ payment.reference }}</dd>{% endif %}
+        <dt class="col-sm-2">Deposited to</dt><dd class="col-sm-10">{{ deposit.name }}</dd>
+        {% if payment.memo %}<dt class="col-sm-2">Memo</dt><dd class="col-sm-10">{{ payment.memo }}</dd>{% endif %}
+        {% if payment.status == "void" and payment.void_date %}<dt class="col-sm-2">Voided</dt><dd class="col-sm-10">{{ payment.void_date }}</dd>{% endif %}
+        <dt class="col-sm-2">Unapplied credit</dt><dd class="col-sm-10" id="unapplied">{{ unapplied | currency }}</dd>
+      </dl>
+      <h2 class="h6">Applications</h2>
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr><th>Invoice</th><th>Recognized</th><th class="num">Amount</th></tr>
+        </thead>
+        <tbody>
+          {% for a in applications %}
+          <tr>
+            <td><a href="/invoices/{{ a.invoice_id }}">#{{ invoices[a.invoice_id].number }}</a></td>
+            <td>{{ a.recognized_date }}</td>
+            <td class="num">{{ a.amount | currency }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3" class="text-muted">Not applied to any invoice.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if is_owner and payment.status == "posted" and unapplied > 0 and open_invoices %}
+      <form method="post" action="/payments/{{ payment.id }}/apply" class="no-print mb-3" id="apply-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <h2 class="h6">Apply credit to open invoices</h2>
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>Invoice</th><th>Due</th><th class="num">Balance</th><th class="num">Apply</th></tr>
+          </thead>
+          <tbody>
+            {% for row in open_invoices %}
+            <tr>
+              <td><a href="/invoices/{{ row.invoice.id }}">#{{ row.invoice.number }}</a></td>
+              <td>{{ row.invoice.due_date }}</td>
+              <td class="num">{{ row.balance | currency }}</td>
+              <td><input class="form-control form-control-sm num" name="apply_{{ row.invoice.id }}" inputmode="decimal" autocomplete="off" aria-label="Amount to apply to invoice {{ row.invoice.number }}" value="{{ typed.get(row.invoice.id | string, '') }}"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="oldest_first" name="oldest_first" value="1" checked>
+          <label class="form-check-label" for="oldest_first">Apply oldest first (used when no amounts are typed)</label>
+        </div>
+        <button type="submit" class="btn btn-brand">Apply credit</button>
+      </form>
+      {% endif %}
+      <div class="no-print d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="/payments">Back to payments</a>
+      </div>
+      {% if is_owner and payment.status == "posted" %}
+      <form method="post" action="/payments/{{ payment.id }}/void" class="no-print row g-2 align-items-end mt-3" id="void-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-auto">
+          <label class="form-label" for="void_date">Void date</label>
+          <input type="date" class="form-control" id="void_date" name="void_date" value="{{ void_default }}" required>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="void_memo">Memo (optional)</label>
+          <input type="text" class="form-control" id="void_memo" name="memo" maxlength="500">
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-outline-danger">Void payment</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

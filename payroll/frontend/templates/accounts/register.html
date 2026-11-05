@@ -8,6 +8,13 @@
       <a class="btn btn-sm btn-outline-light" href="/accounts">Chart of accounts</a>
     </div>
     <div class="card-body">
+      {% set basis_labels = {"ledger": "Ledger view (entries as posted)", "cash": "Cash basis view", "accrual": "Accrual basis view"} %}
+      <p class="mb-2"><strong>{{ basis_labels[register.basis] }}</strong>
+        <span class="no-print ms-2">
+          {% for value in ("ledger", "cash", "accrual") if value != register.basis %}
+          <a href="/accounts/{{ register.account_id }}/register?start={{ start }}&amp;end={{ end }}&amp;basis={{ value }}">{{ value | capitalize }}</a>{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </span></p>
       <form method="get" class="row g-2 align-items-end mb-3 no-print">
         <div class="col-auto">
           <label class="form-label" for="start">From</label>
@@ -17,6 +24,7 @@
           <label class="form-label" for="end">To</label>
           <input class="form-control" type="date" id="end" name="end" value="{{ end }}">
         </div>
+        <input type="hidden" name="basis" value="{{ register.basis }}">
         <div class="col-auto"><button type="submit" class="btn btn-brand">Show</button></div>
       </form>
       <table class="table table-sm table-hover align-middle">
@@ -31,10 +39,11 @@
           {% for line in register.lines %}
           <tr{% if line.is_void %} class="text-muted"{% endif %}>
             <td>{{ line.entry_date }}</td>
-            <td><a href="/journal/{{ line.entry_id }}">#{{ line.entry_no }}</a>
+            <td>{% if line.payment_id is not none %}<a href="/payments/{{ line.payment_id }}">Payment #{{ line.entry_no }}</a>
+              {%- else %}<a href="/journal/{{ line.entry_id }}">#{{ line.entry_no }}</a>{% endif %}
               {% if line.is_void %}<span class="badge bg-secondary">Void</span>{% endif %}
               {% if line.is_reversal %}<span class="badge bg-info">Reversal</span>{% endif %}</td>
-            <td>{{ line.memo or "" }}</td>
+            <td>{% if line.invoice_id is not none %}<a href="/invoices/{{ line.invoice_id }}">{{ line.memo or "" }}</a>{% else %}{{ line.memo or "" }}{% endif %}</td>
             <td class="num">{{ line.debit | currency if line.debit | nonzero else "" }}</td>
             <td class="num">{{ line.credit | currency if line.credit | nonzero else "" }}</td>
             <td class="num">{{ line.balance | currency }}</td>

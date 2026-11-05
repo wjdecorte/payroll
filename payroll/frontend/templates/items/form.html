@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit item" if item else "New item" }} · DCI Books{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card">
+    <div class="card-header bg-primary">{{ "Edit item" if item else "New item" }}</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="{{ '/items/%d/edit' % item.id if item else '/items/new' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="mb-3">
+          <label class="form-label" for="name">Name</label>
+          <input class="form-control" id="name" name="name" maxlength="200" required value="{{ values.name }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="description">Description</label>
+          <textarea class="form-control" id="description" name="description" rows="2" maxlength="500">{{ values.description }}</textarea>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="unit_price">Unit price</label>
+          <input class="form-control" id="unit_price" name="unit_price" inputmode="decimal" maxlength="40" value="{{ values.unit_price }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="income_account_id">Income account</label>
+          <select class="form-select" id="income_account_id" name="income_account_id" required>
+            <option value="">Choose an account</option>
+            {% for a in accounts %}
+            <option value="{{ a.id }}"{% if values.income_account_id == a.id | string %} selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-brand">Save</button>
+        <a class="btn btn-outline-secondary" href="/items">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

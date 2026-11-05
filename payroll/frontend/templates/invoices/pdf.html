@@ -1,0 +1,86 @@
+{# Standalone print layout for the invoice PDF; rendered to a string and given only to WeasyPrint,
+   never served to a browser, so the inline <style> is fine. Everything is autoescaped. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invoice{% if invoice.number is not none %} {{ invoice.number }}{% endif %}</title>
+<style>
+  @page { size: Letter; margin: 0.7in 0.7in 0.8in; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #666; } }
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #111; }
+  .wrap { overflow-wrap: anywhere; word-break: break-word; white-space: pre-line; }
+  table { width: 100%; border-collapse: collapse; }
+  .head td { vertical-align: top; }
+  .logo { width: 48pt; height: auto; }
+  h1 { font-size: 22pt; margin: 0 0 4pt; text-align: right; letter-spacing: 1pt; }
+  .co { font-size: 12pt; font-weight: bold; }
+  .meta td { padding: 1pt 0; }
+  .meta td:first-child { color: #555; width: 80pt; }
+  .void { color: #a11; border: 2pt solid #a11; padding: 2pt 8pt; font-size: 16pt; font-weight: bold; display: inline-block; }
+  h2 { font-size: 9pt; text-transform: uppercase; color: #555; margin: 14pt 0 3pt; }
+  table.lines { margin-top: 14pt; table-layout: fixed; }
+  .lines th { border-bottom: 1px solid #333; text-align: left; padding: 3pt 4pt; }
+  .lines td { border-bottom: 1px solid #ddd; padding: 3pt 4pt; vertical-align: top; }
+  .lines thead { display: table-header-group; }
+  .lines tr { page-break-inside: avoid; }
+  .num { text-align: right; white-space: nowrap; }
+  .totals { width: 55%; margin-left: 45%; margin-top: 8pt; page-break-inside: avoid; }
+  .totals td { padding: 2pt 4pt; }
+  .totals .due td { font-weight: bold; font-size: 12pt; border-top: 1.5pt solid #333; }
+  .foot { margin-top: 18pt; page-break-inside: avoid; }
+  .muted { color: #555; }
+</style>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td style="width: 60%">
+      <img class="logo" src="{{ logo }}" alt="">
+      {% if company.company_name %}<div class="co wrap">{{ company.company_name }}</div>{% endif %}
+      {% if company.company_address %}<div class="wrap">{{ company.company_address }}</div>{% endif %}
+    </td>
+    <td>
+      <h1>INVOICE</h1>
+      <div style="text-align: right">{% if is_void %}<span class="void">VOID</span>{% endif %}</div>
+      <table class="meta">
+        <tr><td>Invoice #{{ invoice.number }}</td><td></td></tr>
+        <tr><td>Date</td><td>{{ invoice.invoice_date }}</td></tr>
+        <tr><td>Due date</td><td>{{ invoice.due_date }}</td></tr>
+        <tr><td>Terms</td><td>Net {{ invoice.terms_days }}</td></tr>
+        {% if is_void and invoice.void_date %}<tr><td>Voided</td><td>{{ invoice.void_date }}</td></tr>{% endif %}
+      </table>
+    </td>
+  </tr>
+</table>
+
+<h2>Bill to</h2>
+<div class="wrap"><strong>{{ customer.name }}</strong></div>
+{% if customer.billing_address %}<div class="wrap">{{ customer.billing_address }}</div>{% endif %}
+
+<table class="lines">
+  <thead>
+    <tr><th style="width: 52%">Description</th><th class="num" style="width: 10%">Qty</th><th class="num" style="width: 19%">Unit price</th><th class="num" style="width: 19%">Amount</th></tr>
+  </thead>
+  <tbody>
+    {% for line in lines %}
+    <tr>
+      <td class="wrap">{{ line.description or "" }}</td>
+      <td class="num">{{ "{:f}".format(line.qty.normalize()) }}</td>
+      <td class="num">{{ line.unit_price | currency }}</td>
+      <td class="num">{{ line.amount | currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<table class="totals">
+  <tr><td>Total</td><td class="num">{{ invoice.total | currency }}</td></tr>
+  <tr><td>Paid</td><td class="num">{{ state.paid | currency }}</td></tr>
+  <tr class="due"><td>Balance due</td><td class="num">{{ state.balance | currency }}</td></tr>
+</table>
+
+{% if invoice.memo %}<h2>Memo</h2><div class="wrap">{{ invoice.memo }}</div>{% endif %}
+{% if company.remit_to %}<h2>Remit to</h2><div class="wrap">{{ company.remit_to }}</div>{% endif %}
+{% if company.invoice_footer %}<div class="foot muted wrap">{{ company.invoice_footer }}</div>{% endif %}
+</body>
+</html>

@@ -212,6 +212,7 @@ def test_models_match_migrated_schema(scratch_engine):
     import payroll.ledger.models  # noqa: F401
     import payroll.payroll_run.config_models  # noqa: F401
     import payroll.payroll_run.models  # noqa: F401
+    import payroll.receivables.models  # noqa: F401
 
     alembic_runner.upgrade()
     with scratch_engine.connect() as conn:

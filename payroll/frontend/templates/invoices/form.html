@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit draft invoice" if invoice else "New invoice" }} · DCI Books{% endblock %}
+{% macro line_fields(line, items) %}
+<td>
+  <select class="form-select form-select-sm{% if line.error %} is-invalid{% endif %}" name="line_item" aria-label="Item">
+    <option value="">Choose an item</option>
+    {% for i in items %}
+    <option value="{{ i.id }}" data-price="{{ i.unit_price }}" data-description="{{ i.description or i.name }}"{% if line.item == i.id | string %} selected{% endif %}>{{ i.name }}</option>
+    {% endfor %}
+  </select>
+  {% if line.error %}<div class="invalid-feedback d-block">{{ line.error }}</div>{% endif %}
+</td>
+<td><input class="form-control form-control-sm" name="line_description" maxlength="500" aria-label="Description" value="{{ line.description }}"></td>
+<td><input class="form-control form-control-sm num" name="line_qty" inputmode="decimal" autocomplete="off" aria-label="Quantity" value="{{ line.qty }}"></td>
+<td><input class="form-control form-control-sm num" name="line_unit_price" inputmode="decimal" autocomplete="off" aria-label="Unit price" value="{{ line.unit_price }}"></td>
+<td class="num" data-inv-amount>&nbsp;</td>
+<td class="text-end"><button type="button" class="btn btn-sm btn-outline-secondary" data-inv-remove aria-label="Remove line"><i class="bi bi-x-lg"></i></button></td>
+{% endmacro %}
+{% block content %}
+<div class="container-xl py-3">
+  {% include "receivables/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary">{{ "Edit draft invoice" if invoice else "New invoice" }}</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="{{ '/invoices/%d/edit' % invoice.id if invoice else '/invoices/new' }}" id="inv-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="row g-3 mb-3">
+          <div class="col-md-4">
+            <label class="form-label" for="customer_id">Customer</label>
+            <select class="form-select" id="customer_id" name="customer_id" required>
+              <option value="">Choose a customer</option>
+              {% for c in customers %}
+              <option value="{{ c.id }}"{% if values.customer_id == c.id | string %} selected{% endif %}>{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="invoice_date">Invoice date</label>
+            <input class="form-control" type="date" id="invoice_date" name="invoice_date" required value="{{ values.invoice_date }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label" for="terms_days">Terms (days)</label>
+            <input class="form-control" id="terms_days" name="terms_days" inputmode="numeric" maxlength="3" value="{{ values.terms_days }}">
+            <div class="form-text">Blank uses the customer's terms.</div>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label" for="memo">Memo</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>Item</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th><th></th></tr>
+          </thead>
+          <tbody id="inv-rows">
+            {% for line in lines %}
+            <tr data-inv-row>{{ line_fields(line, items) }}</tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr class="fw-bold">
+              <td colspan="4">Total</td>
+              <td class="num" id="inv-total">&nbsp;</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+        <template id="inv-row-template">
+          <tr data-inv-row>{{ line_fields(blank, items) }}</tr>
+        </template>
+        <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="inv-add"><i class="bi bi-plus-lg me-1"></i>Add line</button>
+        <div>
+          <button type="submit" class="btn btn-brand" id="inv-submit">Save draft</button>
+          <a class="btn btn-outline-secondary" href="{{ '/invoices/%d' % invoice.id if invoice else '/invoices' }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/invoice.js"></script>{% endblock %}

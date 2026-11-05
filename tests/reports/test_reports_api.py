@@ -116,7 +116,7 @@ def test_profit_and_loss_endpoint_preset_and_compare(viewer_client, books, april
     data = response.json()
     assert data["title"] == "Profit and Loss"
     assert data["basis"] == "cash"
-    assert data["basisNote"].startswith("Cash and accrual agree")
+    assert data["basisNote"].startswith("Cash basis recognizes income when an invoice is paid.")
     assert data["columns"] == [
         {"label": "2026-01-01 to 2026-03-31", "start": "2026-01-01", "end": "2026-03-31"},
         {"label": "2025-10-01 to 2025-12-31", "start": "2025-10-01", "end": "2025-12-31"},

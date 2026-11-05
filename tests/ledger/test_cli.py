@@ -1,23 +1,43 @@
 """Tests for the ledger setup CLI (payroll.ledger.cli)."""
 
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func
-from sqlmodel import select
+from sqlmodel import col, select
 
 from payroll.ledger import cli
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, JournalEntry, SourceType
 from payroll.ledger.period_lock import PeriodLockService
+from payroll.receivables.balances import ar_aging, invoice_states
+from payroll.receivables.models import (
+    Customer,
+    CustomerRefund,
+    Deposit,
+    Invoice,
+    Item,
+    Payment,
+)
+from payroll.reports.basis import Basis
 from payroll.reports.periods import Period
 from payroll.reports.statements import ReportService
 
 END = date(2026, 12, 31)
+D = Decimal
 
 
 def _entries(session) -> int:
     return session.exec(select(func.count()).select_from(JournalEntry)).one()
+
+
+def _manual_count(session) -> int:
+    return session.exec(
+        select(func.count())
+        .select_from(JournalEntry)
+        .where(col(JournalEntry.source_type).in_((SourceType.MANUAL, SourceType.OPENING_BALANCE)))
+    ).one()
 
 
 def _run(session, *argv: str) -> int:
@@ -54,13 +74,21 @@ def test_seed_demo_posts_a_balanced_year(session, owner_user, capsys):
     assert _run(session, "seed-demo", "--email", owner_user.email) == 0
     out = capsys.readouterr().out
     assert "balanced" in out and "NOT" not in out
-    count = _entries(session)
-    assert 38 <= count <= 50
-    assert f"Posted {count} demo journal entries" in out
-
     entries = session.exec(select(JournalEntry)).all()
-    assert {e.source_type for e in entries} == {SourceType.MANUAL, SourceType.OPENING_BALANCE}
-    assert sum(1 for e in entries if e.status == "void") == 1
+    manual = [
+        e for e in entries if e.source_type in (SourceType.MANUAL, SourceType.OPENING_BALANCE)
+    ]
+    assert 38 <= len(manual) <= 50
+    assert f"Posted {len(manual)} demo journal entries" in out
+    assert {e.source_type for e in entries} == {
+        SourceType.MANUAL,
+        SourceType.OPENING_BALANCE,
+        SourceType.INVOICE,
+        SourceType.PAYMENT,
+        SourceType.DEPOSIT,
+        SourceType.REFUND,
+    }
+    assert sum(1 for e in manual if e.status == "void") == 1
     assert all(date(2026, 1, 1) <= e.entry_date <= END for e in entries)
 
     reports = ReportService(session)
@@ -83,10 +111,16 @@ def test_seed_demo_refuses_when_entries_exist(session, owner_user, capsys):
 def test_seed_demo_force_only_adds(session, owner_user, capsys):
     assert _run(session, "seed-demo", "--email", owner_user.email) == 0
     before = session.exec(select(JournalEntry.id, JournalEntry.status, JournalEntry.memo)).all()
+    manual_before = _manual_count(session)
     assert _run(session, "seed-demo", "--email", owner_user.email, "--force") == 0
     after = session.exec(select(JournalEntry.id, JournalEntry.status, JournalEntry.memo)).all()
     assert set(before) <= set(after)
-    assert len(after) == 2 * len(before)
+    # The journal year is added again; the receivables (customers exist) are not.
+    assert "Receivables not added" in capsys.readouterr().out
+    assert session.exec(select(func.count()).select_from(Customer)).one() == 4
+    assert session.exec(select(func.count()).select_from(Invoice)).one() == 7
+    assert len(after) > len(before)
+    assert _manual_count(session) == 2 * manual_before
 
 
 def test_seed_demo_failure_posts_nothing(session, owner_user, capsys):
@@ -117,4 +151,48 @@ def test_main_without_injected_session_migrates_and_commits(scratch_engine, caps
     assert cli.main(["seed-demo", "--email", "cli.owner@example.com"]) == 1
     capsys.readouterr()
     with Session(scratch_engine) as db:
-        assert 38 <= _entries(db) <= 50
+        assert 38 <= _manual_count(db) <= 50
+        assert _entries(db) > _manual_count(db)  # the receivables documents posted too
+
+
+def test_seed_demo_adds_receivables_that_reconcile(session, owner_user, capsys):
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    assert "Receivables: 4 customers, 3 items, 7 invoices, 4 payments, 1 deposit, 1 refund" in (
+        capsys.readouterr().out
+    )
+    assert session.exec(select(func.count()).select_from(Customer)).one() == 4
+    assert session.exec(select(func.count()).select_from(Item)).one() == 3
+    assert session.exec(select(func.count()).select_from(Payment)).one() == 4
+    assert session.exec(select(func.count()).select_from(Deposit)).one() == 1
+    assert session.exec(select(func.count()).select_from(CustomerRefund)).one() == 1
+
+    # Every status the app shows is present at year end.
+    states = invoice_states(session, END, include_inactive=True)
+    assert {s.status for s in states} == {"open", "partial", "paid", "overdue", "void"}
+    assert len(states) == 7
+
+    aging = ar_aging(session, END)
+    assert aging.difference == 0 and all(i.ok for i in aging.invariants)
+    assert aging.totals.total > 0 and aging.totals.credit == D(
+        "300.00"
+    )  # Delta's unrefunded credit
+
+    reports = ReportService(session)
+    year = Period(date(2026, 1, 1), END, "2026")
+    for basis in (Basis.CASH, Basis.ACCRUAL):
+        assert all(i.ok for i in reports.profit_and_loss(year, basis=basis).invariants)
+        assert all(i.ok for i in reports.balance_sheet(END, basis=basis).invariants)
+    assert reports.trial_balance(END).balanced
+
+
+def test_seed_demo_twice_refuses_the_second_time_and_adds_no_receivables(
+    session, owner_user, capsys
+):
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    capsys.readouterr()
+    before = session.exec(select(func.count()).select_from(Invoice)).one()
+    assert before == 7
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 1
+    assert "already has" in capsys.readouterr().err
+    assert session.exec(select(func.count()).select_from(Invoice)).one() == before
+    assert session.exec(select(func.count()).select_from(Customer)).one() == 4
