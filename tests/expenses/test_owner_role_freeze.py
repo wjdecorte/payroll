@@ -12,12 +12,13 @@ import sqlalchemy as sa
 from sqlmodel import Session, select
 
 from payroll.auth.models import User
-from payroll.common.documents import locked_role_account
 from payroll.exceptions import AppBaseError
+from payroll.expenses import expenses as expenses_module
+from payroll.expenses.expenses import ExpenseLineInput, ExpenseService
 from payroll.expenses.models import Expense, ExpenseLine, Reimbursement
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.exceptions import InvalidAccountError
-from payroll.ledger.models import Account, AccountType, SystemRole
+from payroll.ledger.models import Account, AccountType, JournalLine, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.migrations import alembic_runner
 from tests.conftest import make_user
@@ -144,18 +145,39 @@ def race_db(scratch_engine):
     engine.dispose()
 
 
-def _post_owner_expense(db: Session, exp_id: int, hold: float) -> None:
-    """What issuing an owner-paid expense does: share-lock the role account, then write."""
-    locked_role_account(db, SystemRole.DUE_TO_OWNER, lambda: AppBaseError(message="unbound"))
-    time.sleep(hold)  # the posting work happens while the lock is held
-    expense = Expense(date=DAY, payee_text="Cash buy", source="owner", total=D("10.00"))
-    db.add(expense)
-    db.flush()
-    db.add(ExpenseLine(expense_id=expense.id, line_no=1, account_id=exp_id, amount=D("10.00")))
-    db.commit()
+@pytest.fixture
+def probe(monkeypatch):
+    """Record which role account the real issuer locked; optionally stall after the lock."""
+    state: dict = {"locked": None, "hold": 0.0}
+    real_lock = expenses_module.locked_role_account
+    real_post = ExpenseService._post_entry
+
+    def recording_lock(session, role, error):
+        account = real_lock(session, role, error)
+        state["locked"] = account.id
+        return account
+
+    def slow_post(self, *args, **kwargs):
+        time.sleep(state["hold"])  # the posting work happens while the role row is held
+        return real_post(self, *args, **kwargs)
+
+    monkeypatch.setattr(expenses_module, "locked_role_account", recording_lock)
+    monkeypatch.setattr(ExpenseService, "_post_entry", slow_post)
+    return state
 
 
-def _race(engine, ids, *, hold=0.0, rebind_delay=0.0, issue_delay=0.0):
+def _issue_owner_expense(db: Session, user_id: int, exp_id: int) -> None:
+    ExpenseService(db).create(
+        actor=db.get(User, user_id),
+        expense_date=DAY,
+        lines=[ExpenseLineInput(exp_id, D("10.00"))],
+        source="owner",
+        paid_from_account_id=None,
+        payee_text="Cash buy",
+    )
+
+
+def _race(engine, ids, *, rebind_delay=0.0, issue_delay=0.0):
     barrier = threading.Barrier(2)
     outcome: dict[str, str] = {}
 
@@ -164,7 +186,7 @@ def _race(engine, ids, *, hold=0.0, rebind_delay=0.0, issue_delay=0.0):
             barrier.wait(timeout=30)
             time.sleep(issue_delay)
             try:
-                _post_owner_expense(db, ids["exp"], hold)
+                _issue_owner_expense(db, ids["user"], ids["exp"])
                 outcome["issue"] = "ok"
             except AppBaseError as exc:
                 db.rollback()
@@ -186,6 +208,7 @@ def _race(engine, ids, *, hold=0.0, rebind_delay=0.0, issue_delay=0.0):
         t.start()
     for t in threads:
         t.join(timeout=60)
+        assert not t.is_alive(), "a worker is stuck (deadlock?)"
     assert set(outcome) == {"issue", "rebind"}
     return outcome
 
@@ -197,39 +220,36 @@ def _bound_id(engine) -> int:
         ).one()
 
 
-def _owner_expense_count(engine) -> int:
+def _credited_accounts(engine) -> list[int]:
+    """The accounts credited by owner expense entries (the Due to Owner side)."""
     with Session(engine) as db:
-        return len(db.exec(select(Expense).where(Expense.source == "owner")).all())
+        return list(
+            db.exec(
+                select(JournalLine.account_id)
+                .join(Expense, Expense.entry_id == JournalLine.entry_id)
+                .where(Expense.source == "owner", JournalLine.credit > 0)
+            ).all()
+        )
 
 
-def test_rebind_started_mid_issue_is_refused_not_stranding_the_expense(race_db):
-    """The rebind starts while the issue holds the role row and has not yet written."""
+def test_rebind_started_mid_issue_is_refused_not_stranding_the_expense(race_db, probe):
+    """The rebind starts while the issuer holds the role row and has not yet posted."""
     engine, ids = race_db
-    outcome = _race(engine, ids, hold=1.5, rebind_delay=0.5)
+    probe["hold"] = 1.5
+    outcome = _race(engine, ids, rebind_delay=0.5)
     assert outcome == {"issue": "ok", "rebind": "InvalidAccountError"}
-    assert _owner_expense_count(engine) == 1
-    assert _bound_id(engine) == ids["due"]  # the expense is on the role's account
+    assert probe["locked"] == ids["due"]
+    assert _credited_accounts(engine) == [ids["due"]]  # the expense is on the role's account
+    assert _bound_id(engine) == ids["due"]  # and the role never left it
 
 
-def test_rebind_that_wins_first_makes_the_issue_fail_or_follow(race_db):
+def test_rebind_that_wins_first_sends_the_issue_to_the_new_role_account(race_db, probe):
+    """A rebind that commits before the issuer locks the role: the issue follows the new binding."""
     engine, ids = race_db
     outcome = _race(engine, ids, issue_delay=1.0)
-    assert outcome["rebind"] == "ok"
+    assert outcome == {"issue": "ok", "rebind": "ok"}
+    assert probe["locked"] == ids["spare"]  # the issuer saw the committed rebind
+    assert _credited_accounts(engine) == [ids["spare"]]
     assert _bound_id(engine) == ids["spare"]
-    # the share-lock re-check saw the new binding; the issue itself posted to whichever
-    # account held the role when it locked it
-    assert outcome["issue"] == "ok"
-    assert _owner_expense_count(engine) == 1
-
-
-@pytest.mark.parametrize("round_no", range(5))
-def test_unforced_race_never_leaves_an_expense_on_a_rebound_role(race_db, round_no):
-    engine, ids = race_db
-    outcome = _race(engine, ids)
-    count = _owner_expense_count(engine)
-    if outcome["rebind"] == "ok" and count:
-        # the rebind committed before the issue took its lock (issue then used the new role)
-        assert _bound_id(engine) == ids["spare"]
-    if count and outcome["rebind"] != "ok":
-        assert _bound_id(engine) == ids["due"]
-    assert outcome["rebind"] in ("ok", "InvalidAccountError")
+    with Session(engine) as db:  # nothing was credited to the account that lost the role
+        assert AccountService(db).balances().get(ids["due"], D("0.00")) == D("0.00")
