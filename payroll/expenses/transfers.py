@@ -23,6 +23,8 @@ from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.documents import (
     MAX_MEMO,
+    PAYMENT_TYPES,
+    RESERVED_ROLES,
     check_void_date,
     checked_amount,
     clean_text,
@@ -32,7 +34,6 @@ from payroll.common.documents import (
     void_memo,
 )
 from payroll.expenses.exceptions import InvalidTransferError, TransferError, TransferNotFoundError
-from payroll.expenses.expenses import PAYMENT_TYPES, RESERVED_ROLES
 from payroll.expenses.models import Transfer
 from payroll.ledger.models import Account, JournalEntry, SourceType
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft

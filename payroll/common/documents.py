@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, col, select
 
 from payroll.exceptions import AppBaseError
-from payroll.ledger.models import Account, SystemRole
+from payroll.ledger.models import Account, AccountType, SystemRole
 
 
 def utcnow_naive() -> datetime:
@@ -20,6 +20,13 @@ def utcnow_naive() -> datetime:
 MAX_MEMO = 500
 MAX_DOCUMENT_AMOUNT = Decimal("100000000.00")
 _CENT = Decimal("0.01")
+
+# Account-shape rules for the account a document pays from or into: a bank, cash or card
+# account that does not hold a receivables / owner-debt system role.
+PAYMENT_TYPES = frozenset({AccountType.ASSET, AccountType.LIABILITY})
+RESERVED_ROLES = frozenset(
+    {SystemRole.ACCOUNTS_RECEIVABLE, SystemRole.UNDEPOSITED_FUNDS, SystemRole.DUE_TO_OWNER}
+)
 
 
 def is_int(value: object) -> bool:

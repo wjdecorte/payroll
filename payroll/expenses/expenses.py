@@ -30,6 +30,8 @@ from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.documents import (
     MAX_DOCUMENT_AMOUNT,
     MAX_MEMO,
+    PAYMENT_TYPES,
+    RESERVED_ROLES,
     check_void_date,
     checked_amount,
     clean_text,
@@ -50,10 +52,6 @@ MAX_LINES = 100
 MAX_PAYEE = 200
 MAX_AMOUNT = MAX_DOCUMENT_AMOUNT
 LINE_TYPES = frozenset({AccountType.EXPENSE, AccountType.COGS, AccountType.OTHER_EXPENSE})
-PAYMENT_TYPES = frozenset({AccountType.ASSET, AccountType.LIABILITY})
-RESERVED_ROLES = frozenset(
-    {SystemRole.ACCOUNTS_RECEIVABLE, SystemRole.UNDEPOSITED_FUNDS, SystemRole.DUE_TO_OWNER}
-)
 STATUSES = frozenset({"posted", "void"})
 MAX_PAGE = 200
 
