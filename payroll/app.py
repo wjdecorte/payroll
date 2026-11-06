@@ -139,6 +139,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------ #
     # Register routers                                                     #
     # ------------------------------------------------------------------ #
+    import payroll.expenses.models  # noqa: F401  (registers the tables with the metadata)
     import payroll.receivables.models  # noqa: F401  (registers the tables with the metadata)
     from payroll.common.routers import router as common_router
     from payroll.ledger.routers import router as ledger_router

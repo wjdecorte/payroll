@@ -52,6 +52,7 @@ class SourceType(StrEnum):
     REFUND = "refund"
     EXPENSE = "expense"
     REIMBURSEMENT = "reimbursement"
+    TRANSFER = "transfer"
     PAYROLL_RUN = "payroll_run"
     TAX_PAYMENT = "tax_payment"
     OPENING_BALANCE = "opening_balance"

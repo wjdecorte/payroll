@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     totp_issuer: str = "DCI Books"
     # Largest request body accepted (bytes); bigger requests get 413 before parsing.
     max_request_body_bytes: int = 1_048_576
+    # Where uploaded expense attachments are stored (a mounted volume in production).
+    attachment_dir: str = "/data/attachments"
     # Argon2 hashes/verifies allowed at once per process (each needs ~64 MiB);
     # further login attempts wait for a slot instead of exhausting memory.
     max_concurrent_password_hashes: int = Field(default=4, ge=1)
