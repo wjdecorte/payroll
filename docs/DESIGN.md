@@ -201,11 +201,13 @@ attachment     id, owner_type ('expense'), owner_id, filename, content_type, sha
                stored_name, size, uploaded_at, uploaded_by   (append-only)
 ```
 
-Integrity beyond column CHECKs is in triggers: exactly one of `vendor_id` / `payee_text`;
-expense lines sum to the expense total and a reimbursement's expenses to its total (deferred
-constraint triggers, checked at COMMIT); `expense.reimbursement_id` is set-once; expense lines
-and attachments refuse UPDATE and DELETE; a posted document carries no void fields, a void one
-carries all of them, and the void date is not before the document date. Posting rules:
+Integrity beyond the foreign keys is in the database. CHECK constraints: exactly one of
+`vendor_id` / `payee_text`; a posted document carries no void fields and a void one carries all
+of them, with the void date not before the document date; a reimbursement link only on a posted
+owner-paid expense. Triggers: expense lines sum to the expense total and a reimbursement's
+expenses to its total (deferred constraint triggers, checked at COMMIT); `expense.reimbursement_id`
+is set-once (and only to a posted reimbursement); expense lines and attachments are append-only
+(UPDATE and DELETE refused). Posting rules:
 
 - Expense, account source: Dr each line's expense account / Cr the paid-from asset or liability
   account. Owner source: Cr the Due to Owner role account instead.
@@ -414,7 +416,9 @@ a dedicated design pass can use the `impeccable` skill at implementation time.
   raises the limit once the session is known to be an owner's). Over the limit: 422 on the
   upload routes, 413 elsewhere.
 - **Migrations:** Alembic, run at start (existing `alembic_runner.py`).
-- **Backups:** a `backup` sidecar runs nightly `pg_dump`, encrypts it
+- **Backups (planned, M7):** today the real backup is the DSM scheduled `pg_dump` plus Hyper
+  Backup, and the attachments folder must be added to that Hyper Backup selection by hand. The
+  planned design, not built yet: a `backup` sidecar runs nightly `pg_dump`, encrypts it
   (`age`) with a public key (private key kept offline), keeps 30 dailies + 12
   monthlies, and copies to off-site storage (e.g. Hyper Backup target /
   cloud bucket). Attachments are included. A `restore.sh` and a documented

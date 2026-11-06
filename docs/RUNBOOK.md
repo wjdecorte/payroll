@@ -17,7 +17,9 @@ Watchtower stopped a plain `up -d` would reuse a stale local `:latest`):
    ```bash
    docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_$(date +%F).dump
    ```
-   Restore (stop the app first, into an empty/recreated database):
+   Restore is a **full** `pg_restore` into an empty or recreated database; a data-only restore
+   into an already migrated database fails, because the trigger functions resolve table names
+   through `search_path`. Stop the app first:
    ```bash
    docker compose -f compose.synology.yml stop api
    docker compose -f compose.synology.yml exec -T db pg_restore -U payroll -d payroll --clean --if-exists < payroll_pre_v2_YYYY-MM-DD.dump
@@ -127,8 +129,10 @@ Receipts:
 - **Backup and restore drill:** `/data/attachments` (on Synology
   `/volume1/docker/payroll/attachments`) is **not** inside the database dump. Add it to the
   nightly job's Hyper Backup selection beside the dumps, and when you test a restore, restore the
-  dump **and** the attachments folder together (with the ownership above), then open an expense
-  with a receipt and download it. A database restored without the files shows receipts that
+  dump **and** the attachments folder together, then fix ownership (files restored by root with
+  mode 0600 are unreadable to the app otherwise):
+  `chown -R 10001:0 /volume1/docker/payroll/attachments && chmod -R u+rwX,go-rwx /volume1/docker/payroll/attachments`.
+  Then open an expense with a receipt and download it. A database restored without the files shows receipts that
   fail to download; files without the database are orphans.
 - `MAX_UPLOAD_BODY_BYTES` (default 64 MiB) is the largest request body on the two upload routes
   only (`POST /expenses/new` and `POST /expenses/{id}/receipts`), and the larger ceiling applies
@@ -248,8 +252,8 @@ After the upgrade, as the owner:
 
 The period lock (Settings > Ledger, or `PUT /payroll/api/v1/ledger/period-lock`) blocks
 posting into it and voiding entries dated in it. A manual journal entry in a locked period can be
-corrected with a reversal dated after the lock; an invoice, payment, deposit, refund or expense in
-a locked period cannot (a reversing journal would leave the document live in its subledger), so
+corrected with a reversal dated after the lock; an invoice, payment, deposit, refund, expense,
+transfer or reimbursement in a locked period cannot (a reversing journal would leave the document live in its subledger), so
 move the lock back instead. Lock a year once it
 is final: after the CPA has the return figures, the year-end trial balance is saved
 (CSV/PDF from Reports), and any year-end close or adjusting entries are posted. Set the lock to
@@ -363,7 +367,9 @@ Include `/volume1/backups` in Hyper Backup, and test a restore occasionally.
 
 From v2.3.0 receipts live in `/volume1/docker/payroll/attachments` (mounted at
 `/data/attachments`); include that folder in Hyper Backup too, and restore it together with the
-database dump (see Upgrading to v2.3.0).
+database dump (see Upgrading to v2.3.0). After restoring the folder, run
+`chown -R 10001:0 /volume1/docker/payroll/attachments && chmod -R u+rwX,go-rwx /volume1/docker/payroll/attachments`
+so the app can read the files.
 
 ## System of record
 
