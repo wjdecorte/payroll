@@ -13,7 +13,6 @@ row FOR UPDATE first, so a racing reimbursement (which also locks it) serializes
 """
 
 import logging
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -29,9 +28,13 @@ from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.documents import (
+    MAX_DOCUMENT_AMOUNT,
     MAX_MEMO,
     check_void_date,
+    checked_amount,
+    clean_text,
     commit_or_rollback,
+    is_int,
     locked_role_account,
     utcnow_naive,
     void_memo,
@@ -45,8 +48,7 @@ logger = logging.getLogger(f"{app_settings.logger_name}.expenses.expenses")
 
 MAX_LINES = 100
 MAX_PAYEE = 200
-MAX_AMOUNT = Decimal("100000000.00")
-CENT = Decimal("0.01")
+MAX_AMOUNT = MAX_DOCUMENT_AMOUNT
 LINE_TYPES = frozenset({AccountType.EXPENSE, AccountType.COGS, AccountType.OTHER_EXPENSE})
 PAYMENT_TYPES = frozenset({AccountType.ASSET, AccountType.LIABILITY})
 RESERVED_ROLES = frozenset(
@@ -68,20 +70,7 @@ def _invalid(message: str) -> InvalidExpenseError:
 
 
 def _clean_text(value: str | None, label: str, limit: int) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise _invalid(f"{label} must be text")
-    text = value.strip()
-    if any(unicodedata.category(ch) == "Cc" for ch in text):
-        raise _invalid(f"{label} cannot contain control characters")
-    if len(text) > limit:
-        raise _invalid(f"{label} must be at most {limit} characters")
-    return text or None
-
-
-def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+    return clean_text(value, label, limit, InvalidExpenseError)
 
 
 class ExpenseService:
@@ -152,9 +141,9 @@ class ExpenseService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Expense]:
-        if not _is_int(limit) or not 1 <= limit <= MAX_PAGE:
+        if not is_int(limit) or not 1 <= limit <= MAX_PAGE:
             raise _invalid(f"The page size must be between 1 and {MAX_PAGE}")
-        if not _is_int(offset) or offset < 0:
+        if not is_int(offset) or offset < 0:
             raise _invalid("The offset cannot be negative")
         stmt = self._filtered(
             select(Expense),
@@ -227,7 +216,7 @@ class ExpenseService:
                 raise _invalid("The expense total cannot exceed 100,000,000.00")
             if source == "owner" and paid_from_account_id is not None:
                 raise _invalid("An owner-paid expense has no payment account")
-            if source == "account" and not _is_int(paid_from_account_id):
+            if source == "account" and not is_int(paid_from_account_id):
                 raise _invalid("Choose the account the expense was paid from")
 
             # (2) locks: role account, vendor, then accounts by id
@@ -357,20 +346,13 @@ class ExpenseService:
         if len(items) > MAX_LINES:
             raise _invalid(f"An expense can have at most {MAX_LINES} lines")
         for line in items:
-            if not isinstance(line, ExpenseLineInput) or not _is_int(line.account_id):
+            if not isinstance(line, ExpenseLineInput) or not is_int(line.account_id):
                 raise _invalid("Choose an account for every line")
-            amount = line.amount
-            if not isinstance(amount, Decimal) or not amount.is_finite():
-                raise _invalid("Line amounts must be numbers")
-            # range first: quantize raises InvalidOperation on huge values
-            if amount <= 0 or amount > MAX_AMOUNT:
-                raise _invalid("Line amounts must be between 0.01 and 100,000,000.00")
-            if amount != amount.quantize(CENT):
-                raise _invalid("Line amounts must have at most two decimal places")
+            checked_amount(line.amount, "A line amount", InvalidExpenseError)
         return [
             ExpenseLineInput(
                 line.account_id,
-                line.amount.quantize(CENT),
+                checked_amount(line.amount, "A line amount", InvalidExpenseError),
                 _clean_text(line.memo, "Line memo", MAX_MEMO),
             )
             for line in items
@@ -384,7 +366,7 @@ class ExpenseService:
                 .with_for_update(read=True)
                 .execution_options(populate_existing=True)
             ).first()
-            if _is_int(vendor_id)
+            if is_int(vendor_id)
             else None
         )
         if vendor is None:
@@ -393,7 +375,7 @@ class ExpenseService:
             raise _invalid("The vendor is inactive")
 
     def _lock_accounts(self, ids: set[int]) -> dict[int, Account]:
-        if any(not _is_int(i) for i in ids):
+        if any(not is_int(i) for i in ids):
             raise _invalid("Choose valid accounts")
         rows = self.session.exec(
             select(Account)

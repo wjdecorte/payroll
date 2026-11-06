@@ -1,8 +1,10 @@
 """Helpers shared by the document services (receivables, expenses)."""
 
 import functools
+import unicodedata
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, col, select
@@ -16,6 +18,41 @@ def utcnow_naive() -> datetime:
 
 
 MAX_MEMO = 500
+MAX_DOCUMENT_AMOUNT = Decimal("100000000.00")
+_CENT = Decimal("0.01")
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def clean_text(value: object, label: str, limit: int, error_cls: type[AppBaseError]) -> str | None:
+    """Stripped text, or None when blank; refuses non-text, control characters and long text."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise error_cls(message=f"{label} must be text")
+    text = value.strip()
+    if any(unicodedata.category(ch) == "Cc" for ch in text):
+        raise error_cls(message=f"{label} cannot contain control characters")
+    if len(text) > limit:
+        raise error_cls(message=f"{label} must be at most {limit} characters")
+    return text or None
+
+
+def checked_amount(value: object, label: str, error_cls: type[AppBaseError]) -> Decimal:
+    """A positive, finite Decimal up to 100,000,000.00 with at most two decimal places.
+
+    Checked in that order: finite, then range (``quantize`` raises on huge values), then
+    decimal places. Returns the value quantized to cents.
+    """
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise error_cls(message=f"{label} must be a number")
+    if value <= 0 or value > MAX_DOCUMENT_AMOUNT:
+        raise error_cls(message=f"{label} must be between 0.01 and 100,000,000.00")
+    if value != value.quantize(_CENT):
+        raise error_cls(message=f"{label} must have at most two decimal places")
+    return value.quantize(_CENT)
 
 
 def void_memo(memo: str | None, default: str) -> str:
