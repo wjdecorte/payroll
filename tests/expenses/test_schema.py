@@ -105,6 +105,10 @@ def test_migration_upgrade_and_downgrade_roundtrip(scratch_engine):
 
     alembic_runner.downgrade(PRE_REVISION)
     with scratch_engine.connect() as conn:
+        assert (
+            conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+            == PRE_REVISION
+        )
         assert not EXPENSE_TABLES & set(sa.inspect(conn).get_table_names())
         names = {r[0] for r in conn.exec_driver_sql("SELECT proname FROM pg_proc")}
         assert not {n for n in names if n.startswith("expenses_")}
@@ -114,6 +118,48 @@ def test_migration_upgrade_and_downgrade_roundtrip(scratch_engine):
     alembic_runner.upgrade()
     with scratch_engine.connect() as conn:
         assert EXPENSE_TABLES <= set(sa.inspect(conn).get_table_names())
+
+
+_NOW = "now()"
+_ACCOUNTS = (
+    "INSERT INTO account (id, create_date, modify_date, name, type, is_active) VALUES "
+    f"(1, {_NOW}, {_NOW}, 'A', 'asset', true), (2, {_NOW}, {_NOW}, 'B', 'asset', true)"
+)
+_BASE = f"{_NOW}, {_NOW}, '2026-01-15'"
+_ROWS = {
+    "expense": (
+        "INSERT INTO expense (create_date, modify_date, date, payee_text, source, total, status)"
+        f" VALUES ({_BASE}, 'Cafe', 'owner', 1, 'posted')"
+    ),
+    "transfer": (
+        "INSERT INTO transfer (create_date, modify_date, date, from_account_id, to_account_id,"
+        f" amount, status) VALUES ({_BASE}, 1, 2, 1, 'posted')"
+    ),
+    "reimbursement": (
+        "INSERT INTO reimbursement (create_date, modify_date, date, paid_from_account_id, total,"
+        f" status) VALUES ({_BASE}, 1, 1, 'posted')"
+    ),
+}
+
+
+@pytest.mark.parametrize("table", ["expense", "transfer", "reimbursement"])
+def test_downgrade_refuses_while_m3_tables_hold_rows(scratch_engine, table):
+    alembic_runner.upgrade()
+    with scratch_engine.begin() as conn:
+        # replica role skips the deferred integrity triggers so a bare row can be planted
+        conn.exec_driver_sql("SET LOCAL session_replication_role = replica")
+        conn.exec_driver_sql(_ACCOUNTS)
+        conn.exec_driver_sql(_ROWS[table])
+    with pytest.raises(RuntimeError, match=f"the {table} table has rows"):
+        alembic_runner.downgrade(PRE_REVISION)
+    with scratch_engine.connect() as conn:
+        assert EXPENSE_TABLES <= set(sa.inspect(conn).get_table_names())
+        assert (
+            conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+            == alembic_runner._HEAD_REVISION
+        )
+        names = {r[0] for r in conn.exec_driver_sql("SELECT proname FROM pg_proc")}
+        assert "expenses_check_line_sum" in names  # nothing was dropped
 
 
 def test_models_match_migration(scratch_engine):
@@ -340,6 +386,44 @@ def test_reimbursement_link_requires_posted_expense(session, owner_user, chart, 
     _line(session, exp, expense_account)
     reim = _reimbursement(session, owner_user, chart, bank)
     with pytest.raises(DBAPIError, match="posted"):
+        session.execute(
+            text("UPDATE expense SET reimbursement_id = :r WHERE id = :e"),
+            {"r": reim.id, "e": exp.id},
+        )
+
+
+def test_linked_expense_cannot_be_voided_by_update(session, owner_user, chart, expense_account):
+    bank = chart["Business Checking"]
+    exp = _owner_expense(session, owner_user, chart, expense_account)
+    reim = _reimbursement(session, owner_user, chart, bank)
+    session.execute(
+        text("UPDATE expense SET reimbursement_id = :r WHERE id = :e"), {"r": reim.id, "e": exp.id}
+    )
+    with pytest.raises(IntegrityError, match="ck_expense_reimbursement_link"):
+        session.execute(
+            text(
+                "UPDATE expense SET status = 'void', void_entry_id = :v, void_date = :d "
+                "WHERE id = :e"
+            ),
+            {"v": _entry(session, owner_user, chart), "d": JAN, "e": exp.id},
+        )
+
+
+def test_reimbursement_link_requires_posted_reimbursement(
+    session, owner_user, chart, expense_account
+):
+    bank = chart["Business Checking"]
+    exp = _owner_expense(session, owner_user, chart, expense_account)
+    reim = _reimbursement(
+        session,
+        owner_user,
+        chart,
+        bank,
+        status="void",
+        void_entry_id=_entry(session, owner_user, chart),
+        void_date=JAN,
+    )
+    with pytest.raises(DBAPIError, match="posted reimbursement"):
         session.execute(
             text("UPDATE expense SET reimbursement_id = :r WHERE id = :e"),
             {"r": reim.id, "e": exp.id},

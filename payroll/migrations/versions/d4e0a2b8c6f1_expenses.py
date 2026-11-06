@@ -10,8 +10,10 @@ the database:
   * expense_line and attachment are append-only (UPDATE and DELETE rejected);
   * a deferred constraint trigger rejects, at COMMIT, an expense whose lines do not
     sum to its total (an expense with no lines included);
+  * a CHECK (ck_expense_reimbursement_link) allows a reimbursement link only on a
+    posted owner-paid expense, so a linked expense cannot be voided;
   * expense.reimbursement_id is set-once: it can be set only on a posted owner-paid
-    expense, never changed from one reimbursement to another, and cleared only when
+    expense, only to a posted reimbursement, never changed from one reimbursement to another, and cleared only when
     the owning reimbursement is void (the services void the reimbursement first);
   * a deferred constraint trigger rejects, at COMMIT, a posted reimbursement whose
     linked expenses do not sum to its total. It takes FOR NO KEY UPDATE on the
@@ -19,7 +21,9 @@ the database:
     are checked one after the other, each seeing the other's committed links) but not
     with the FOR KEY SHARE the foreign-key checks hold until the transaction ends
     (FOR UPDATE would deadlock two committing transactions).
-The downgrade drops the triggers, functions and tables (all expenses data).
+The downgrade drops the triggers, functions and tables (all expenses data) and refuses
+to run while the expense, transfer or reimbursement tables hold rows (transfer journal
+entries would be left unparseable by the earlier code).
 """
 
 from collections.abc import Sequence
@@ -117,6 +121,10 @@ def upgrade() -> None:
             "(source = 'owner') = (paid_from_account_id IS NULL)", name="ck_expense_source_account"
         ),
         sa.CheckConstraint("total > 0", name="ck_expense_total"),
+        sa.CheckConstraint(
+            "reimbursement_id IS NULL OR (source = 'owner' AND status = 'posted')",
+            name="ck_expense_reimbursement_link",
+        ),
         *_status_checks("expense"),
         _fk("vendor_id", "vendor.id"),
         _fk("paid_from_account_id", "account.id"),
@@ -269,6 +277,13 @@ def upgrade() -> None:
                 IF NEW.status <> 'posted' THEN
                     RAISE EXCEPTION 'only a posted expense can be reimbursed (expense %)', NEW.id;
                 END IF;
+                SELECT status INTO reim_status FROM reimbursement
+                 WHERE id = NEW.reimbursement_id;
+                IF reim_status IS DISTINCT FROM 'posted' THEN
+                    RAISE EXCEPTION
+                        'expense % can be linked only to a posted reimbursement (%)',
+                        NEW.id, NEW.reimbursement_id;
+                END IF;
             END IF;
             RETURN NEW;
         END;
@@ -346,6 +361,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    for table in ("expense", "transfer", "reimbursement"):
+        if bind.execute(sa.text(f"SELECT EXISTS (SELECT 1 FROM {table})")).scalar():
+            raise RuntimeError(
+                f"Refusing to downgrade {revision}: the {table} table has rows. Dropping the "
+                "expenses tables would destroy that data and leave 'transfer' journal entries "
+                "that the earlier code cannot read. Restore a backup taken before the upgrade "
+                "instead."
+            )
     op.execute("DROP TRIGGER expense_reimbursement_total ON expense")
     op.execute("DROP TRIGGER reimbursement_total ON reimbursement")
     op.execute("DROP FUNCTION expenses_check_reimbursement_link()")

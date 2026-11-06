@@ -55,6 +55,10 @@ class Expense(AppBaseModel, table=True):
             "(source = 'owner') = (paid_from_account_id IS NULL)", name="ck_expense_source_account"
         ),
         CheckConstraint("total > 0", name="ck_expense_total"),
+        CheckConstraint(
+            "reimbursement_id IS NULL OR (source = 'owner' AND status = 'posted')",
+            name="ck_expense_reimbursement_link",
+        ),
         CheckConstraint("void_date IS NULL OR void_date >= date", name="ck_expense_void_date"),
         *_status_check("expense"),
     )
