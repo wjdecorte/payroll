@@ -84,6 +84,26 @@ deposit page, refused by a deposit), so deposit them first.
 There is no JSON API for receivables documents; the A/R Aging CSV/PDF are also exposed
 read-only under the report API.
 
+## Expenses (M3): vendors, receipts, transfers, reimbursements
+
+Release 2.3.0 adds expenses on top of the ledger. Only the owner can create or change anything;
+accountants and viewers read every page, report and receipt.
+
+| Page | Purpose |
+|------|---------|
+| `/vendors` | Vendors (name, note); deactivate rather than delete |
+| `/expenses` | Expenses with split lines (one expense account per line), paid from an account or personally by the owner; vendor or free-text payee; receipts (PDF, PNG, JPEG, HEIC); void with a date; CSV export |
+| `/transfers` | Move money between two asset or liability accounts (for example a credit card payment); void |
+| `/owner` | The Owner page: what the company owes you (Due to Owner), your open personal-card expenses, and Reimburse (whole expenses, paid from an asset account) with history and void |
+| `/reports/owner-reimbursement` | Owed balance as of a date, open expenses and reimbursements in a range; CSV and PDF |
+
+Receipts are append-only (they cannot be removed; explain a wrong upload in the memo), are
+checked by file contents, and are stored under `ATTACHMENT_DIR` (default `/data/attachments`),
+which must be a mounted volume in production and part of your backups. Before the first
+owner-paid expense, bind **Due to Owner** in Settings > Ledger (frozen after first use). Bank
+reconciliation is not part of this release. See [docs/RUNBOOK.md](docs/RUNBOOK.md)
+("Upgrading to v2.3.0").
+
 ## Authentication and roles
 
 Every page and API route needs a signed-in user; only `/login`, the MFA pages,
@@ -170,6 +190,8 @@ All settings come from environment variables or `.env` (see `.env.example`):
 | `MAX_FAILED_LOGINS` / `LOCKOUT_MINUTES` | `5` / `15` | Login lockout |
 | `TOTP_ISSUER` | `DCI Books` | Name shown in the authenticator app |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Larger request bodies get HTTP 413 |
+| `MAX_UPLOAD_BODY_BYTES` | `67108864` | Largest receipt upload body (expense create / add receipts), for a signed-in owner on those two routes only; larger gets HTTP 422 |
+| `ATTACHMENT_DIR` | `/data/attachments` | Where receipts are stored; mount a volume here (compose does) and back it up |
 | `MAX_CONCURRENT_PASSWORD_HASHES` | `4` | Argon2 hashes/verifies at once per worker (~64 MiB each); extra logins queue |
 | `COMPANY_TIMEZONE` | `America/New_York` | IANA timezone that defines "today" and period boundaries for reports |
 | `DEBUG_MODE` | `false` | Enables debug logging, the API docs routes and SQL echo **with bound parameters** (hashes, tokens): never in production |
@@ -190,6 +212,7 @@ payroll/
 │   ├── frontend/            Web UI: templates, static files, in-process routes
 │   ├── ledger/              Chart of accounts, journal entries, period lock, ledger CLI
 │   ├── receivables/         Customers, items, invoices, payments, deposits, refunds, A/R aging
+│   ├── expenses/            Vendors, expenses, receipts, transfers, owner reimbursements
 │   ├── reports/             Trial balance, P&L, balance sheet, GL, journal; CSV/PDF export
 │   ├── tax/                 Pure calculation engine (no I/O)
 │   │   ├── constants.py     ← Update tax rates here each January

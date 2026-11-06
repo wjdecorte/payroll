@@ -43,6 +43,7 @@ from payroll.auth.permissions import require_owner, require_reader
 from payroll.common.dependencies import get_session
 from payroll.common.money import round_money
 from payroll.exceptions import AppBaseError
+from payroll.frontend.source_links import document_label, source_href
 from payroll.payroll_run.config_schemas import PayrollConfigUpdate
 from payroll.payroll_run.config_services import PayrollConfigService
 from payroll.payroll_run.schemas import PayrollInput
@@ -93,6 +94,8 @@ templates.env.filters["currency"] = _currency
 templates.env.filters["amount"] = _amount
 templates.env.filters["nonzero"] = _nonzero
 templates.env.filters["abs"] = _abs
+templates.env.globals["source_href"] = source_href
+templates.env.globals["document_label"] = document_label
 templates.env.globals["app_name"] = app_settings.app_name
 templates.env.globals["app_version"] = app_settings.app_version
 templates.env.globals["build_number"] = app_settings.build_number

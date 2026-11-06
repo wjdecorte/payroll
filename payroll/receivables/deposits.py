@@ -14,7 +14,7 @@ deposits from taking the same payment. ``void`` locks the deposit, then its paym
 """
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -26,9 +26,16 @@ from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
+from payroll.common.documents import (
+    check_void_date,
+    commit_or_rollback,
+    lock_rows,
+    locked_role_account,
+    utcnow_naive,
+    void_memo,
+)
 from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import check_void_date, utcnow_naive, void_memo
 from payroll.receivables.exceptions import (
     DepositError,
     DepositNotFoundError,
@@ -113,7 +120,11 @@ class DepositService:
         ensure_role(actor, OWNER)
 
         def work() -> Deposit:
-            undeposited = self._locked_undeposited()
+            undeposited = locked_role_account(
+                self.session,
+                SystemRole.UNDEPOSITED_FUNDS,
+                lambda: _invalid("Bind Undeposited Funds in Settings > Ledger first"),
+            )
             if not isinstance(deposit_date, date) or not is_supported_date(deposit_date):
                 raise _invalid(f"The deposit date must be within {supported_range_text()}")
             clean_memo = (memo or "").strip()
@@ -121,7 +132,9 @@ class DepositService:
                 raise _invalid(f"Memo must be at most {MAX_MEMO} characters")
             ids = self._check_ids(payment_ids)
             bank = self._bank(bank_account_id, undeposited)
-            payments = self._lock_payments(ids)
+            payments = lock_rows(
+                self.session, Payment, ids, lambda: _invalid("A selected payment was not found")
+            )
             total = ZERO
             for payment in payments:
                 label = f"The payment from {payment.received_date.isoformat()} for {payment.amount}"
@@ -164,7 +177,7 @@ class DepositService:
             )
             return deposit
 
-        deposit = self._commit(work)
+        deposit = commit_or_rollback(self.session, work)
         logger.info("Created deposit id=%s", deposit.id)
         return deposit
 
@@ -226,21 +239,9 @@ class DepositService:
             )
             return deposit
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     # ---------------------------------------------------------------- helpers
-
-    def _locked_undeposited(self) -> Account:
-        """The Undeposited Funds account, FOR SHARE so a rebind waits for this transaction."""
-        account = self.session.exec(
-            select(Account)
-            .where(Account.system_role == SystemRole.UNDEPOSITED_FUNDS)
-            .with_for_update(read=True)
-            .execution_options(populate_existing=True)
-        ).first()
-        if account is None or account.system_role != SystemRole.UNDEPOSITED_FUNDS:
-            raise _invalid("Bind Undeposited Funds in Settings > Ledger first")
-        return account
 
     @staticmethod
     def _check_ids(payment_ids: Sequence[int]) -> list[int]:
@@ -269,20 +270,6 @@ class DepositService:
             raise _invalid("The bank account is inactive")
         return account
 
-    def _lock_payments(self, ids: list[int]) -> list[Payment]:
-        payments = list(
-            self.session.exec(
-                select(Payment)
-                .where(col(Payment.id).in_(ids))
-                .order_by(col(Payment.id))
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            ).all()
-        )
-        if len(payments) != len(ids):
-            raise _invalid("A selected payment was not found")
-        return payments
-
     def _post_entry(
         self, deposit: Deposit, bank: Account, undeposited: Account, actor: User
     ) -> JournalEntry:
@@ -301,16 +288,6 @@ class DepositService:
             ),
             actor=actor,
         )
-
-    def _commit(self, work: Callable[[], Deposit]) -> Deposit:
-        """Run ``work`` and commit; on any error roll back at once (frees row locks)."""
-        try:
-            result = work()
-            self.session.commit()
-        except Exception:
-            self.session.rollback()
-            raise
-        return result
 
     @staticmethod
     def _snapshot(deposit: Deposit) -> dict[str, Any]:

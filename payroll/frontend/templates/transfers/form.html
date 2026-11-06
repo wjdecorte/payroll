@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}New transfer · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  {% include "expenses/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary">New transfer</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <p class="text-muted">Move money between two of your accounts, for example from checking to pay a credit card.</p>
+      <form method="post" action="/transfers/new" id="transfer-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label class="form-label" for="transfer_date">Date</label>
+            <input class="form-control" type="date" id="transfer_date" name="transfer_date" required value="{{ values.transfer_date }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="from_account_id">From</label>
+            <select class="form-select" id="from_account_id" name="from_account_id" required>
+              <option value="">Choose an account</option>
+              {% for a in pay_accounts %}
+              <option value="{{ a.id }}"{% if values.from_account_id == a.id | string %} selected{% endif %}>{{ label(a) }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="to_account_id">To</label>
+            <select class="form-select" id="to_account_id" name="to_account_id" required>
+              <option value="">Choose an account</option>
+              {% for a in pay_accounts %}
+              <option value="{{ a.id }}"{% if values.to_account_id == a.id | string %} selected{% endif %}>{{ label(a) }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="amount">Amount</label>
+            <input class="form-control" id="amount" name="amount" inputmode="decimal" required value="{{ values.amount }}">
+          </div>
+          <div class="col-12">
+            <label class="form-label" for="memo">Memo (optional)</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-success">Save transfer</button>
+        <a class="btn btn-outline-secondary" href="/transfers">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

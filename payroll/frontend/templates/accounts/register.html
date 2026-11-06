@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Register {{ register.name }} · DCI Books{% endblock %}
+{% from "_source_link.html" import source_link %}
 {% block content %}
 <div class="container-xl py-3">
   <div class="card">
@@ -40,7 +41,7 @@
           <tr{% if line.is_void %} class="text-muted"{% endif %}>
             <td>{{ line.entry_date }}</td>
             <td>{% if line.payment_id is not none %}<a href="/payments/{{ line.payment_id }}">Payment #{{ line.entry_no }}</a>
-              {%- else %}<a href="/journal/{{ line.entry_id }}">#{{ line.entry_no }}</a>{% endif %}
+              {%- else %}<a href="/journal/{{ line.entry_id }}">#{{ line.entry_no }}</a>{{ source_link(line.source_type, line.source_id) }}{% endif %}
               {% if line.is_void %}<span class="badge bg-secondary">Void</span>{% endif %}
               {% if line.is_reversal %}<span class="badge bg-info">Reversal</span>{% endif %}</td>
             <td>{% if line.invoice_id is not none %}<a href="/invoices/{{ line.invoice_id }}">{{ line.memo or "" }}</a>{% else %}{{ line.memo or "" }}{% endif %}</td>

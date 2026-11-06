@@ -102,6 +102,34 @@
     {% endfor %}
   </tbody>
 </table>
+{% elif owner %}
+<p class="sub">As of {{ owner.as_of }}. Reimbursements dated {{ owner.date_from }} to {{ owner.date_to }}.</p>
+<p><strong>Owed to me: {{ owner.owed_to_me | currency }}</strong><br>
+Open expenses I paid personally: {{ owner.open_expense_total | currency }}.
+{% if not owner.matches %}<span class="bad">These differ: something other than an expense or a reimbursement, such as a manual journal entry, changed the Due to Owner account. Both figures are shown as recorded.</span>{% endif %}</p>
+<h2>Open expenses</h2>
+<table>
+  <thead><tr><th>Date</th><th>Payee</th><th>Memo</th><th class="num">Amount</th></tr></thead>
+  <tbody>
+    {% for e in owner.open_expenses %}
+    <tr><td>{{ e.date }}</td><td>{{ e.payee }}</td><td>{{ e.memo }}</td><td class="num">{{ e.total | currency }}</td></tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">Nothing is waiting to be reimbursed.</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><td colspan="3">Open total</td><td class="num">{{ owner.open_expense_total | currency }}</td></tr></tfoot>
+</table>
+<h2>Reimbursements</h2>
+<table>
+  <thead><tr><th>Date</th><th>Bank account</th><th>Status</th><th class="num">Expenses</th><th class="num">Total</th></tr></thead>
+  <tbody>
+    {% for r in owner.reimbursements %}
+    <tr{% if r.status == "void" %} class="muted"{% endif %}><td>{{ r.date }}</td><td>{{ r.bank_account }}</td><td>{{ "Void " ~ r.void_date if r.status == "void" else "Posted" }}</td><td class="num">{{ r.expense_count }}</td><td class="num">{{ r.total | currency }}</td></tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No reimbursements in this range.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% elif ledger %}
 <p class="sub">{{ ledger.start }} to {{ ledger.end }}</p>
 {% for reg in ledger.accounts %}

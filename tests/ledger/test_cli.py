@@ -7,6 +7,9 @@ import pytest
 from sqlalchemy import func
 from sqlmodel import col, select
 
+from payroll import app_settings
+from payroll.expenses.models import Attachment, Expense, Reimbursement, Transfer, Vendor
+from payroll.expenses.owner import owner_summary
 from payroll.ledger import cli
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, JournalEntry, SourceType
@@ -26,6 +29,13 @@ from payroll.reports.statements import ReportService
 
 END = date(2026, 12, 31)
 D = Decimal
+
+
+@pytest.fixture(autouse=True)
+def _attachment_dir(tmp_path, monkeypatch):
+    """Demo receipts go to a scratch directory, never the configured one."""
+    monkeypatch.setattr(app_settings, "attachment_dir", str(tmp_path / "attachments"))
+    return tmp_path / "attachments"
 
 
 def _entries(session) -> int:
@@ -87,6 +97,9 @@ def test_seed_demo_posts_a_balanced_year(session, owner_user, capsys):
         SourceType.PAYMENT,
         SourceType.DEPOSIT,
         SourceType.REFUND,
+        SourceType.EXPENSE,
+        SourceType.REIMBURSEMENT,
+        SourceType.TRANSFER,
     }
     assert sum(1 for e in manual if e.status == "void") == 1
     assert all(date(2026, 1, 1) <= e.entry_date <= END for e in entries)
@@ -196,3 +209,59 @@ def test_seed_demo_twice_refuses_the_second_time_and_adds_no_receivables(
     assert "already has" in capsys.readouterr().err
     assert session.exec(select(func.count()).select_from(Invoice)).one() == before
     assert session.exec(select(func.count()).select_from(Customer)).one() == 4
+
+
+EXPENSE_TABLES = (Vendor, Expense, Reimbursement, Transfer, Attachment)
+
+
+def _expense_counts(session) -> list[int]:
+    return [session.exec(select(func.count()).select_from(t)).one() for t in EXPENSE_TABLES]
+
+
+def test_seed_demo_adds_expenses_that_reconcile(session, owner_user, capsys, _attachment_dir):
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    out = capsys.readouterr().out
+    assert "Expenses: 2 vendors, 4 expenses, 1 reimbursement, 1 card payment, 1 receipt." in out
+    assert _expense_counts(session) == [2, 4, 1, 1, 1]
+
+    summary = owner_summary(session, END)
+    assert summary.matches and summary.owed_to_me == D("67.15")
+    assert len(summary.open_expenses) == 1
+    split = session.exec(select(Expense).where(Expense.memo == "Office order")).one()
+    receipt = session.exec(select(Attachment)).one()
+    assert receipt.owner_id == split.id and receipt.content_type == "application/pdf"
+    assert (_attachment_dir / receipt.stored_name).is_file()
+
+    reports = ReportService(session)
+    assert reports.trial_balance(END).balanced
+    aging = ar_aging(session, END)
+    assert aging.difference == 0 and all(i.ok for i in aging.invariants)
+    names = {n.full_name for n in AccountService(session).tree()}
+    assert "Business Visa" in names
+
+
+def test_seed_demo_twice_leaves_the_expense_rows_unchanged(session, owner_user, capsys):
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    before = _expense_counts(session)
+    accounts = len(AccountService(session).list(include_inactive=True))
+    capsys.readouterr()
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 1  # refused
+    assert _expense_counts(session) == before
+    assert _run(session, "seed-demo", "--email", owner_user.email, "--force") == 0
+    assert "Expenses not added" in capsys.readouterr().out
+    assert _expense_counts(session) == before
+    assert len(AccountService(session).list(include_inactive=True)) == accounts
+    assert owner_summary(session, END).matches
+
+
+def test_seed_demo_skips_the_receipt_when_the_directory_is_not_writable(
+    session, owner_user, capsys, tmp_path, monkeypatch
+):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory")
+    monkeypatch.setattr(app_settings, "attachment_dir", str(blocker / "attachments"))
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    out = capsys.readouterr().out
+    assert "Receipt skipped" in out and "0 receipt" in out
+    assert _expense_counts(session) == [2, 4, 1, 1, 0]
+    assert owner_summary(session, END).matches

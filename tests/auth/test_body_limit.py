@@ -143,3 +143,74 @@ def test_streamed_within_limit_passes():
     sent = _run(BodySizeLimitMiddleware(_reading_app), [b"x" * 50, b"x" * 50])
     assert sent[0]["status"] == 200
     assert sent[1]["body"] == b"100"
+
+
+# ---------------------------------------------------------------------------
+# Receipt upload routes: the larger limit, and 422 instead of 413
+# ---------------------------------------------------------------------------
+
+
+def _run_at(app, path, chunks, content_length=None, method="POST"):
+    headers = [(b"content-type", b"multipart/form-data; boundary=x")]
+    if content_length is not None:
+        headers.append((b"content-length", content_length))
+    scope = {"type": "http", "method": method, "path": path, "headers": headers}
+    messages = [
+        {"type": "http.request", "body": c, "more_body": i < len(chunks) - 1}
+        for i, c in enumerate(chunks)
+    ]
+    sent = []
+
+    async def receive():
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    return sent
+
+
+def _unlocking(inner):
+    """Like verify_csrf for a signed-in owner: raise the body limit to the published ceiling."""
+
+    async def app(scope, receive, send):
+        scope["body_limit"] = scope["upload_body_limit"]
+        await inner(scope, receive, send)
+
+    return app
+
+
+@pytest.mark.parametrize("path", ["/expenses/new", "/expenses/12/receipts"])
+def test_upload_routes_get_the_larger_limit_and_422(monkeypatch, path):
+    monkeypatch.setattr(app_settings, "max_upload_body_bytes", 1000)
+    app = BodySizeLimitMiddleware(_reading_app)
+    # Until verify_csrf has seen a signed-in owner (scope["body_limit"]), the small limit holds.
+    assert _run_at(app, path, [b"x" * 900])[0]["status"] == 422
+    assert (
+        _run_at(BodySizeLimitMiddleware(_unlocking(_reading_app)), path, [b"x" * 900])[0]["status"]
+        == 200
+    )  # over 100, under 1000
+    unlocked = BodySizeLimitMiddleware(_unlocking(_reading_app))
+    assert _run_at(unlocked, path, [b"x" * 1001])[0]["status"] == 422  # declared
+    assert _run_at(unlocked, path, [b"x" * 600, b"x" * 600], b"10")[0]["status"] == 422  # streamed
+    swallowed = _run_at(
+        BodySizeLimitMiddleware(_unlocking(_swallowing_app)), path, [b"x" * 600, b"x" * 600]
+    )
+    assert swallowed[0]["status"] == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/expenses/new/extra"),
+        ("POST", "/expenses/1/void"),
+        ("POST", "/expenses/abc/receipts"),
+        ("POST", "/vendors/new"),
+        ("GET", "/expenses/new"),
+    ],
+)
+def test_other_routes_keep_the_small_limit_and_413(monkeypatch, method, path):
+    monkeypatch.setattr(app_settings, "max_upload_body_bytes", 1000)
+    sent = _run_at(BodySizeLimitMiddleware(_reading_app), path, [b"x" * 101], method=method)
+    assert sent[0]["status"] == 413

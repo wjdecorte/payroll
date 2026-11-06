@@ -10,7 +10,7 @@ from payroll import app_settings
 from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
-from payroll.receivables._common import conflict_safe, utcnow_naive
+from payroll.common.documents import conflict_safe, utcnow_naive
 from payroll.receivables.exceptions import (
     CustomerConflictError,
     CustomerNotFoundError,

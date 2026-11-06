@@ -3,6 +3,7 @@ ASGI middleware for security response headers and the pre-session CSRF cookie
 (DESIGN §8.3). Both are plain ASGI so they add no per-request task overhead.
 """
 
+import re
 from http.cookies import SimpleCookie
 
 from starlette.datastructures import MutableHeaders
@@ -52,7 +53,7 @@ class SecurityHeadersMiddleware:
     """
     Adds CSP, ``X-Frame-Options: DENY``, ``Referrer-Policy: same-origin``,
     ``X-Content-Type-Options: nosniff`` to every response, ``Cache-Control:
-    no-store`` to everything except ``/static/*``, and HSTS only when
+    no-store`` to everything except ``/static/*`` (a route's own Cache-Control is kept), and HSTS only when
     ``session_cookie_secure`` is on (i.e. the app is served over TLS).
 
     Starlette's ServerErrorMiddleware sits outside every user middleware, so the
@@ -73,6 +74,8 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 for name, value in wanted.items():
+                    if name == "Cache-Control" and name in headers:
+                        continue  # a route that set its own (receipt downloads) keeps it
                     headers[name] = value
             await send(message)
 
@@ -83,12 +86,28 @@ class _BodyTooLargeError(Exception):
     pass
 
 
+# The receipt upload routes (expense create and add-receipts) take multipart bodies of
+# several files, so they get the larger ``max_upload_body_bytes`` limit and answer 422
+# (their forms are pages, so a too-large upload is a validation failure) instead of 413.
+_UPLOAD_PATH = re.compile(r"^/expenses/(?:new|[0-9]{1,12}/receipts)$")
+
+
+def _is_upload(scope: Scope) -> bool:
+    return scope.get("method") == "POST" and _UPLOAD_PATH.match(scope.get("path", "")) is not None
+
+
 class BodySizeLimitMiddleware:
     """
     Refuses request bodies larger than ``app_settings.max_request_body_bytes``
     with 413, before FastAPI parses them (FastAPI reads a route's declared form
     or JSON body before running dependencies such as the CSRF check, so the
     limit has to sit in front of routing).
+
+    The two receipt upload routes answer 422 and may read up to
+    ``max_upload_body_bytes``, but only for a signed-in owner: the middleware cannot
+    tell who that is, so it publishes the ceiling as ``scope["upload_body_limit"]`` and
+    ``verify_csrf`` raises ``scope["body_limit"]`` to it once the session is checked.
+    For anyone else the ordinary limit applies as the body is read.
 
     - A ``Content-Length`` over the limit is refused without reading the body
       (an unparsable one gets 400).
@@ -105,7 +124,16 @@ class BodySizeLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        upload = _is_upload(scope)
         limit = app_settings.max_request_body_bytes
+        refusal = 413
+        if upload:
+            # The larger limit is only a ceiling here: it applies once ``verify_csrf`` has
+            # seen a signed-in owner and raised ``scope["body_limit"]``. Until then (and for
+            # everyone else) the ordinary limit holds while the body is read.
+            refusal = 422
+            scope["upload_body_limit"] = max(limit, app_settings.max_upload_body_bytes)
+        ceiling = scope["upload_body_limit"] if upload else limit
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -117,8 +145,8 @@ class BodySizeLimitMiddleware:
             except ValueError:
                 await _plain_response(send, 400, b"Invalid Content-Length")
                 return
-            if length > limit:
-                await _plain_response(send, 413, b"Request body too large")
+            if length > ceiling:
+                await _plain_response(send, refusal, b"Request body too large")
                 return
 
         received = 0
@@ -130,7 +158,7 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > limit:
+                if received > scope.get("body_limit", limit):
                     exceeded = True
                     raise _BodyTooLargeError
             return message
@@ -141,7 +169,7 @@ class BodySizeLimitMiddleware:
                 # Replace whatever the app made of the aborted read with one 413.
                 if not response_started:
                     response_started = True
-                    await _plain_response(send, 413, b"Request body too large")
+                    await _plain_response(send, refusal, b"Request body too large")
                 return
             if message["type"] == "http.response.start":
                 response_started = True
@@ -152,7 +180,7 @@ class BodySizeLimitMiddleware:
         except _BodyTooLargeError:
             if not response_started:
                 response_started = True
-                await _plain_response(send, 413, b"Request body too large")
+                await _plain_response(send, refusal, b"Request body too large")
 
 
 async def _plain_response(send: Send, status: int, body: bytes) -> None:

@@ -19,6 +19,7 @@ import io
 from datetime import date
 from decimal import Decimal
 
+from payroll.expenses.reports import OwnerReport
 from payroll.receivables.balances import AgingRow, ARAging
 from payroll.reports.schemas import (
     GeneralLedger,
@@ -234,6 +235,32 @@ def _ar_aging(aging: ARAging) -> list[list[Cell]]:
     return rows
 
 
+def _owner_reimbursement(report: OwnerReport) -> list[list[Cell]]:
+    rows: list[list[Cell]] = [
+        ["Owner Reimbursement"],
+        ["As of", report.as_of],
+        ["Reimbursements from", report.date_from, "to", report.date_to],
+        [],
+        ["Owed to me", report.owed_to_me],
+        ["Open expenses total", report.open_expense_total],
+        ["Matches", "Yes" if report.matches else "No"],
+        [],
+        ["Open expenses"],
+        ["Expense", "Date", "Payee", "Memo", "Total"],
+    ]
+    rows += [[e.expense_id, e.date, e.payee, e.memo, e.total] for e in report.open_expenses]
+    rows += [
+        [],
+        ["Reimbursements"],
+        ["Reimbursement", "Date", "Bank account", "Total", "Status", "Void date", "Expenses"],
+    ]
+    rows += [
+        [r.id, r.date, r.bank_account, r.total, r.status, r.void_date, r.expense_count]
+        for r in report.reimbursements
+    ]
+    return rows
+
+
 def _table(report: object) -> list[list[Cell]]:
     if isinstance(report, Statement):
         return _statement(report)
@@ -245,11 +272,13 @@ def _table(report: object) -> list[list[Cell]]:
         return _journal(report)
     if isinstance(report, ARAging):
         return _ar_aging(report)
+    if isinstance(report, OwnerReport):
+        return _owner_reimbursement(report)
     raise TypeError(f"Cannot export {type(report).__name__} as CSV")
 
 
 def to_csv(
-    report: Statement | TrialBalance | GeneralLedger | JournalReport | ARAging,
+    report: Statement | TrialBalance | GeneralLedger | JournalReport | ARAging | OwnerReport,
 ) -> str:
     """The report as CSV text (UTF-8 by the caller, ``\\r\\n`` line ends)."""
     buffer = io.StringIO()

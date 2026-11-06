@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Owner · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+{% set can_reimburse = is_owner and summary.open_expenses %}
+<div class="container-xl py-3">
+  {% include "expenses/_tabs.html" %}
+  {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+  <div class="card mb-3">
+    <div class="card-header bg-primary"><i class="bi bi-person-badge me-2"></i>Owed to me</div>
+    <div class="card-body">
+      <p class="display-6 mb-1" id="owed-to-me">{{ summary.owed_to_me | currency }}</p>
+      <p class="text-muted mb-0">The Due to Owner balance in the ledger. <a href="/reports/owner-reimbursement">Reimbursement report</a></p>
+      {% if not summary.matches %}
+      <div class="alert alert-warning mt-3 mb-0" id="mismatch-note" role="note">
+        The Due to Owner balance is {{ summary.owed_to_me | currency }}, but the open expenses you paid personally add up to {{ summary.open_expense_total | currency }}.
+        These differ because something other than an expense or a reimbursement, such as a manual journal entry, changed the Due to Owner account.
+        Both figures are shown as recorded; check the account register to see which entries make up the difference.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header bg-primary">Expenses I paid personally, not yet reimbursed</div>
+    <div class="card-body">
+      {% if can_reimburse %}
+      <form method="post" action="/owner/reimburse" id="reimburse-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% endif %}
+      {% if summary.open_expenses %}
+      <table class="table table-sm align-middle" id="open-expenses">
+        <thead>
+          <tr>{% if is_owner %}<th></th>{% endif %}<th>Date</th><th>Payee</th><th>Memo</th><th class="num">Amount</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody id="owner-rows">
+          {% for e in summary.open_expenses %}
+          <tr>
+            {% if is_owner %}
+            <td><input class="form-check-input" type="checkbox" name="expense_id" value="{{ e.id }}" data-cents="{{ (e.total * 100) | int }}" aria-label="Reimburse the expense from {{ e.date }}"{% if e.id | string in values.expense_ids %} checked{% endif %}></td>
+            {% endif %}
+            <td>{{ e.date }}</td>
+            <td>{{ vendor_names[e.vendor_id] if e.vendor_id else (e.payee_text or "") }}</td>
+            <td>{{ e.memo or "" }}</td>
+            <td class="num">{{ e.total | currency }}</td>
+            <td class="no-print text-end"><a class="btn btn-sm btn-outline-secondary" href="/expenses/{{ e.id }}">View</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><th colspan="{{ 4 if is_owner else 3 }}">Open total</th><td class="num" id="open-total">{{ summary.open_expense_total | currency }}</td><td></td></tr>
+          {% if is_owner %}
+          <tr><td colspan="4" class="text-end">Ticked total</td><td class="num" id="ticked-total"></td><td></td></tr>
+          {% endif %}
+        </tfoot>
+      </table>
+      {% else %}
+      <p class="text-muted mb-0" id="no-open">Nothing is waiting to be reimbursed.</p>
+      <span id="open-total" class="visually-hidden">{{ summary.open_expense_total | currency }}</span>
+      {% endif %}
+      {% if can_reimburse %}
+        <div class="row g-3 align-items-end no-print">
+          <div class="col-md-3">
+            <label class="form-label" for="reimbursement_date">Reimbursement date</label>
+            <input class="form-control" type="date" id="reimbursement_date" name="reimbursement_date" required value="{{ values.reimbursement_date }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="bank_account_id">Pay from</label>
+            <select class="form-select" id="bank_account_id" name="bank_account_id" required>
+              <option value="">Choose a bank account</option>
+              {% for a in banks %}
+              <option value="{{ a.id }}"{% if values.bank_account_id == a.id | string %} selected{% endif %}>{{ a.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="memo">Memo (optional)</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+          <div class="col-md-2">
+            <button type="submit" class="btn btn-success w-100" id="reimburse-save">Reimburse</button>
+          </div>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card" id="reimbursement-history">
+    <div class="card-header bg-primary">Reimbursement history</div>
+    <div class="card-body">
+      {% for r in history %}
+      <div class="border-bottom pb-2 mb-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <span>
+            {{ r.date }} · {{ r.total | currency }} from {{ accounts[r.paid_from_account_id].name }}
+            {% if r.memo %}· {{ r.memo }}{% endif %}
+            {% if r.entry_id %}· <a href="/journal/{{ r.entry_id }}">entry</a>{% endif %}
+          </span>
+          <span class="badge {{ 'bg-secondary' if r.status == 'void' else 'bg-success' }}">{{ "voided" if r.status == "void" else "Posted" }}</span>
+        </div>
+        {% if r.status == "void" %}
+        <div class="text-muted small">Voided {{ r.void_date }}{% if r.void_entry_id %} · <a href="/journal/{{ r.void_entry_id }}">reversal entry</a>{% endif %}. Its expenses are open again.</div>
+        {% else %}
+        <ul class="mb-1 small">
+          {% for e in covered[r.id] %}
+          <li><a href="/expenses/{{ e.id }}">{{ e.date }} · {{ vendor_names[e.vendor_id] if e.vendor_id else (e.payee_text or "Expense") }} · {{ e.total | currency }}</a></li>
+          {% endfor %}
+        </ul>
+        {% if is_owner %}
+        <form method="post" action="/owner/reimbursements/{{ r.id }}/void" class="no-print row g-2 align-items-end">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="col-auto">
+            <label class="form-label small" for="void_date_{{ r.id }}">Void date</label>
+            <input type="date" class="form-control form-control-sm" id="void_date_{{ r.id }}" name="void_date" value="{{ void_defaults }}" required>
+          </div>
+          <div class="col-auto">
+            <label class="form-label small" for="void_memo_{{ r.id }}">Memo (optional)</label>
+            <input type="text" class="form-control form-control-sm" id="void_memo_{{ r.id }}" name="memo" maxlength="500">
+          </div>
+          <div class="col-auto"><button type="submit" class="btn btn-sm btn-outline-danger">Void reimbursement</button></div>
+        </form>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="text-muted mb-0">No reimbursements yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/owner.js"></script>{% endblock %}

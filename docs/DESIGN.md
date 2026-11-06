@@ -180,15 +180,43 @@ posted), balance and display status (`partial`, `paid`, `overdue`); a customer's
 credit = payments received − applications − refunds. Credit can never go negative on any past
 date: refunds, applications and payment voids check the minimum over their event dates.
 
-### 4.3 Expenses
+### 4.3 Expenses (built in M3, v2.3.0)
+
+Migration `d4e0a2b8c6f1`. Money is `NUMERIC(14,2)`; enum-like columns are plain strings guarded by
+CHECKs. Documents store their facts; the money movement is the linked journal entry posted
+through `LedgerPostingService`.
 
 ```
-expense        id, date, payee, payment_source (account|owner_personal), paid_from_account_id,
-               memo, total, entry_id, reimbursement_id (nullable), status
-expense_line   id, expense_id, account_id, description, amount
-attachment     id, owner_type, owner_id, filename, content_type, sha256, stored_path, size
-reimbursement  id, date, paid_from_account_id, total, entry_id
+vendor         id, name (unique case-insensitively), note, active
+expense        id, date, vendor_id (nullable), payee_text (nullable), memo,
+               source (account|owner), paid_from_account_id (null iff source = owner),
+               total, status (posted|void), entry_id, void_entry_id, void_date,
+               reimbursement_id (nullable, set once)
+expense_line   id, expense_id, line_no, account_id, memo, amount   (unique expense_id+line_no)
+transfer       id, date, from_account_id, to_account_id, amount, memo,
+               status, entry_id, void_entry_id, void_date
+reimbursement  id, date, paid_from_account_id, total, memo,
+               status, entry_id, void_entry_id, void_date
+attachment     id, owner_type ('expense'), owner_id, filename, content_type, sha256,
+               stored_name, size, uploaded_at, uploaded_by   (append-only)
 ```
+
+Integrity beyond the foreign keys is in the database. CHECK constraints: exactly one of
+`vendor_id` / `payee_text`; a posted document carries no void fields and a void one carries all
+of them, with the void date not before the document date; a reimbursement link only on a posted
+owner-paid expense. Triggers: expense lines sum to the expense total and a reimbursement's
+expenses to its total (deferred constraint triggers, checked at COMMIT); `expense.reimbursement_id`
+is set-once (and only to a posted reimbursement); expense lines and attachments are append-only
+(UPDATE and DELETE refused). Posting rules:
+
+- Expense, account source: Dr each line's expense account / Cr the paid-from asset or liability
+  account. Owner source: Cr the Due to Owner role account instead.
+- Reimbursement: Dr Due to Owner / Cr an asset account, for the total of whole open owner-paid
+  expenses. Transfer: Dr to-account / Cr from-account (asset or liability, not a bound role).
+- Voids post a reversing entry dated the void date (not before the document, after the lock).
+
+Locking order: payment/role rows first (Due to Owner FOR SHARE; `bind_role` takes it FOR UPDATE),
+then document rows by id, then the period lock FOR SHARE, then the per-source entry counter.
 
 ### 4.4 Payroll
 
@@ -293,6 +321,10 @@ A single `ReportEngine` runs SQL aggregates over `journal_line` joined to
   every date and the Balance Sheet balances. Money received but not applied stays in A/R as a
   credit; it is not income. **Cash is the default view** (owner's decision); accrual is the
   toggle. Drill-down on cash basis lists these rows (memo `Invoice #n paid`).
+- **Owner reimbursement report (M3):** `/reports/owner-reimbursement` shows, as of a date, the
+  Due to Owner balance, the open owner-paid expenses and the reimbursements in a range; CSV and
+  PDF go through the same export layer (formula-neutralized). Expense, transfer and
+  reimbursement entries in the GL, P&L and Balance Sheet detail link to their documents.
 - **Comparison columns** run the same query twice and diff.
 - **Drill-down:** report rows carry `(account_id, start, end)` links to the
   account register, whose rows link to `source_type/source_id` documents.
@@ -367,11 +399,26 @@ a dedicated design pass can use the `impeccable` skill at implementation time.
 
 ## 10. Deployment, backup, operations
 
-- **Compose:** `app` + `db` services, on an internal network; DB port
-  unpublished; `/data/attachments` volume for receipts; secrets mounted.
-  `compose.synology.yml` updated similarly.
+- **Compose:** `api` + `db` services, on an internal network; DB port
+  unpublished; secrets mounted. Receipts live in `ATTACHMENT_DIR` (`/data/attachments`): a named
+  volume `attachments` in `compose.yml`, the bind mount
+  `/volume1/docker/payroll/attachments` in `compose.synology.yml`. The Dockerfile creates the
+  directory owned by `appuser` (uid 10001) with mode 0700; a Synology bind mount must be
+  `chown`ed to 10001 on the host (RUNBOOK).
+- **Attachments:** files are stored as `yyyy/mm/<random 32 hex>` and written to a temporary name,
+  fsynced and renamed; the type is decided from magic numbers (PDF, PNG, JPEG, HEIC), 10 MB per
+  file, 10 files and 50 MB per expense. Downloads need sign-in (any role) and send
+  `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff` and
+  `Cache-Control: private, no-store`; `?inline=1` is honored only for PNG and JPEG.
+- **Upload limit:** `MAX_REQUEST_BODY_BYTES` (1 MiB) applies everywhere except the two upload
+  routes (`POST /expenses/new`, `POST /expenses/{id}/receipts`), which allow a signed-in owner up
+  to `MAX_UPLOAD_BODY_BYTES` (64 MiB; the middleware publishes the ceiling and `verify_csrf`
+  raises the limit once the session is known to be an owner's). Over the limit: 422 on the
+  upload routes, 413 elsewhere.
 - **Migrations:** Alembic, run at start (existing `alembic_runner.py`).
-- **Backups:** a `backup` sidecar runs nightly `pg_dump`, encrypts it
+- **Backups (planned, M7):** today the real backup is the DSM scheduled `pg_dump` plus Hyper
+  Backup, and the attachments folder must be added to that Hyper Backup selection by hand. The
+  planned design, not built yet: a `backup` sidecar runs nightly `pg_dump`, encrypts it
   (`age`) with a public key (private key kept offline), keeps 30 dailies + 12
   monthlies, and copies to off-site storage (e.g. Hyper Backup target /
   cloud bucket). Attachments are included. A `restore.sh` and a documented

@@ -9,6 +9,7 @@ Full-page routes (not in the OpenAPI schema), all GET-only:
   GET /reports/general-ledger    -> ``preset``/``start``/``end``, ``account``
   GET /reports/journal           -> ``preset``/``start``/``end``
   GET /reports/ar-aging          -> ``asOf``
+  GET /reports/owner-reimbursement -> ``as_of``, ``date_from``, ``date_to``
   GET /reports/<report>.csv|.pdf -> the same report as a download (same query string)
 
 Every route needs a signed-in user (router-level ``require_reader``). The picker is
@@ -35,10 +36,12 @@ from payroll.reports.basis import DEFAULT_BASIS, Basis
 from payroll.reports.periods import PRESETS
 from payroll.reports.runs import (
     DEFAULT_PRESET,
+    PAGE_RUNNERS,
     run_ar_aging,
     run_balance_sheet,
     run_general_ledger,
     run_journal,
+    run_owner_reimbursement,
     run_profit_and_loss,
     run_trial_balance,
     trial_invariants,
@@ -94,6 +97,11 @@ REPORTS = (
         "/reports/ar-aging",
         "What each customer owes by days past due, open invoices and credits, as of a date.",
     ),
+    (
+        "Owner Reimbursement",
+        "/reports/owner-reimbursement",
+        "What the company owes the owner, the open expenses you paid personally, and reimbursements.",
+    ),
 )
 
 
@@ -114,6 +122,9 @@ class Picker:
     basis_toggle: bool = False
     comparison: bool = False
     accounts: bool = False
+    owner: bool = False
+    date_from: str = ""
+    date_to: str = ""
 
 
 def _choices(session: Session) -> list[dict]:
@@ -334,6 +345,49 @@ async def ar_aging_report(
     )
 
 
+@router.get("/reports/owner-reimbursement", response_class=HTMLResponse)
+async def owner_reimbursement_report_page(
+    request: Request,
+    as_of: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    picker = Picker(
+        "/reports/owner-reimbursement",
+        as_of=as_of,
+        date_from=date_from,
+        date_to=date_to,
+        owner=True,
+    )
+    query = {"as_of": as_of, "date_from": date_from, "date_to": date_to}
+    try:
+        report = run_owner_reimbursement(session, query).report
+    except AppBaseError as exc:
+        return _page(
+            request,
+            "reports/owner_reimbursement.html",
+            "Owner Reimbursement",
+            picker,
+            session,
+            error=exc,
+        )
+    picker.as_of, picker.date_from, picker.date_to = (
+        report.as_of.isoformat(),
+        report.date_from.isoformat(),
+        report.date_to.isoformat(),
+    )
+    return _page(
+        request,
+        "reports/owner_reimbursement.html",
+        "Owner Reimbursement",
+        picker,
+        session,
+        owner=report,
+    )
+
+
 # GET /reports/<report>.csv and .pdf: the same query string, validation and report as
-# the page above (see payroll.frontend.report_export).
-add_export_routes(router, "/reports")
+# the page above (see payroll.frontend.report_export). Owner reimbursement is page-only:
+# its downloads are registered here and there is no API twin.
+add_export_routes(router, "/reports", PAGE_RUNNERS)

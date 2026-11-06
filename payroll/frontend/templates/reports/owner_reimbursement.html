@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary"><i class="bi bi-bar-chart me-2"></i>{{ title }}</div>
+    <div class="card-body">
+      {% include "reports/_picker.html" %}
+      {% if error %}
+      <div class="alert alert-danger" role="alert">{{ error }}</div>
+      {% else %}
+      {% include "reports/_exports.html" %}
+      <p class="text-muted small">As of {{ owner.as_of }}. Reimbursements dated {{ owner.date_from }} to {{ owner.date_to }}. <a href="/owner">Owner page</a></p>
+      <p class="display-6 mb-1" id="owed-to-me">{{ owner.owed_to_me | currency }}</p>
+      <p class="text-muted">Owed to me: the Due to Owner balance in the ledger.</p>
+      {% if not owner.matches %}
+      <div class="alert alert-warning" id="mismatch-note" role="note">
+        The Due to Owner balance is {{ owner.owed_to_me | currency }}, but the open expenses you paid personally add up to {{ owner.open_expense_total | currency }}.
+        These differ because something other than an expense or a reimbursement, such as a manual journal entry, changed the Due to Owner account.
+        Both figures are shown as recorded; check the account register to see which entries make up the difference.
+      </div>
+      {% endif %}
+      <h2 class="h6 mt-4">Open expenses I paid personally</h2>
+      <table class="table table-sm table-hover align-middle" id="open-expenses">
+        <thead>
+          <tr><th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col" class="num">Amount</th><th scope="col" class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for e in owner.open_expenses %}
+          <tr>
+            <td>{{ e.date }}</td>
+            <td>{{ e.payee }}</td>
+            <td>{{ e.memo }}</td>
+            <td class="num">{{ e.total | currency }}</td>
+            <td class="no-print text-end"><a class="btn btn-sm btn-outline-secondary" href="/expenses/{{ e.expense_id }}">View</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-center text-muted py-3" id="no-open">Nothing is waiting to be reimbursed.</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><td colspan="3">Open total</td><td class="num" id="open-total">{{ owner.open_expense_total | currency }}</td><td></td></tr>
+        </tfoot>
+      </table>
+      <h2 class="h6 mt-4">Reimbursements</h2>
+      <table class="table table-sm table-hover align-middle" id="reimbursements">
+        <thead>
+          <tr><th scope="col">Date</th><th scope="col">Bank account</th><th scope="col">Status</th><th scope="col" class="num">Expenses</th><th scope="col" class="num">Total</th></tr>
+        </thead>
+        <tbody>
+          {% for r in owner.reimbursements %}
+          <tr{% if r.status == "void" %} class="text-muted"{% endif %}>
+            <td><a href="/owner">{{ r.date }}</a></td>
+            <td>{{ r.bank_account }}</td>
+            <td>{% if r.status == "void" %}<span class="badge bg-secondary">Void</span> {{ r.void_date }}{% else %}Posted{% endif %}</td>
+            <td class="num">{{ r.expense_count }}</td>
+            <td class="num">{{ r.total | currency }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-center text-muted py-3">No reimbursements in this range.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

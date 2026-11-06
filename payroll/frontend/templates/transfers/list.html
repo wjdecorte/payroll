@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Transfers · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "expenses/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-arrow-left-right me-2"></i>Transfers</span>
+      {% if is_owner %}<a class="btn btn-sm btn-light" href="/transfers/new"><i class="bi bi-plus-lg me-1"></i>New transfer</a>{% endif %}
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr><th>Date</th><th>From</th><th>To</th><th>Memo</th><th class="num">Amount</th><th>Status</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for t in transfers %}
+          <tr{% if t.status == "void" %} class="text-muted"{% endif %}>
+            <td>{{ t.date }}</td>
+            <td>{{ accounts[t.from_account_id].name }}</td>
+            <td>{{ accounts[t.to_account_id].name }}</td>
+            <td>{{ t.memo or "" }}</td>
+            <td class="num">{{ t.amount | currency }}</td>
+            <td><span class="badge {{ 'bg-secondary' if t.status == 'void' else 'bg-success' }}">{{ t.status | capitalize }}</span></td>
+            <td class="no-print text-end"><a class="btn btn-sm btn-outline-secondary" href="/transfers/{{ t.id }}">View</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-center text-muted py-4">No transfers yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if page > 1 or has_next %}
+      <nav class="d-flex justify-content-between p-3 no-print" aria-label="Pages">
+        {% if page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="/transfers?page={{ page - 1 }}">Previous</a>{% else %}<span></span>{% endif %}
+        <span class="text-muted small">Page {{ page }}</span>
+        {% if has_next %}<a class="btn btn-sm btn-outline-secondary" href="/transfers?page={{ page + 1 }}">Next</a>{% else %}<span></span>{% endif %}
+      </nav>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

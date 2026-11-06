@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Journal entry #{{ entry.entry_no }} · DCI Books{% endblock %}
+{% from "_source_link.html" import source_link %}
 {% block content %}
 {% set is_owner = current_user and current_user.role == "owner" %}
 <div class="container-xl py-3">
@@ -14,6 +15,9 @@
         <dt class="col-sm-2">Date</dt><dd class="col-sm-10">{{ entry.entry_date }}</dd>
         <dt class="col-sm-2">Status</dt>
         <dd class="col-sm-10">{% if entry.status == "void" %}<span class="badge bg-secondary">Void</span>{% else %}<span class="badge bg-success">Posted</span>{% endif %}</dd>
+        {% if source_href(entry.source_type, entry.source_id) %}
+        <dt class="col-sm-2">Document</dt><dd class="col-sm-10">{{ source_link(entry.source_type, entry.source_id) }}</dd>
+        {% endif %}
         <dt class="col-sm-2">Memo</dt><dd class="col-sm-10">{{ entry.memo or "" }}</dd>
         {% if links.reverses %}
         <dt class="col-sm-2">Reverses</dt>

@@ -14,6 +14,7 @@ from datetime import date
 
 from sqlmodel import Session
 
+from payroll.expenses.reports import OwnerReport, owner_reimbursement_report
 from payroll.receivables.balances import ARAging, ar_aging
 from payroll.reports.basis import DEFAULT_BASIS, Basis
 from payroll.reports.periods import (
@@ -21,6 +22,7 @@ from payroll.reports.periods import (
     InvalidPeriodError,
     Period,
     company_today,
+    ensure_supported_date,
     parse_date,
     resolve_period,
 )
@@ -36,7 +38,7 @@ from payroll.reports.statements import COMPARISONS, ReportService
 DEFAULT_PRESET = "this_month"
 MAX_ACCOUNT_ID = 2**31 - 1  # integer primary key range
 
-Report = Statement | TrialBalance | GeneralLedger | JournalReport | ARAging
+Report = Statement | TrialBalance | GeneralLedger | JournalReport | ARAging | OwnerReport
 Query = Mapping[str, str]
 
 
@@ -164,6 +166,30 @@ def run_ar_aging(session: Session, q: Query) -> ReportRun:
     return ReportRun("ar-aging", "A/R Aging", aging, {"asOf": as_of}, f"ar-aging-{as_of}")
 
 
+def _supported_date(raw: str, label: str) -> date | None:
+    value = parse_date(raw, label)
+    return ensure_supported_date(value) if value is not None else None
+
+
+def run_owner_reimbursement(session: Session, q: Query) -> ReportRun:
+    """Owner reimbursement: ``as_of`` (default today), ``date_from`` / ``date_to`` (the year so far)."""
+    today = company_today()
+    as_of = _supported_date(q.get("as_of", ""), "As-of date") or today
+    date_to = _supported_date(q.get("date_to", ""), "To date") or today
+    date_from = _supported_date(q.get("date_from", ""), "From date") or date(date_to.year, 1, 1)
+    if date_from > date_to:
+        raise InvalidPeriodError(message="The From date cannot be after the To date")
+    report = owner_reimbursement_report(session, as_of, date_from, date_to)
+    params = {"as_of": as_of, "date_from": date_from, "date_to": date_to}
+    return ReportRun(
+        "owner-reimbursement",
+        "Owner Reimbursement",
+        report,
+        params,
+        f"owner-reimbursement-{as_of}",
+    )
+
+
 RUNNERS: dict[str, Callable[[Session, Query], ReportRun]] = {
     "profit-and-loss": run_profit_and_loss,
     "balance-sheet": run_balance_sheet,
@@ -171,4 +197,10 @@ RUNNERS: dict[str, Callable[[Session, Query], ReportRun]] = {
     "general-ledger": run_general_ledger,
     "journal": run_journal,
     "ar-aging": run_ar_aging,
+}
+
+# Page and download only: no JSON API twin (see payroll.reports.routers, which uses RUNNERS).
+PAGE_RUNNERS: dict[str, Callable[[Session, Query], ReportRun]] = {
+    **RUNNERS,
+    "owner-reimbursement": run_owner_reimbursement,
 }

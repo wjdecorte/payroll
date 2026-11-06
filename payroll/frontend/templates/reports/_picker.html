@@ -24,6 +24,20 @@
     <input class="form-control" type="date" id="asOf" name="asOf" value="{{ picker.as_of }}">
   </div>
   {% endif %}
+  {% if picker.owner %}
+  <div class="col-auto">
+    <label class="form-label" for="as_of">As of</label>
+    <input class="form-control" type="date" id="as_of" name="as_of" value="{{ picker.as_of }}">
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="date_from">Reimbursements from</label>
+    <input class="form-control" type="date" id="date_from" name="date_from" value="{{ picker.date_from }}">
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="date_to">to</label>
+    <input class="form-control" type="date" id="date_to" name="date_to" value="{{ picker.date_to }}">
+  </div>
+  {% endif %}
   {% if picker.accounts %}
   <div class="col-auto">
     <label class="form-label" for="account">Account</label>

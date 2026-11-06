@@ -1,4 +1,4 @@
-# DCI Payroll runbook (v2.2.0)
+# DCI Payroll runbook (v2.3.0)
 
 Compose service names: `db` (Postgres 17) and `api` (the whole app, UI + API).
 Synology paths below assume the stack lives in `/volume1/docker/payroll`.
@@ -17,7 +17,9 @@ Watchtower stopped a plain `up -d` would reuse a stale local `:latest`):
    ```bash
    docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_$(date +%F).dump
    ```
-   Restore (stop the app first, into an empty/recreated database):
+   Restore is a **full** `pg_restore` into an empty or recreated database; a data-only restore
+   into an already migrated database fails, because the trigger functions resolve table names
+   through `search_path`. Stop the app first:
    ```bash
    docker compose -f compose.synology.yml stop api
    docker compose -f compose.synology.yml exec -T db pg_restore -U payroll -d payroll --clean --if-exists < payroll_pre_v2_YYYY-MM-DD.dump
@@ -59,6 +61,91 @@ What changes for you:
 - API money values are JSON **strings** now. Scripts using the API must parse them as
   decimals (breaking change).
 - Every route requires sign-in with MFA. There is no API-only anonymous access.
+
+## Upgrading to v2.3.0 (expenses, M3)
+
+The M3 migration (`d4e0a2b8c6f1`) is **additive**: it creates only new tables (vendors,
+expenses and lines, transfers, reimbursements, attachments) and their integrity triggers, and
+changes no existing data. Its **downgrade drops all expenses data** (the tables go; the receipt
+files on disk are not touched), so rolling back means restoring the `pg_dump` taken below and
+pinning the previous image tag. Receipts are files outside the database: back them up too.
+
+1. **Before merging or pushing to `master`, stop Watchtower** (it would pull the image as soon
+   as the build finishes): `docker compose -f compose.synology.yml stop watchtower`
+2. **Back up the database** (see the Backups section for the nightly job):
+   ```bash
+   docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_3_$(date +%F).dump
+   ```
+3. **Create the attachments folder and make it writable by the app.** The new
+   `compose.synology.yml` bind-mounts `/volume1/docker/payroll/attachments` at
+   `/data/attachments`. The container runs as the non-root user `appuser` (uid **10001**, the
+   Dockerfile's `UID` argument), which must be able to write there:
+   ```bash
+   mkdir -p /volume1/docker/payroll/attachments
+   chown 10001:0 /volume1/docker/payroll/attachments   # run as root / with sudo over SSH
+   chmod 700 /volume1/docker/payroll/attachments
+   ```
+   If uploads fail with a server error after the upgrade, this ownership is the first thing to
+   check (`ls -ln /volume1/docker/payroll/attachments` should show owner 10001). Replace the
+   compose file with the new one before starting so the mount exists; otherwise receipts would
+   land in the container's own filesystem and vanish when Watchtower recreates it. The
+   development `compose.yml` uses a named volume `attachments` instead (the image creates the
+   directory owned by `appuser`, so no chown is needed there).
+4. Merge/push, and let the image build (tests must pass first).
+5. Pull and start:
+   ```bash
+   docker compose -f compose.synology.yml pull
+   docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
+   ```
+6. **Verify:** `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+   prints `d4e0a2b8c6f1`,
+   `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200,
+   and `docker compose -f compose.synology.yml exec api ls -ld /data/attachments` shows the
+   directory owned by `appuser` (or uid 10001).
+7. **Start Watchtower again:** `docker compose -f compose.synology.yml start watchtower`
+
+First use, as the owner:
+
+1. **Bind Due to Owner.** Open Settings > Ledger and check that **Due to Owner** points at your
+   liability account. The default chart (`seed-chart`) already binds it; a chart imported from QBO
+   does not, so bind it yourself. Posting an owner-paid expense with the role unbound is refused
+   with a message telling you to bind it. The role is **frozen** after the first owner-paid
+   expense or reimbursement is recorded (voided ones count), so choose the account first.
+2. Add vendors (or type a free-text payee on each expense), then expenses. Pick **Owner
+   (personal card)** as the source for something you paid personally; it credits Due to Owner
+   until you reimburse it from the Owner page (whole expenses only, paid from an asset account).
+3. Transfers (credit card payments, moves between accounts) are on the Transfers page. Bank
+   reconciliation is not part of this release.
+4. `seed-demo` now also creates demo vendors, expenses, a reimbursement and a transfer; never run
+   it against real books.
+
+Receipts:
+
+- Allowed types are PDF, PNG, JPEG and HEIC (decided from the file contents), 10 MB per file,
+  10 files and 50 MB per expense. Receipts are append-only: there is no way to remove one (add a
+  memo to explain a wrong upload). They are stored under `ATTACHMENT_DIR` (default
+  `/data/attachments`, set in `.env.example`) as `yyyy/mm/<random name>`; the database holds the
+  original filename, type, size and SHA-256.
+- **Backup and restore drill:** `/data/attachments` (on Synology
+  `/volume1/docker/payroll/attachments`) is **not** inside the database dump. Add it to the
+  nightly job's Hyper Backup selection beside the dumps, and when you test a restore, restore the
+  dump **and** the attachments folder together, then fix ownership (files restored by root with
+  mode 0600 are unreadable to the app otherwise):
+  `chown -R 10001:0 /volume1/docker/payroll/attachments && chmod -R u+rwX,go-rwx /volume1/docker/payroll/attachments`.
+  Then open an expense with a receipt and download it. A database restored without the files shows receipts that
+  fail to download; files without the database are orphans.
+- `MAX_UPLOAD_BODY_BYTES` (default 64 MiB) is the largest request body on the two upload routes
+  only (`POST /expenses/new` and `POST /expenses/{id}/receipts`), and the larger ceiling applies
+  only to a signed-in owner; everyone else on those routes, and every other route for every
+  user, is held to `MAX_REQUEST_BODY_BYTES` (1 MiB). A body beyond the limit is answered with
+  422 on the upload routes and 413 elsewhere. Behind the DSM reverse proxy also check its own
+  body-size limit if large uploads fail.
+- Downloads need sign-in (any role) and are sent as attachments with `nosniff` and
+  `Cache-Control: private, no-store`.
+
+Correcting a document in a locked period (invoice, payment, expense, transfer, reimbursement):
+move the lock back (Settings > Ledger, password required), void or replace the document, then
+lock again. A reversing manual journal is not a correction, because the document stays live.
 
 ## Upgrading to v2.2.0 (receivables, M2)
 
@@ -105,8 +192,10 @@ Cash-basis note: reports default to cash basis, where income appears when an inv
 (on the later of the payment and invoice dates). Applications cannot be created on or before the
 period-lock date, and a payment cannot be voided into a locked period; fix a misapplied payment
 by voiding it and recording it again. The ledger also refuses to void a document whose own
-date is on or before the lock: to correct it, move the lock back, void, and lock again, or post a
-reversal dated after the lock through a manual journal (see Locking a closed year).
+date is on or before the lock: to correct it, move the lock back (password-gated), void or
+replace the document, and lock again (see Locking a closed year). Do not use a manual journal
+for this: the receivables document stays live in the subledger, so the A/R aging and the
+customer balances would not change.
 
 ## Upgrading to v2.1.0 (ledger and reports, M1)
 
@@ -162,8 +251,10 @@ After the upgrade, as the owner:
 ### Locking a closed year
 
 The period lock (Settings > Ledger, or `PUT /payroll/api/v1/ledger/period-lock`) blocks
-posting into it and voiding entries dated in it; correct a locked entry with a reversal dated
-after the lock. Lock a year once it
+posting into it and voiding entries dated in it. A manual journal entry in a locked period can be
+corrected with a reversal dated after the lock; an invoice, payment, deposit, refund, expense,
+transfer or reimbursement in a locked period cannot (a reversing journal would leave the document live in its subledger), so
+move the lock back instead. Lock a year once it
 is final: after the CPA has the return figures, the year-end trial balance is saved
 (CSV/PDF from Reports), and any year-end close or adjusting entries are posted. Set the lock to
 the last day of that year (for example `2026-12-31`). Changing or clearing the lock needs the
@@ -227,6 +318,9 @@ so scan the one currently displayed and save the recovery codes.
   database role the app connects as should **not own** the table (owners can drop triggers).
 - `/payroll/api/v1/docs`, `/payroll/api/v1/redoc` and `/payroll/api/v1/openapi.json` are disabled unless `DEBUG_MODE=true`.
 - Request bodies larger than `MAX_REQUEST_BODY_BYTES` (default 1 MiB) get HTTP 413.
+  The two receipt upload routes (`POST /expenses/new`, `POST /expenses/{id}/receipts`) allow a
+  signed-in owner up to `MAX_UPLOAD_BODY_BYTES` (default 64 MiB) and answer HTTP 422 beyond the
+  limit that applies (see Upgrading to v2.3.0).
 - **Never enable `DEBUG_MODE=true` in production.** Besides the API docs, it turns on
   SQLAlchemy SQL echo, which logs every statement **with its bound parameters**: password
   hashes, encrypted TOTP secrets, session token hashes and audit data end up in the logs.
@@ -270,6 +364,12 @@ find /volume1/backups -name 'payroll_*.dump' -mtime +30 -delete
 ```
 
 Include `/volume1/backups` in Hyper Backup, and test a restore occasionally.
+
+From v2.3.0 receipts live in `/volume1/docker/payroll/attachments` (mounted at
+`/data/attachments`); include that folder in Hyper Backup too, and restore it together with the
+database dump (see Upgrading to v2.3.0). After restoring the folder, run
+`chown -R 10001:0 /volume1/docker/payroll/attachments && chmod -R u+rwX,go-rwx /volume1/docker/payroll/attachments`
+so the app can read the files.
 
 ## System of record
 

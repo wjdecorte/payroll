@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "DCI Payroll"
-    app_version: str = "2.2.0"
+    app_version: str = "2.3.0"
     # Git commit the running image was built from; set via BUILD_SHA at image build time
     build_sha: str = "dev"
     # Monotonic CI run number; 0 for local runs
@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     totp_issuer: str = "DCI Books"
     # Largest request body accepted (bytes); bigger requests get 413 before parsing.
     max_request_body_bytes: int = 1_048_576
+    # Largest body of a receipt upload (expense create / add receipts); bigger gets 422.
+    max_upload_body_bytes: int = 64 * 1024 * 1024
+    # Where uploaded expense attachments are stored (a mounted volume in production).
+    attachment_dir: str = "/data/attachments"
     # Argon2 hashes/verifies allowed at once per process (each needs ~64 MiB);
     # further login attempts wait for a slot instead of exhausting memory.
     max_concurrent_password_hashes: int = Field(default=4, ge=1)

@@ -203,6 +203,10 @@
     <a class="nav-link{% if path.startswith('/accounts') %} active{% endif %}" href="/accounts"{% if path.startswith('/accounts') %} aria-current="page"{% endif %}><i class="bi bi-diagram-3 me-1"></i>Accounts</a>
     {% set sales = path.startswith(('/invoices', '/customers', '/items', '/payments', '/deposits')) %}
     <a class="nav-link{% if sales %} active{% endif %}" href="/invoices"{% if sales %} aria-current="page"{% endif %}><i class="bi bi-receipt me-1"></i>Sales</a>
+    <a class="nav-link{% if path.startswith(('/expenses', '/attachments')) %} active{% endif %}" href="/expenses"{% if path.startswith(('/expenses', '/attachments')) %} aria-current="page"{% endif %}><i class="bi bi-cash-stack me-1"></i>Expenses</a>
+    <a class="nav-link{% if path.startswith('/vendors') %} active{% endif %}" href="/vendors"{% if path.startswith('/vendors') %} aria-current="page"{% endif %}><i class="bi bi-shop me-1"></i>Vendors</a>
+    <a class="nav-link{% if path.startswith('/transfers') %} active{% endif %}" href="/transfers"{% if path.startswith('/transfers') %} aria-current="page"{% endif %}><i class="bi bi-arrow-left-right me-1"></i>Transfers</a>
+    <a class="nav-link{% if path.startswith('/owner') %} active{% endif %}" href="/owner"{% if path.startswith('/owner') %} aria-current="page"{% endif %}><i class="bi bi-person-badge me-1"></i>Owner</a>
     <a class="nav-link{% if path.startswith('/journal') %} active{% endif %}" href="/journal"{% if path.startswith('/journal') %} aria-current="page"{% endif %}><i class="bi bi-journal-text me-1"></i>Journal</a>
     <a class="nav-link{% if path.startswith('/reports') %} active{% endif %}" href="/reports"{% if path.startswith('/reports') %} aria-current="page"{% endif %}><i class="bi bi-bar-chart me-1"></i>Reports</a>
     <a class="nav-link{% if path.startswith('/settings') %} active{% endif %}" href="/settings/ledger"{% if path.startswith('/settings') %} aria-current="page"{% endif %}><i class="bi bi-gear me-1"></i>Settings</a>

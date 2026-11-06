@@ -41,6 +41,7 @@ class RegisterLine(AppBaseSchema):
     # the invoice the payment was applied to.
     payment_id: int | None = None
     invoice_id: int | None = None
+    source_id: str | None = None  # the entry's source document id (drill-down link)
 
 
 class Register(AppBaseSchema):
@@ -79,6 +80,7 @@ class JournalReportEntry(AppBaseSchema):
     id: int
     entry_no: int
     source_type: SourceType
+    source_id: str | None = None
     entry_date: date
     memo: str | None
     status: Literal["posted", "void"]

@@ -10,6 +10,8 @@ slug, after = the validated parameters and the format) and commits it; the file 
 is the report slug plus validated dates only, never user text.
 """
 
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from sqlmodel import Session
@@ -18,12 +20,14 @@ from payroll.audit.services import record
 from payroll.auth.models import User
 from payroll.auth.permissions import require_reader
 from payroll.common.dependencies import get_session
+from payroll.expenses.reports import OwnerReport
 from payroll.frontend.routers import templates
 from payroll.receivables.balances import ARAging
 from payroll.reports.export import to_csv, to_pdf
-from payroll.reports.runs import RUNNERS, ReportRun, trial_invariants
+from payroll.reports.runs import RUNNERS, Query, ReportRun, trial_invariants
 from payroll.reports.schemas import GeneralLedger, JournalReport, Statement, TrialBalance
 
+Runner = Callable[[Session, Query], ReportRun]
 MEDIA_TYPES = {"csv": "text/csv; charset=utf-8", "pdf": "application/pdf"}
 
 
@@ -41,6 +45,8 @@ def render_print_html(run: ReportRun) -> str:
         context.update(journal=report)
     elif isinstance(report, ARAging):
         context.update(aging=report, invariants=report.invariants)
+    elif isinstance(report, OwnerReport):
+        context.update(owner=report)
     return templates.env.get_template("reports/print.html").render(context)
 
 
@@ -73,9 +79,9 @@ def export_response(session: Session, user: User, request: Request, run: ReportR
     )
 
 
-def add_export_routes(router: APIRouter, base: str) -> None:
-    """Register ``<base>/<report>.csv`` and ``.pdf`` for every report on ``router``."""
-    for name, runner in RUNNERS.items():
+def add_export_routes(router: APIRouter, base: str, runners: dict[str, Runner] = RUNNERS) -> None:
+    """Register ``<base>/<report>.csv`` and ``.pdf`` for every report in ``runners``."""
+    for name, runner in runners.items():
         for fmt in MEDIA_TYPES:
             router.add_api_route(
                 f"{base}/{name}.{fmt}",
