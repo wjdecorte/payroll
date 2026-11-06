@@ -422,13 +422,13 @@ def test_reimbursement_total_must_equal_expense_sum_at_commit(
     session.execute(
         text("UPDATE expense SET reimbursement_id = :r WHERE id = :e"), {"r": reim.id, "e": exp.id}
     )
-    with pytest.raises(DBAPIError, match="reimbursement"):
+    with pytest.raises(DBAPIError, match="expenses sum to"):
         _commit(session)
 
 
 def test_reimbursement_without_expenses_rejected_at_commit(session, owner_user, chart):
     _reimbursement(session, owner_user, chart, chart["Business Checking"])
-    with pytest.raises(DBAPIError, match="reimbursement"):
+    with pytest.raises(DBAPIError, match="expenses sum to"):
         _commit(session)
 
 
@@ -443,6 +443,48 @@ def test_reimbursement_sums_multiple_expenses(session, owner_user, chart, expens
             {"r": reim.id, "e": exp.id},
         )
     _commit(session)
+
+
+def _link(session, reim, exp) -> None:
+    session.execute(
+        text("UPDATE expense SET reimbursement_id = :r WHERE id = :e"), {"r": reim.id, "e": exp.id}
+    )
+
+
+def test_line_added_in_later_transaction_rejected(session, vendor, card, expense_account):
+    exp = _card_expense(session, vendor, card, expense_account)
+    _commit(session)  # first transaction: balanced, committed
+    _line(session, exp, expense_account, "5.00", line_no=2)  # later: total untouched
+    with pytest.raises(DBAPIError, match="lines sum to"):
+        _commit(session)
+
+
+def test_extra_expense_linked_in_later_transaction_rejected(
+    session, owner_user, chart, expense_account
+):
+    bank = chart["Business Checking"]
+    e1 = _owner_expense(session, owner_user, chart, expense_account, "100.00")
+    e2 = _owner_expense(session, owner_user, chart, expense_account, "20.00")
+    reim = _reimbursement(session, owner_user, chart, bank, total="100.00")
+    _link(session, reim, e1)
+    _commit(session)
+    _link(session, reim, e2)  # later transaction: reimbursement row untouched
+    with pytest.raises(DBAPIError, match="expenses sum to"):
+        _commit(session)
+
+
+def test_linked_expense_total_change_in_later_transaction_rejected(
+    session, owner_user, chart, expense_account
+):
+    bank = chart["Business Checking"]
+    exp = _owner_expense(session, owner_user, chart, expense_account, "100.00")
+    reim = _reimbursement(session, owner_user, chart, bank, total="100.00")
+    _link(session, reim, exp)
+    _commit(session)
+    _line(session, exp, expense_account, "10.00", line_no=2)  # keeps the line sum valid
+    session.execute(text("UPDATE expense SET total = 110 WHERE id = :e"), {"e": exp.id})
+    with pytest.raises(DBAPIError, match="expenses sum to"):
+        _commit(session)
 
 
 def test_reimbursement_status_and_total(session, owner_user, chart):
