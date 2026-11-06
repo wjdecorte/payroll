@@ -17,6 +17,14 @@ Full-page routes (not in the OpenAPI schema):
   GET  /expenses/{id}          -> lines, receipts, ledger entry link, void form
   POST /expenses/{id}/void     -> voids the expense                     (owner)
   POST /expenses/{id}/receipts -> attaches more receipts                (owner)
+  GET  /transfers              -> transfer list, 50 per page (``?page=``)
+  GET  /transfers/new          -> new-transfer form                     (owner)
+  POST /transfers/new          -> saves the transfer                    (owner)
+  GET  /transfers/{id}         -> the transfer, its ledger entry link, void form
+  POST /transfers/{id}/void    -> voids the transfer                    (owner)
+  GET  /owner                  -> owed to me, open owner-paid expenses, Reimburse form, history
+  POST /owner/reimburse        -> reimburses the ticked expenses        (owner)
+  POST /owner/reimbursements/{id}/void -> voids a reimbursement         (owner)
   GET  /attachments/{id}       -> a receipt download (any signed-in role); ``?inline=1`` shows
                                   PNG and JPEG in the browser, every other type stays a download
 
@@ -70,11 +78,14 @@ from payroll.expenses.exceptions import (
 )
 from payroll.expenses.expenses import LINE_TYPES, MAX_LINES, ExpenseLineInput, ExpenseService
 from payroll.expenses.models import Expense, Vendor
+from payroll.expenses.owner import owner_summary
+from payroll.expenses.reimbursements import MAX_EXPENSES, ReimbursementService
+from payroll.expenses.transfers import TransferService
 from payroll.expenses.vendors import VendorService
 from payroll.frontend.journal_routers import parse_amount
 from payroll.frontend.routers import _error_partial, templates
 from payroll.ledger.accounts import AccountService
-from payroll.ledger.models import Account
+from payroll.ledger.models import Account, AccountType
 from payroll.reports.export import csv_safe
 from payroll.reports.periods import company_today
 
@@ -885,6 +896,317 @@ async def expense_add_receipts(
             status_code=_form_status_warning(status),
         )
     return RedirectResponse(f"/expenses/{number}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Transfers
+# ---------------------------------------------------------------------------
+
+
+def _transfer_form(
+    request: Request,
+    session: Session,
+    *,
+    values: dict,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "transfers/form.html",
+        {"values": values, "error": error, **_pickers(session), "tab": "transfers"},
+        status_code=status_code,
+    )
+
+
+def _transfer_values(form) -> dict:
+    return {
+        "transfer_date": _text(form.get("transfer_date")),
+        "from_account_id": _text(form.get("from_account_id")),
+        "to_account_id": _text(form.get("to_account_id")),
+        "amount": _text(form.get("amount")),
+        "memo": _text(form.get("memo")),
+    }
+
+
+def _parse_transfer(values: dict) -> dict[str, Any]:
+    """Typed arguments for ``TransferService.create`` from the form's text values."""
+    transfer_date = _parse_date(values["transfer_date"], "The transfer date")
+    if transfer_date is None:
+        raise _invalid("Enter the transfer date")
+    from_id = _parse_id(values["from_account_id"], "The account to move money from")
+    to_id = _parse_id(values["to_account_id"], "The account to move money to")
+    if from_id is None or to_id is None:
+        raise _invalid("Choose the accounts to move money from and to")
+    try:
+        amount = parse_amount(values["amount"])
+    except ValueError as exc:
+        raise _invalid(str(exc)) from exc
+    return {
+        "transfer_date": transfer_date,
+        "from_account_id": from_id,
+        "to_account_id": to_id,
+        "amount": amount,
+        "memo": values["memo"] or None,
+    }
+
+
+@router.get("/transfers", response_class=HTMLResponse)
+async def transfers_list(
+    request: Request, page: str = "", session: Session = Depends(get_session)
+) -> HTMLResponse:
+    try:
+        number = _parse_page(page)
+        rows = TransferService(session).list(limit=PAGE_SIZE + 1, offset=(number - 1) * PAGE_SIZE)
+    except AppBaseError as exc:
+        return _bad_request_page(request, exc)
+    shown = rows[:PAGE_SIZE]
+    accounts = _accounts_by_id(
+        session, {r.from_account_id for r in shown} | {r.to_account_id for r in shown}
+    )
+    return templates.TemplateResponse(
+        request,
+        "transfers/list.html",
+        {
+            "transfers": shown,
+            "accounts": accounts,
+            "page": number,
+            "has_next": len(rows) > PAGE_SIZE,
+            "tab": "transfers",
+        },
+    )
+
+
+@router.get("/transfers/new", response_class=HTMLResponse, dependencies=[Depends(require_owner)])
+async def transfer_new(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    values = {
+        "transfer_date": str(company_today()),
+        "from_account_id": "",
+        "to_account_id": "",
+        "amount": "",
+        "memo": "",
+    }
+    return _transfer_form(request, session, values=values)
+
+
+@router.post("/transfers/new", response_class=HTMLResponse)
+async def transfer_create(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    values = _transfer_values(await request.form())
+    try:
+        transfer = TransferService(session).create(actor=actor, **_parse_transfer(values))
+    except AppBaseError as exc:
+        return _transfer_form(
+            request, session, values=values, error=exc.message, status_code=_form_status(exc)
+        )
+    return RedirectResponse(f"/transfers/{transfer.id}", status_code=303)
+
+
+def _transfer_page(
+    request: Request,
+    session: Session,
+    transfer_id: int,
+    *,
+    error: str | None = None,
+    void_values: dict | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    try:
+        transfer = TransferService(session).get(transfer_id)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    accounts = _accounts_by_id(session, {transfer.from_account_id, transfer.to_account_id})
+    defaults = {"void_date": str(max(company_today(), transfer.date)), "memo": ""}
+    return templates.TemplateResponse(
+        request,
+        "transfers/detail.html",
+        {
+            "transfer": transfer,
+            "accounts": accounts,
+            "void_values": void_values if void_values is not None else defaults,
+            "error": error,
+            "tab": "transfers",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/transfers/{transfer_id}", response_class=HTMLResponse)
+async def transfer_view(
+    request: Request, transfer_id: str, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    try:
+        number = _path_id(transfer_id, "The transfer")
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    return _transfer_page(request, session, number)
+
+
+@router.post("/transfers/{transfer_id}/void", response_class=HTMLResponse)
+async def transfer_void(
+    request: Request,
+    transfer_id: str,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    values = {"void_date": _text(form.get("void_date")), "memo": _text(form.get("memo"))}
+    try:
+        number = _path_id(transfer_id, "The transfer")
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    try:
+        void_date = _parse_date(values["void_date"], "The void date")
+        if void_date is None:
+            raise _invalid("Enter a void date")
+        TransferService(session).void(
+            number, actor=actor, void_date=void_date, memo=values["memo"] or None
+        )
+    except AppBaseError as exc:
+        return _transfer_page(
+            request,
+            session,
+            number,
+            error=exc.message,
+            void_values=values,
+            status_code=_form_status(exc) if exc.http_code != 404 else 404,
+        )
+    return RedirectResponse(f"/transfers/{number}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Owner: owed to me, reimbursements
+# ---------------------------------------------------------------------------
+
+
+def _owner_page(
+    request: Request,
+    session: Session,
+    *,
+    values: dict | None = None,
+    error: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    summary = owner_summary(session)
+    history = ReimbursementService(session).list(limit=PAGE_SIZE)
+    service = ReimbursementService(session)
+    covered = {r.id: service.expenses(r.id) for r in history if r.id is not None}  # type: ignore[arg-type]
+    expenses = list(summary.open_expenses)
+    for rows in covered.values():
+        expenses.extend(rows)
+    vendors = _vendor_names(session, {e.vendor_id for e in expenses if e.vendor_id})
+    accounts = _accounts_by_id(session, {r.paid_from_account_id for r in history})
+    pickers = _pickers(session)
+    banks = [a for a in pickers["pay_accounts"] if a.type == AccountType.ASSET]
+    defaults = {
+        "reimbursement_date": str(company_today()),
+        "bank_account_id": "",
+        "memo": "",
+        "expense_ids": [],
+    }
+    return templates.TemplateResponse(
+        request,
+        "owner/index.html",
+        {
+            "summary": summary,
+            "vendor_names": vendors,
+            "history": history,
+            "covered": covered,
+            "accounts": accounts,
+            "banks": banks,
+            "values": values if values is not None else defaults,
+            "void_defaults": str(company_today()),
+            "error": error,
+            "tab": "owner",
+        },
+        status_code=status_code,
+    )
+
+
+def _parse_expense_ids(raw: list) -> list[int]:
+    if not raw or all(not _text(item) for item in raw):
+        raise _invalid("Choose at least one expense")
+    if len(raw) > MAX_EXPENSES:
+        raise _invalid(f"A reimbursement can cover at most {MAX_EXPENSES} expenses")
+    ids: list[int] = []
+    for item in raw:
+        number = _parse_id(item, "An expense")
+        if number is None:
+            raise _invalid("An expense is not valid")
+        ids.append(number)
+    if len(set(ids)) != len(ids):
+        raise _invalid("An expense can be listed only once")
+    return ids
+
+
+@router.get("/owner", response_class=HTMLResponse)
+async def owner_view(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    return _owner_page(request, session)
+
+
+@router.post("/owner/reimburse", response_class=HTMLResponse)
+async def owner_reimburse(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    raw_ids = [item for item in form.getlist("expense_id") if isinstance(item, str)]
+    values = {
+        "reimbursement_date": _text(form.get("reimbursement_date")),
+        "bank_account_id": _text(form.get("bank_account_id")),
+        "memo": _text(form.get("memo")),
+        "expense_ids": [_text(item) for item in raw_ids],
+    }
+    try:
+        reimbursement_date = _parse_date(values["reimbursement_date"], "The reimbursement date")
+        if reimbursement_date is None:
+            raise _invalid("Enter the reimbursement date")
+        bank_id = _parse_id(values["bank_account_id"], "The bank account")
+        if bank_id is None:
+            raise _invalid("Choose the bank account the reimbursement is paid from")
+        ids = _parse_expense_ids(raw_ids)
+        ReimbursementService(session).create(
+            actor=actor,
+            reimbursement_date=reimbursement_date,
+            paid_from_account_id=bank_id,
+            expense_ids=ids,
+            memo=values["memo"] or None,
+        )
+    except AppBaseError as exc:
+        return _owner_page(
+            request, session, values=values, error=exc.message, status_code=_form_status(exc)
+        )
+    return RedirectResponse("/owner", status_code=303)
+
+
+@router.post("/owner/reimbursements/{reimbursement_id}/void", response_class=HTMLResponse)
+async def owner_reimbursement_void(
+    request: Request,
+    reimbursement_id: str,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+):
+    form = await request.form()
+    memo = _text(form.get("memo"))
+    try:
+        number = _path_id(reimbursement_id, "The reimbursement")
+        ReimbursementService(session).get(number)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    try:
+        void_date = _parse_date(form.get("void_date"), "The void date")
+        if void_date is None:
+            raise _invalid("Enter a void date")
+        ReimbursementService(session).void(
+            number, actor=actor, void_date=void_date, memo=memo or None
+        )
+    except AppBaseError as exc:
+        return _owner_page(request, session, error=exc.message, status_code=_form_status(exc))
+    return RedirectResponse("/owner", status_code=303)
 
 
 # ---------------------------------------------------------------------------

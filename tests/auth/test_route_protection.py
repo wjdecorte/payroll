@@ -47,8 +47,8 @@ ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
         ("POST", "/enroll"),
     }
 )
-# the M2 receivables routes added 19, the M3 vendor/expense routes added 6
-MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 6
+# the M2 receivables routes added 19, the M3 vendor/expense/transfer/owner routes added 10
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 10
 # The ledger (M1) mutating routes: all owner-only. The sweep test below checks this
 # list against the app's real routes, so a new ledger route cannot be left out.
 LEDGER = f"{PREFIX}/ledger"
@@ -96,8 +96,8 @@ RECEIVABLES_UNSAFE_ENDPOINTS = (
     ("POST", "/settings/receivables/number"),
     ("POST", "/settings/receivables/company"),
 )
-# The expenses (M3) mutating page routes: all owner-only. Later M3 tasks add transfers,
-# reimbursements and the owner page to this list as they add their routes.
+# The expenses (M3) mutating page routes: all owner-only (vendors, expenses, transfers and the
+# owner page).
 EXPENSES_UNSAFE_ENDPOINTS = (
     ("POST", "/vendors/new"),
     ("POST", "/vendors/1/edit"),
@@ -105,6 +105,10 @@ EXPENSES_UNSAFE_ENDPOINTS = (
     ("POST", "/expenses/new"),
     ("POST", "/expenses/1/void"),
     ("POST", "/expenses/1/receipts"),
+    ("POST", "/transfers/new"),
+    ("POST", "/transfers/1/void"),
+    ("POST", "/owner/reimburse"),
+    ("POST", "/owner/reimbursements/1/void"),
 )
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
@@ -369,7 +373,7 @@ def _readable_receivable_pages() -> list[str]:
     )
 
 
-_EXPENSE_PREFIXES = ("/vendors", "/expenses", "/attachments")
+_EXPENSE_PREFIXES = ("/vendors", "/expenses", "/attachments", "/transfers", "/owner")
 
 
 def _expenses_unsafe_routes() -> set[tuple[str, str]]:
@@ -403,6 +407,10 @@ def test_expenses_route_list_matches_the_app():
         "/expenses/new",
         "/expenses/1",
         "/attachments/1",
+        "/transfers",
+        "/transfers/new",
+        "/transfers/1",
+        "/owner",
     ):
         assert known in pages, known
 
@@ -413,7 +421,7 @@ def test_viewer_and_accountant_read_expense_pages_but_cannot_mutate(
 ):
     client = request.getfixturevalue(role_client)
     session.commit()
-    assert len(EXPENSES_UNSAFE_ENDPOINTS) == 6
+    assert len(EXPENSES_UNSAFE_ENDPOINTS) == 10
     for method, path in EXPENSES_UNSAFE_ENDPOINTS:
         response = client.request(method, path, follow_redirects=False)
         assert response.status_code == 403, (method, path, response.status_code)
@@ -438,9 +446,15 @@ def test_expense_routes_need_csrf(owner_client, session):
     from sqlalchemy import func
 
     from payroll.auth.dependencies import CSRF_HEADER
-    from payroll.expenses.models import Attachment, Expense, Vendor
+    from payroll.expenses.models import (
+        Attachment,
+        Expense,
+        Reimbursement,
+        Transfer,
+        Vendor,
+    )
 
-    tables = (Vendor, Expense, Attachment, AuditLog)
+    tables = (Vendor, Expense, Attachment, AuditLog, Transfer, Reimbursement)
 
     def counts() -> list[int]:
         return [session.exec(select(func.count()).select_from(t)).one() for t in tables]
@@ -450,7 +464,7 @@ def test_expense_routes_need_csrf(owner_client, session):
     assert token and CSRF_HEADER not in owner_client.headers
     before = counts()
     body = {"name": "Csrf Probe", "void_date": "2026-03-01", "expense_date": "2026-03-01"}
-    assert len(EXPENSES_UNSAFE_ENDPOINTS) == 6
+    assert len(EXPENSES_UNSAFE_ENDPOINTS) == 10
     for method, path in EXPENSES_UNSAFE_ENDPOINTS:
         response = owner_client.request(method, path, data=body, follow_redirects=False)
         where = f"{method} {path} -> {response.status_code}"
