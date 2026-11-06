@@ -138,8 +138,9 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    document itself, so a reversal never precedes the original. It must also be dated after the
    period lock, and the M1 ledger additionally refuses to void a document whose own date is on
    or before the lock (a void erases it from its own period). To correct a document in a locked
-   period, move the lock back, void, and lock again, or post a reversal dated after the lock
-   through a manual journal (see the RUNBOOK).
+   period, move the lock back (password-gated), void or replace it, and lock again (see the
+   RUNBOOK). A reversal posted through a manual journal is not a correction: the document stays
+   live in its subledger, so the A/R aging and customer balances would not change.
 5. **Invoice rules.** Integer numbers assigned on issue from a settable next number (above
    every number used; voided numbers are never reused). Draft, Open, Void are stored; Partial,
    Paid and Overdue are derived. An open invoice can be edited only while nothing is applied
@@ -162,6 +163,31 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
 - A **Reimburse Owner** action selects open owner-paid expenses and posts
   Dr Due to Owner / Cr Bank for the total, marking them reimbursed.
 - The owner can see an "owed to me" balance at any time.
+
+**Rulings made for M3 (v2.3.0), where this spec was silent:**
+
+1. **Whole-expense reimbursement only.** A reimbursement repays whole open owner-paid expenses;
+   there is no partial reimbursement (an expense cannot be repaid in instalments).
+2. **Receipts are append-only.** An uploaded receipt cannot be removed or replaced; a wrong
+   upload is explained with a memo. Uploads are allowed on posted and void expenses. Types
+   (PDF, PNG, JPEG, HEIC) are decided from the file contents.
+3. **No vendor credits or negative lines.** Expense lines and totals must be positive; a vendor
+   refund is recorded with a manual journal.
+4. **Vendor or free-text payee.** Each expense has exactly one of a vendor or a payee text.
+5. **The Due to Owner role is frozen** once any owner-source expense or reimbursement exists
+   (voided ones included), like the A/R rule. Posting an owner-source expense with the role
+   unbound is refused.
+6. **A reimbursement is paid from an asset account only** (not a credit card or other liability).
+7. **Transfers are in M3.** A transfer moves an amount between two different asset or liability
+   accounts (for example a credit card payment); the bound roles (A/R, Undeposited Funds, Due to
+   Owner) are not allowed on either side.
+8. **Bank reconciliation is NOT in M3.** It stays in v1 scope (§9, decision 8) for a later
+   milestone.
+9. **Error codes.** A state conflict (an expense already reimbursed, a document already void, a
+   locked period) answers HTTP 409; bad input answers 422. When two reimbursements race for one
+   expense the loser gets a 409. This amends the "422" wording in the M3 design (section 6).
+10. **Owner-only mutations;** accountants and viewers read every page, report and receipt
+    download. Every mutating route requires the owner role and CSRF.
 
 ### 4.5 Payroll
 
@@ -287,7 +313,7 @@ network.
 | M0 | Foundation | Auth + MFA, single-app structure, Postgres-only, Decimal money, audit log, CI green. |
 | M1 | Ledger & reports | **Done (v2.1.0).** Chart of accounts, manual journals, Trial Balance, Balance Sheet, P&L (all presets and custom), GL, CSV/PDF export. Cash (default) and accrual toggle are in place; figures differ once receivables exist (M2, v2.2.0). |
 | M2 | Receivables | **Done (v2.2.0).** Customers, items, invoices (draft, issue, edit, void, PDF), payments with applications, deposits, customer refunds and credit, A/R aging, cash-basis reports with drill-down. |
-| M3 | Expenses | Expenses, receipts, owner-paid and reimbursement flow. |
+| M3 | Expenses | **Done (v2.3.0).** Vendors, expenses with split lines and receipts, owner-paid expenses and whole-expense reimbursement, transfers, the Owner page, owner reimbursement report with drill-down. |
 | M4 | Payroll to ledger | Existing calculator posts to the ledger; payroll liabilities and tax payments. |
 | M5 | Payroll returns | 941, GA-7M, DOL-4N, 940, W-2/W-3 worksheets matching QBO's figures for 2026. |
 | M6 | Import & parallel run | QBO import of the current year (chart, customers, general ledger, payroll history) and a parallel run reconcile to the penny; earlier years follow as M8. |

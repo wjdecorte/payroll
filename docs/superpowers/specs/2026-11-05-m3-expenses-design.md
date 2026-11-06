@@ -132,7 +132,8 @@ Same family as M2, with one new sentence: payment/role rows first, then document
 then the period lock FOR SHARE, then the per-source entry counter. Reimbursement and the
 owner-source expense both take the Due to Owner role row FOR SHARE (`bind_role` takes it FOR
 UPDATE), so a rebind cannot interleave with a posting. Two reimbursements racing for the same
-expense serialize on the expense row lock; the loser sees it already reimbursed and gets a 422.
+expense serialize on the expense row lock; the loser sees it already reimbursed and gets a 409
+(a state conflict; bad input is a 422).
 
 ## 7. Attachments
 

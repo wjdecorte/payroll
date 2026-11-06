@@ -39,6 +39,10 @@ services:
       WORKERS: 2
       API_LOG_TYPE: standard
       DEBUG_MODE: "false"
+    volumes:
+      # Uploaded expense receipts. The folder must exist and be writable by the container user
+      # (uid 10001): see "Upgrading to v2.3.0" in docs/RUNBOOK.md. Include it in backups.
+      - /volume1/docker/payroll/attachments:/data/attachments
     depends_on:
       db:
         condition: service_healthy

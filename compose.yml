@@ -36,6 +36,9 @@ services:
       API_LOG_TYPE: standard
       DEBUG_MODE: "false"
       # Override QBO account names (ACCT_*) here if needed
+    volumes:
+      # Uploaded expense receipts; a named volume so they survive container recreation.
+      - attachments:/data/attachments
     depends_on:
       db:
         condition: service_healthy
@@ -54,3 +57,4 @@ networks:
 
 volumes:
   pgdata:
+  attachments:

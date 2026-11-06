@@ -37,6 +37,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --no-install-project --no-dev
 
+# Receipt storage (ATTACHMENT_DIR). Created and owned by the app user so a fresh named volume
+# mounted here inherits the right ownership; bind mounts must be chowned on the host (RUNBOOK).
+RUN mkdir -p /data/attachments && chown appuser:0 /data/attachments && chmod 700 /data/attachments
+
 # Copy application source and install the project itself
 ADD --chown=appuser:0 . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
