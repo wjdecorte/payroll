@@ -227,6 +227,8 @@ so scan the one currently displayed and save the recovery codes.
   database role the app connects as should **not own** the table (owners can drop triggers).
 - `/payroll/api/v1/docs`, `/payroll/api/v1/redoc` and `/payroll/api/v1/openapi.json` are disabled unless `DEBUG_MODE=true`.
 - Request bodies larger than `MAX_REQUEST_BODY_BYTES` (default 1 MiB) get HTTP 413.
+  The receipt upload routes (`POST /expenses/new`, `POST /expenses/{id}/receipts`) allow up to
+  `MAX_UPLOAD_BODY_BYTES` (default 64 MiB) and answer HTTP 422 beyond it.
 - **Never enable `DEBUG_MODE=true` in production.** Besides the API docs, it turns on
   SQLAlchemy SQL echo, which logs every statement **with its bound parameters**: password
   hashes, encrypted TOTP secrets, session token hashes and audit data end up in the logs.

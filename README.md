@@ -170,6 +170,7 @@ All settings come from environment variables or `.env` (see `.env.example`):
 | `MAX_FAILED_LOGINS` / `LOCKOUT_MINUTES` | `5` / `15` | Login lockout |
 | `TOTP_ISSUER` | `DCI Books` | Name shown in the authenticator app |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Larger request bodies get HTTP 413 |
+| `MAX_UPLOAD_BODY_BYTES` | `67108864` | Largest receipt upload body (expense create / add receipts); larger gets HTTP 422 |
 | `MAX_CONCURRENT_PASSWORD_HASHES` | `4` | Argon2 hashes/verifies at once per worker (~64 MiB each); extra logins queue |
 | `COMPANY_TIMEZONE` | `America/New_York` | IANA timezone that defines "today" and period boundaries for reports |
 | `DEBUG_MODE` | `false` | Enables debug logging, the API docs routes and SQL echo **with bound parameters** (hashes, tokens): never in production |

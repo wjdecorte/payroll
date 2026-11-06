@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Expense · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "expenses/_tabs.html" %}
+  {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+  {% if warning %}<div class="alert alert-warning" role="alert">{{ warning }}</div>{% endif %}
+  <div class="card mb-3">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-cash-stack me-2"></i>Expense</span>
+      <span class="badge {{ 'bg-secondary' if expense.status == 'void' else 'bg-success' }}">{{ expense.status | capitalize }}</span>
+    </div>
+    <div class="card-body">
+      <dl class="row mb-3">
+        <dt class="col-sm-2">Date</dt><dd class="col-sm-10">{{ expense.date }}</dd>
+        <dt class="col-sm-2">Payee</dt>
+        <dd class="col-sm-10">{% if vendor %}<a href="/expenses?vendor_id={{ vendor.id }}">{{ vendor.name }}</a>{% else %}{{ expense.payee_text or "" }}{% endif %}</dd>
+        <dt class="col-sm-2">Paid from</dt><dd class="col-sm-10">{{ paid_from }}</dd>
+        <dt class="col-sm-2">Total</dt><dd class="col-sm-10">{{ expense.total | currency }}</dd>
+        {% if expense.memo %}<dt class="col-sm-2">Memo</dt><dd class="col-sm-10">{{ expense.memo }}</dd>{% endif %}
+        {% if expense.entry_id %}
+        <dt class="col-sm-2">Ledger entry</dt><dd class="col-sm-10"><a href="/journal/{{ expense.entry_id }}">View the journal entry</a></dd>
+        {% endif %}
+        {% if expense.status == "void" %}
+        <dt class="col-sm-2">Voided</dt>
+        <dd class="col-sm-10">{{ expense.void_date }}{% if expense.void_entry_id %} · <a href="/journal/{{ expense.void_entry_id }}">reversal entry</a>{% endif %}</dd>
+        {% endif %}
+        {% if expense.reimbursement_id %}
+        <dt class="col-sm-2">Reimbursed</dt><dd class="col-sm-10">Repaid to the owner</dd>
+        {% endif %}
+      </dl>
+      <h2 class="h6">Lines</h2>
+      <table class="table table-sm align-middle">
+        <thead><tr><th>Account</th><th>Memo</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          {% for line in lines %}
+          <tr>
+            <td><a href="/accounts/{{ line.account_id }}/register">{{ accounts[line.account_id].name }}</a></td>
+            <td>{{ line.memo or "" }}</td>
+            <td class="num">{{ line.amount | currency }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot><tr class="fw-bold"><td colspan="2">Total</td><td class="num">{{ expense.total | currency }}</td></tr></tfoot>
+      </table>
+      <div class="no-print d-flex gap-2 mb-3">
+        <a class="btn btn-outline-secondary" href="/expenses">Back to expenses</a>
+      </div>
+      {% if is_owner and expense.status == "posted" %}
+      <form method="post" action="/expenses/{{ expense.id }}/void" class="no-print row g-2 align-items-end" id="void-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-auto">
+          <label class="form-label" for="void_date">Void date</label>
+          <input type="date" class="form-control" id="void_date" name="void_date" value="{{ void_values.void_date }}" required>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="void_memo">Memo (optional)</label>
+          <input type="text" class="form-control" id="void_memo" name="memo" maxlength="500" value="{{ void_values.memo }}">
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-outline-danger">Void expense</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header bg-primary"><i class="bi bi-paperclip me-2"></i>Receipts</div>
+    <div class="card-body">
+      {% if attachments %}
+      <ul class="list-unstyled mb-3" id="receipt-list">
+        {% for a in attachments %}
+        <li class="mb-1">
+          <a href="/attachments/{{ a.id }}">{{ a.filename }}</a>
+          <span class="text-muted small">{{ a.content_type }} · {{ a.size | filesizeformat }}</span>
+          {% if a.content_type in inline_types %}<a class="small ms-2" href="/attachments/{{ a.id }}?inline=1">View</a>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-muted" id="no-receipts">No receipts attached.</p>
+      {% endif %}
+      {% if is_owner %}
+      <form method="post" action="/expenses/{{ expense.id }}/receipts" enctype="multipart/form-data" class="no-print row g-2 align-items-end" id="receipt-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-auto">
+          <label class="form-label" for="receipts">Add receipts (PDF, PNG, JPEG or HEIC; up to {{ max_files }} files of 10 MB)</label>
+          <input class="form-control" type="file" id="receipts" name="receipts" multiple required accept=".pdf,.png,.jpg,.jpeg,.heic,application/pdf,image/png,image/jpeg,image/heic">
+        </div>
+        <div class="col-auto"><button type="submit" class="btn btn-success">Attach</button></div>
+        <div class="form-text">Receipts cannot be removed once attached; explain a mistake in the memo.</div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

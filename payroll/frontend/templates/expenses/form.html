@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}New expense · DCI Books{% endblock %}
+{% macro line_row(line) %}
+<tr data-exp-row>
+  <td>
+    <select class="form-select form-select-sm" name="line_account_id" aria-label="Expense account">
+      <option value="">Choose an account</option>
+      {% for a in line_accounts %}
+      <option value="{{ a.id }}"{% if line.account_id == a.id | string %} selected{% endif %}>{{ label(a) }}</option>
+      {% endfor %}
+    </select>
+  </td>
+  <td><input class="form-control form-control-sm" name="line_memo" maxlength="500" aria-label="Line memo" value="{{ line.memo }}"></td>
+  <td><input class="form-control form-control-sm num" name="line_amount" inputmode="decimal" autocomplete="off" aria-label="Line amount" value="{{ line.amount }}"></td>
+  <td class="text-end"><button type="button" class="btn btn-sm btn-outline-secondary" data-exp-remove aria-label="Remove line"><i class="bi bi-x-lg"></i></button></td>
+</tr>
+{% endmacro %}
+{% block content %}
+<div class="container-xl py-3">
+  {% include "expenses/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary">New expense</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/expenses/new" enctype="multipart/form-data" id="exp-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label class="form-label" for="expense_date">Date</label>
+            <input class="form-control" type="date" id="expense_date" name="expense_date" required value="{{ values.expense_date }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="vendor_id">Vendor</label>
+            <select class="form-select" id="vendor_id" name="vendor_id">
+              <option value="">No vendor (type a payee)</option>
+              {% for v in vendors %}
+              <option value="{{ v.id }}"{% if values.vendor_id == v.id | string %} selected{% endif %}>{{ v.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label" for="payee_text">Payee (when there is no vendor)</label>
+            <input class="form-control" id="payee_text" name="payee_text" maxlength="200" value="{{ values.payee_text }}">
+          </div>
+          <div class="col-md-5">
+            <label class="form-label" for="paid_from">Paid from</label>
+            <select class="form-select" id="paid_from" name="paid_from" required>
+              <option value="">Choose how it was paid</option>
+              <option value="owner"{% if values.paid_from == "owner" %} selected{% endif %}>Owner (personal card)</option>
+              {% for a in pay_accounts %}
+              <option value="{{ a.id }}"{% if values.paid_from == a.id | string %} selected{% endif %}>{{ label(a) }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">An owner-paid expense is owed back to you until you reimburse it.</div>
+          </div>
+          <div class="col-md-7">
+            <label class="form-label" for="memo">Memo</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <h2 class="h6">Lines</h2>
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>Account</th><th>Memo</th><th class="num">Amount</th><th></th></tr>
+          </thead>
+          <tbody id="exp-rows">
+            {% for line in values.lines %}{{ line_row(line) }}{% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2"><button type="button" class="btn btn-sm btn-outline-secondary" id="exp-add" data-max="{{ max_lines }}"><i class="bi bi-plus-lg me-1"></i>Add line</button></td>
+              <th class="num" id="exp-total" aria-live="polite"></th>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+        <template id="exp-row-template">{{ line_row({"account_id": "", "amount": "", "memo": ""}) }}</template>
+        <div class="mb-3">
+          <label class="form-label" for="receipts">Receipts (PDF, PNG, JPEG or HEIC; up to {{ 10 }} files of 10 MB)</label>
+          <input class="form-control" type="file" id="receipts" name="receipts" multiple accept=".pdf,.png,.jpg,.jpeg,.heic,application/pdf,image/png,image/jpeg,image/heic">
+          <div class="form-text">Receipts cannot be removed once saved. Choose them again if the form reloads with an error.</div>
+        </div>
+        <button type="submit" class="btn btn-success" id="exp-save">Save expense</button>
+        <a class="btn btn-outline-secondary" href="/expenses">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/expense_form.js"></script>{% endblock %}

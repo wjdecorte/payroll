@@ -47,7 +47,8 @@ ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
         ("POST", "/enroll"),
     }
 )
-MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19  # the M2 receivables routes added 19
+# the M2 receivables routes added 19, the M3 vendor/expense routes added 6
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 6
 # The ledger (M1) mutating routes: all owner-only. The sweep test below checks this
 # list against the app's real routes, so a new ledger route cannot be left out.
 LEDGER = f"{PREFIX}/ledger"
@@ -94,6 +95,16 @@ RECEIVABLES_UNSAFE_ENDPOINTS = (
     ("POST", "/deposits/1/void"),
     ("POST", "/settings/receivables/number"),
     ("POST", "/settings/receivables/company"),
+)
+# The expenses (M3) mutating page routes: all owner-only. Later M3 tasks add transfers,
+# reimbursements and the owner page to this list as they add their routes.
+EXPENSES_UNSAFE_ENDPOINTS = (
+    ("POST", "/vendors/new"),
+    ("POST", "/vendors/1/edit"),
+    ("POST", "/vendors/1/active"),
+    ("POST", "/expenses/new"),
+    ("POST", "/expenses/1/void"),
+    ("POST", "/expenses/1/receipts"),
 )
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
@@ -208,6 +219,7 @@ def test_every_route_requires_auth(any_app):
         ("GET", f"{LEDGER}/reports/balance-sheet.pdf"),
         *LEDGER_UNSAFE_ENDPOINTS,
         *RECEIVABLES_UNSAFE_ENDPOINTS,
+        *EXPENSES_UNSAFE_ENDPOINTS,
         *ANONYMOUS_ENDPOINTS,
     ]:
         assert known in endpoints, known
@@ -355,6 +367,109 @@ def _readable_receivable_pages() -> list[str]:
             and (path.startswith(prefixes) or path.startswith("/reports/ar-aging"))
         }
     )
+
+
+_EXPENSE_PREFIXES = ("/vendors", "/expenses", "/attachments")
+
+
+def _expenses_unsafe_routes() -> set[tuple[str, str]]:
+    return {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS and path.startswith(_EXPENSE_PREFIXES)
+    }
+
+
+def _readable_expense_pages() -> list[str]:
+    """Every expenses GET page (lists, forms, detail pages and downloads with a dummy id)."""
+    return sorted(
+        {
+            path
+            for method, path in _endpoints(app)
+            if method == "GET" and path.startswith(_EXPENSE_PREFIXES)
+        }
+    )
+
+
+def test_expenses_route_list_matches_the_app():
+    assert _expenses_unsafe_routes() == set(EXPENSES_UNSAFE_ENDPOINTS)
+    pages = set(_readable_expense_pages())
+    for known in (
+        "/vendors",
+        "/vendors/new",
+        "/vendors/1/edit",
+        "/expenses",
+        "/expenses.csv",
+        "/expenses/new",
+        "/expenses/1",
+        "/attachments/1",
+    ):
+        assert known in pages, known
+
+
+@pytest.mark.parametrize("role_client", ["viewer_client", "accountant_client"])
+def test_viewer_and_accountant_read_expense_pages_but_cannot_mutate(
+    request, role_client, anon_client, session
+):
+    client = request.getfixturevalue(role_client)
+    session.commit()
+    assert len(EXPENSES_UNSAFE_ENDPOINTS) == 6
+    for method, path in EXPENSES_UNSAFE_ENDPOINTS:
+        response = client.request(method, path, follow_redirects=False)
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json()["errors"][0]["type"] == "PermissionDeniedError", (method, path)
+        anonymous = anon_client.request(method, path, follow_redirects=False)
+        _assert_refused_unauthenticated(anonymous, method, path)
+    for path in _readable_expense_pages():
+        response = client.get(path, follow_redirects=False)
+        if path.endswith(("/new", "/edit")):
+            assert response.status_code == 403, (path, response.status_code)
+        else:
+            # Authorized: a missing document (dummy id 1) is a 404, never a 401/403/500.
+            assert response.status_code in (200, 404), (path, response.status_code)
+        anonymous = anon_client.get(path, follow_redirects=False)
+        assert anonymous.status_code in (401, 303), path
+    assert client.get("/expenses").status_code == 200
+    assert client.get("/vendors").status_code == 200
+
+
+def test_expense_routes_need_csrf(owner_client, session):
+    """A signed-in owner without the CSRF token is refused (403) and nothing is written."""
+    from sqlalchemy import func
+
+    from payroll.auth.dependencies import CSRF_HEADER
+    from payroll.expenses.models import Attachment, Expense, Vendor
+
+    tables = (Vendor, Expense, Attachment, AuditLog)
+
+    def counts() -> list[int]:
+        return [session.exec(select(func.count()).select_from(t)).one() for t in tables]
+
+    session.commit()
+    token = owner_client.headers.pop(CSRF_HEADER)
+    assert token and CSRF_HEADER not in owner_client.headers
+    before = counts()
+    body = {"name": "Csrf Probe", "void_date": "2026-03-01", "expense_date": "2026-03-01"}
+    assert len(EXPENSES_UNSAFE_ENDPOINTS) == 6
+    for method, path in EXPENSES_UNSAFE_ENDPOINTS:
+        response = owner_client.request(method, path, data=body, follow_redirects=False)
+        where = f"{method} {path} -> {response.status_code}"
+        assert response.status_code == 403, where
+        assert response.json() == {"detail": "CSRF token missing or invalid"}, where
+        multipart = owner_client.request(
+            method,
+            path,
+            data=body,
+            files=[("receipts", ("a.pdf", b"%PDF-1.4\n%%EOF", "application/pdf"))],
+            follow_redirects=False,
+        )
+        assert multipart.status_code == 403, where
+    assert counts() == before
+    # Control: with the token the same session is NOT refused as CSRF.
+    owner_client.headers[CSRF_HEADER] = token
+    ok = owner_client.post("/vendors/new", data=body, follow_redirects=False)
+    assert ok.status_code != 403
+    assert counts()[0] == before[0] + 1
 
 
 def test_receivables_route_list_matches_the_app():

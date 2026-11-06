@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit vendor" if vendor else "New vendor" }} · DCI Books{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="card">
+    <div class="card-header bg-primary">{{ "Edit vendor" if vendor else "New vendor" }}</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="{{ '/vendors/%d/edit' % vendor.id if vendor else '/vendors/new' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="mb-3">
+          <label class="form-label" for="name">Name</label>
+          <input class="form-control" id="name" name="name" maxlength="200" required value="{{ values.name }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="note">Note</label>
+          <textarea class="form-control" id="note" name="note" rows="3" maxlength="500">{{ values.note }}</textarea>
+        </div>
+        <button type="submit" class="btn btn-brand">Save</button>
+        <a class="btn btn-outline-secondary" href="/vendors">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

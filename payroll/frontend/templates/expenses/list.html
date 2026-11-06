@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Expenses · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% include "expenses/_tabs.html" %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-cash-stack me-2"></i>Expenses</span>
+      <span class="d-flex gap-2 align-items-center">
+        <a class="btn btn-sm btn-outline-light" href="/expenses.csv{% if filter_qs %}?{{ filter_qs }}{% endif %}"><i class="bi bi-download me-1"></i>CSV</a>
+        {% if is_owner %}
+        <a class="btn btn-sm btn-light" href="/expenses/new"><i class="bi bi-plus-lg me-1"></i>New expense</a>
+        {% endif %}
+      </span>
+    </div>
+    <div class="card-body p-0">
+      <form method="get" action="/expenses" class="row g-2 align-items-end p-3 no-print" id="expense-filters">
+        <div class="col-auto">
+          <label class="form-label" for="date_from">From</label>
+          <input class="form-control form-control-sm" type="date" id="date_from" name="date_from" value="{{ filters.date_from }}">
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="date_to">To</label>
+          <input class="form-control form-control-sm" type="date" id="date_to" name="date_to" value="{{ filters.date_to }}">
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="vendor_id">Vendor</label>
+          <select class="form-select form-select-sm" id="vendor_id" name="vendor_id">
+            <option value="">All vendors</option>
+            {% for v in vendors %}
+            <option value="{{ v.id }}"{% if filters.vendor_id == v.id | string %} selected{% endif %}>{{ v.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="account_id">Account</label>
+          <select class="form-select form-select-sm" id="account_id" name="account_id">
+            <option value="">All accounts</option>
+            {% for a in all_accounts %}
+            <option value="{{ a.id }}"{% if filters.account_id == a.id | string %} selected{% endif %}>{{ label(a) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="status">Status</label>
+          <select class="form-select form-select-sm" id="status" name="status">
+            <option value="">Any</option>
+            <option value="posted"{% if filters.status == "posted" %} selected{% endif %}>Posted</option>
+            <option value="void"{% if filters.status == "void" %} selected{% endif %}>Void</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <div class="form-check mb-1">
+            <input class="form-check-input" type="checkbox" id="open_owner_paid" name="open_owner_paid" value="1"{% if filters.open_owner_paid %} checked{% endif %}>
+            <label class="form-check-label" for="open_owner_paid">Owner-paid, not yet reimbursed</label>
+          </div>
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-sm btn-outline-secondary">Filter</button>
+          <a class="btn btn-sm btn-outline-secondary" href="/expenses">Clear</a>
+        </div>
+      </form>
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr><th>Date</th><th>Payee</th><th>Memo</th><th>Paid from</th><th class="num">Total</th><th>Status</th><th class="no-print"></th></tr>
+        </thead>
+        <tbody>
+          {% for e in expenses %}
+          <tr{% if e.status == "void" %} class="text-muted"{% endif %}>
+            <td>{{ e.date }}</td>
+            <td>{{ vendor_names[e.vendor_id] if e.vendor_id else (e.payee_text or "") }}</td>
+            <td>{{ e.memo or "" }}</td>
+            <td>{{ paid_from[e.id] }}</td>
+            <td class="num">{{ e.total | currency }}</td>
+            <td><span class="badge {{ 'bg-secondary' if e.status == 'void' else 'bg-success' }}">{{ e.status | capitalize }}</span></td>
+            <td class="no-print text-end"><a class="btn btn-sm btn-outline-secondary" href="/expenses/{{ e.id }}">View</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-center text-muted py-4">No expenses{% if filter_qs %} match these filters{% else %} yet{% endif %}.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if page > 1 or has_next %}
+      <nav class="d-flex justify-content-between p-3 no-print" aria-label="Pages">
+        {% if page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="/expenses?{{ page_qs }}page={{ page - 1 }}">Previous</a>{% else %}<span></span>{% endif %}
+        <span class="text-muted small">Page {{ page }} · {{ total }} expense{{ "" if total == 1 else "s" }}</span>
+        {% if has_next %}<a class="btn btn-sm btn-outline-secondary" href="/expenses?{{ page_qs }}page={{ page + 1 }}">Next</a>{% else %}<span></span>{% endif %}
+      </nav>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

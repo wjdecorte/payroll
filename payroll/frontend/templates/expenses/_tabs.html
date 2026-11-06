@@ -1,0 +1,8 @@
+{# Expense tabs. ``tab`` names the active one. #}
+<ul class="nav nav-tabs mb-3 no-print">
+  {% for key, label, href in [("expenses", "Expenses", "/expenses"), ("vendors", "Vendors", "/vendors")] %}
+  <li class="nav-item">
+    <a class="nav-link{% if tab == key %} active{% endif %}" href="{{ href }}"{% if tab == key %} aria-current="page"{% endif %}>{{ label }}</a>
+  </li>
+  {% endfor %}
+</ul>
