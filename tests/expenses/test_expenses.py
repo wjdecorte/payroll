@@ -83,7 +83,20 @@ def test_create_stores_lines_in_order_and_total(session, owner_user, expense_acc
 
 @pytest.mark.parametrize(
     "amount",
-    [D("0.00"), D("-1.00"), D("1.001"), D("100000000.01"), D("NaN"), D("Infinity"), 5, 5.0, True],
+    [
+        D("0.00"),
+        D("-1.00"),
+        D("1.001"),
+        D("100000000.01"),
+        D("NaN"),
+        D("Infinity"),
+        D("-Infinity"),
+        D("1E+30"),
+        D("-1E+30"),
+        5,
+        5.0,
+        True,
+    ],
 )
 def test_bad_line_amounts_refused(session, owner_user, expense_account, card, amount):
     bad = ExpenseLineInput(expense_account.id, amount)
@@ -224,6 +237,30 @@ def test_memo_length_and_dates(session, owner_user, expense_account, card):
     assert len(ok.memo) == 500
 
 
+def test_memo_and_line_memo_rules(session, owner_user, expense_account, card):
+    card_id = card.id
+    rejected(
+        session, owner_user, [line(expense_account, memo="m" * 501)], paid_from_account_id=card_id
+    )
+    rejected(
+        session, owner_user, [line(expense_account, memo="a\x00b")], paid_from_account_id=card_id
+    )
+    rejected(
+        session, owner_user, [line(expense_account)], memo="a\x07b", paid_from_account_id=card_id
+    )
+    # a bad line memo on a later line is caught before anything is written
+    rejected(
+        session,
+        owner_user,
+        [line(expense_account), line(expense_account, memo="m" * 501)],
+        paid_from_account_id=card_id,
+    )
+    ok = make(
+        session, owner_user, [line(expense_account, memo="m" * 500)], paid_from_account_id=card_id
+    )
+    assert len(ExpenseService(session).lines(ok.id)[0].memo) == 500
+
+
 def test_unbound_due_to_owner_is_a_422(session, owner_user, expense_account, owner_role):
     AccountService(session).bind_role(
         __import__("payroll.ledger.models", fromlist=["SystemRole"]).SystemRole.DUE_TO_OWNER,
@@ -250,14 +287,18 @@ def test_date_in_locked_period_refused(session, owner_user, expense_account, car
 
 
 def test_only_the_owner_may_mutate(session, owner_user, expense_account, card):
-    for role in ("viewer", "accountant"):
-        other = make_user(session, email=f"{role}@example.com", role=role)
-        session.commit()
+    others = [
+        make_user(session, email=f"{role}@example.com", role=role)
+        for role in ("viewer", "accountant")
+    ]
+    session.commit()
+    for other in others:
         with pytest.raises(PermissionDeniedError):
             make(session, other, [line(expense_account)], paid_from_account_id=card.id)
     expense = make(session, owner_user, [line(expense_account)], paid_from_account_id=card.id)
-    with pytest.raises(PermissionDeniedError):
-        ExpenseService(session).void(expense.id, actor=other, void_date=LATER)
+    for other in others:
+        with pytest.raises(PermissionDeniedError):
+            ExpenseService(session).void(expense.id, actor=other, void_date=LATER)
     assert session.exec(select(func.count()).select_from(Expense)).one() == 1
     session.refresh(expense)
     assert expense.status == "posted"
@@ -296,12 +337,11 @@ def test_void_refusals(session, owner_user, expense_account, card, chart):
     with pytest.raises(ExpenseNotFoundError):
         service.void(999_999, actor=owner_user, void_date=LATER)
     service.void(expense.id, actor=owner_user, void_date=LATER)
+    before = entry_count(session)
     with pytest.raises(ExpenseError) as again:
         service.void(expense.id, actor=owner_user, void_date=LATER)
     assert "already void" in again.value.message
-    assert session.exec(select(func.count()).select_from(JournalEntry)).one() == entry_count(
-        session
-    )
+    assert entry_count(session) == before
 
 
 def test_void_refused_while_reimbursed(session, owner_user, expense_account, chart):

@@ -269,7 +269,7 @@ class ExpenseService:
                         expense_id=expense.id,  # type: ignore[arg-type]
                         line_no=number,
                         account_id=line.account_id,
-                        memo=_clean_text(line.memo, "Line memo", MAX_MEMO),
+                        memo=line.memo,
                         amount=line.amount,
                     )
                 )
@@ -360,16 +360,19 @@ class ExpenseService:
             if not isinstance(line, ExpenseLineInput) or not _is_int(line.account_id):
                 raise _invalid("Choose an account for every line")
             amount = line.amount
-            if (
-                not isinstance(amount, Decimal)
-                or not amount.is_finite()
-                or amount != amount.quantize(CENT)
-            ):
-                raise _invalid("Line amounts must have at most two decimal places")
+            if not isinstance(amount, Decimal) or not amount.is_finite():
+                raise _invalid("Line amounts must be numbers")
+            # range first: quantize raises InvalidOperation on huge values
             if amount <= 0 or amount > MAX_AMOUNT:
                 raise _invalid("Line amounts must be between 0.01 and 100,000,000.00")
+            if amount != amount.quantize(CENT):
+                raise _invalid("Line amounts must have at most two decimal places")
         return [
-            ExpenseLineInput(line.account_id, line.amount.quantize(CENT), line.memo)
+            ExpenseLineInput(
+                line.account_id,
+                line.amount.quantize(CENT),
+                _clean_text(line.memo, "Line memo", MAX_MEMO),
+            )
             for line in items
         ]
 
@@ -434,10 +437,7 @@ class ExpenseService:
         """Dr each line's account, Cr the payment account or Due to Owner for the total."""
         who = f" to {expense.payee_text}" if expense.payee_text else ""
         memo = (f"Expense {expense.memo}" if expense.memo else f"Expense{who}")[:MAX_MEMO]
-        drafts = [
-            LineDraft(ln.account_id, debit=ln.amount, memo=_clean_text(ln.memo, "Line memo", 500))
-            for ln in lines
-        ]
+        drafts = [LineDraft(ln.account_id, debit=ln.amount, memo=ln.memo) for ln in lines]
         drafts.append(LineDraft(credit_account.id, credit=expense.total))  # type: ignore[arg-type]
         return LedgerPostingService(self.session).post(
             EntryDraft(
