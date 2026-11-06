@@ -289,14 +289,21 @@ async def _supplied_token(request: Request) -> str | None:
 
 
 async def verify_csrf(
-    request: Request, auth: AuthSession | None = Depends(current_session)
+    request: Request,
+    auth: AuthSession | None = Depends(current_session),
+    db: Session = Depends(get_session),
 ) -> None:
     """
     App-wide: 403 (:class:`CSRFError`) for an unsafe method without the right
     CSRF token. The expected token is worked out first; when there is none (no
     session and no valid pre-session cookie) the request is refused before its
-    body is read, so an anonymous client cannot make the server parse a large
-    form or multipart upload.
+    body is read. A request with no session on any route that is not public is
+    passed on without reading its body at all (a wrong header token is still a
+    403; the route's own sign-in check refuses the rest), so an anonymous client cannot make the server parse a large form
+    or multipart upload; the pre-session token is only compared on the public
+    sign-in forms. A signed-in owner on a receipt upload route is granted the larger
+    body limit (``scope["upload_body_limit"]``, set by ``BodySizeLimitMiddleware``)
+    before the form is read; everyone else keeps the ordinary limit.
     """
     if request.method not in UNSAFE_METHODS:
         return
@@ -307,6 +314,20 @@ async def verify_csrf(
         expected = cookie if presession_token_valid(cookie) else None
     if not expected:
         raise CSRFError()
+    if auth is None:
+        from payroll.auth.permissions import is_public_path
+
+        if not is_public_path(request.url.path):
+            # Never parse a body for an anonymous request: a header token is compared,
+            # otherwise the request goes on unchecked and the route's sign-in check refuses it.
+            header = request.headers.get(CSRF_HEADER)
+            if header and not hmac.compare_digest(header.encode(), expected.encode()):
+                raise CSRFError()
+            return
+    elif "upload_body_limit" in request.scope and auth.mfa_verified:
+        user = _active_user(db, auth)
+        if user is not None and user.role == "owner":
+            request.scope["body_limit"] = request.scope["upload_body_limit"]
     supplied = await _supplied_token(request)
     if not supplied or not hmac.compare_digest(supplied.encode(), expected.encode()):
         raise CSRFError()

@@ -464,6 +464,7 @@ def test_expense_routes_need_csrf(owner_client, session):
             follow_redirects=False,
         )
         assert multipart.status_code == 403, where
+        assert multipart.json() == {"detail": "CSRF token missing or invalid"}, where
     assert counts() == before
     # Control: with the token the same session is NOT refused as CSRF.
     owner_client.headers[CSRF_HEADER] = token

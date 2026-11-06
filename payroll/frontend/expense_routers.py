@@ -368,23 +368,16 @@ async def vendor_set_active(
     actor: User = Depends(require_owner),
 ):
     form = await request.form()
-    active = _text(form.get("active")) == "1"
+    raw = form.get("active")
     try:
+        if raw not in ("0", "1"):
+            raise _invalid("Active must be 0 or 1")
+        active = raw == "1"
         VendorService(session).set_active(
             _path_id(vendor_id, "The vendor"), actor=actor, active=active
         )
     except AppBaseError as exc:
-        if exc.http_code == 404 or isinstance(exc, InvalidExpenseError):
-            return _error_partial(request, exc)
-        return _vendor_list(
-            request,
-            session,
-            inactive=not active,
-            query="",
-            page=1,
-            error=exc.message,
-            status_code=_form_status(exc),
-        )
+        return _error_partial(request, exc)
     return RedirectResponse("/vendors", status_code=303)
 
 

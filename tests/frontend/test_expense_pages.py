@@ -21,6 +21,7 @@ from tests.ledger.conftest import chart  # noqa: F401
 
 D = Decimal
 XSS = "<script>alert(1)</script>"
+IMG_XSS = "<img src=x onerror=alert(1)>"  # no slash: safe_filename keeps all of it
 FORMULA = "=cmd|' /C calc'!A0"
 PDF = b"%PDF-1.4\n%%EOF"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 20
@@ -121,6 +122,19 @@ def test_vendor_errors_redisplay_typed_values(owner_client, session, vendor):
     assert owner_client.get("/vendors/99999/edit").status_code == 404
     assert owner_client.post("/vendors/99999/edit", data={"name": "x"}).status_code == 404
     assert owner_client.post("/vendors/99999/active", data={"active": "0"}).status_code == 404
+
+
+@pytest.mark.parametrize("value", ["maybe", "", "2", "true", "00", " ", "-1", "١"])
+def test_garbage_active_value_leaves_the_vendor_unchanged(owner_client, session, vendor, value):
+    session.commit()
+    response = owner_client.post(f"/vendors/{vendor.id}/active", data={"active": value})
+    assert response.status_code == 422
+    session.refresh(vendor)
+    assert vendor.active is True
+    missing = owner_client.post(f"/vendors/{vendor.id}/active", data={})
+    assert missing.status_code == 422
+    session.refresh(vendor)
+    assert vendor.active is True
 
 
 def test_vendor_list_paging_is_bounded(owner_client, session):
@@ -446,6 +460,19 @@ def test_exactly_ten_mb_is_accepted(owner_client, session, card, expense_account
     assert count(session, Attachment) == 1
 
 
+def test_owner_can_upload_close_to_the_fifty_mb_total(owner_client, session, card, expense_account):
+    session.commit()
+    chunk = PDF + b"0" * (int(9.8 * MB))
+    five = [
+        ("receipts", (f"c{i}.pdf", chunk + str(i).encode(), "application/pdf")) for i in range(5)
+    ]
+    response = owner_client.post(
+        "/expenses/new", data=new_form(card, expense_account), files=five, follow_redirects=False
+    )
+    assert response.status_code == 303, response.text[:300]
+    assert count(session, Attachment) == 5
+
+
 def test_more_than_ten_files_or_fifty_mb_is_422(owner_client, session, card, expense_account):
     session.commit()
     eleven = [("receipts", (f"r{i}.pdf", pdf(i), "application/pdf")) for i in range(11)]
@@ -666,7 +693,7 @@ def test_hostile_text_is_escaped_everywhere(
         actor=owner_user,
         owner_type="expense",
         owner_id=with_payee.id,
-        filename=f"{XSS}.pdf",
+        filename=f"{IMG_XSS}.pdf",
         data=PDF,
     )
     session.commit()
@@ -686,6 +713,21 @@ def test_hostile_text_is_escaped_everywhere(
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in owner_client.get("/vendors").text
     assert "&lt;script&gt;" in owner_client.get(f"/expenses/{with_vendor.id}").text
     assert "&lt;script&gt;" in owner_client.get(f"/expenses/{with_payee.id}").text
+    detail = owner_client.get(f"/expenses/{with_payee.id}").text
+    assert "&lt;img src=x onerror=alert(1)&gt;.pdf" in detail and "<img src=x" not in detail
+    uploaded = owner_client.post(
+        f"/expenses/{with_payee.id}/receipts",
+        files=[("receipts", (f"{IMG_XSS}2.pdf", pdf(41), "application/pdf"))],
+        follow_redirects=True,
+    )
+    assert "&lt;img src=x onerror=alert(1)&gt;2.pdf" in uploaded.text
+    assert "<img src=x" not in uploaded.text
+    dup = owner_client.post(
+        f"/expenses/{with_payee.id}/receipts",
+        files=[("receipts", (f"{IMG_XSS}3.pdf", pdf(41), "application/pdf"))],
+    )
+    assert dup.status_code == 422 and "<img src=x" not in dup.text
+    assert "&lt;img src=x" in dup.text
     assert "&lt;script&gt;" in owner_client.get("/expenses").text
     # typed values on the error redisplay
     bad = owner_client.post(

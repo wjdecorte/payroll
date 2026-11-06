@@ -99,9 +99,15 @@ def _is_upload(scope: Scope) -> bool:
 class BodySizeLimitMiddleware:
     """
     Refuses request bodies larger than ``app_settings.max_request_body_bytes``
-    (``max_upload_body_bytes`` and 422 on the receipt upload routes) with 413, before FastAPI parses them (FastAPI reads a route's declared form
+    with 413, before FastAPI parses them (FastAPI reads a route's declared form
     or JSON body before running dependencies such as the CSRF check, so the
     limit has to sit in front of routing).
+
+    The two receipt upload routes answer 422 and may read up to
+    ``max_upload_body_bytes``, but only for a signed-in owner: the middleware cannot
+    tell who that is, so it publishes the ceiling as ``scope["upload_body_limit"]`` and
+    ``verify_csrf`` raises ``scope["body_limit"]`` to it once the session is checked.
+    For anyone else the ordinary limit applies as the body is read.
 
     - A ``Content-Length`` over the limit is refused without reading the body
       (an unparsable one gets 400).
@@ -122,8 +128,12 @@ class BodySizeLimitMiddleware:
         limit = app_settings.max_request_body_bytes
         refusal = 413
         if upload:
-            limit = max(limit, app_settings.max_upload_body_bytes)
+            # The larger limit is only a ceiling here: it applies once ``verify_csrf`` has
+            # seen a signed-in owner and raised ``scope["body_limit"]``. Until then (and for
+            # everyone else) the ordinary limit holds while the body is read.
             refusal = 422
+            scope["upload_body_limit"] = max(limit, app_settings.max_upload_body_bytes)
+        ceiling = scope["upload_body_limit"] if upload else limit
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -135,7 +145,7 @@ class BodySizeLimitMiddleware:
             except ValueError:
                 await _plain_response(send, 400, b"Invalid Content-Length")
                 return
-            if length > limit:
+            if length > ceiling:
                 await _plain_response(send, refusal, b"Request body too large")
                 return
 
@@ -148,7 +158,7 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > limit:
+                if received > scope.get("body_limit", limit):
                     exceeded = True
                     raise _BodyTooLargeError
             return message
