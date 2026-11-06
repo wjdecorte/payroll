@@ -11,6 +11,7 @@ from payroll.audit.models import AuditLog
 from payroll.auth.security import hash_password
 from payroll.common.exceptions import PermissionDeniedError
 from payroll.ledger.exceptions import InvalidEntryError, LockPasswordError, PeriodLockedError
+from payroll.ledger.models import SourceType
 from payroll.ledger.period_lock import PeriodLockService
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from tests.conftest import make_user
@@ -231,3 +232,42 @@ def test_lock_api_and_form_reject_unsupported_date(owner_client, owner_user, ses
     )
     assert form.status_code == 422
     assert PeriodLockService(session).get() is None
+
+
+DOCUMENT_VOID_TEXT = "move the lock back (Settings > Ledger), void the document, then lock again"
+MANUAL_VOID_TEXT = "Reverse it with a date after the lock instead."
+
+
+@pytest.mark.parametrize(
+    "source_type",
+    ["invoice", "payment", "deposit", "refund", "expense", "transfer", "reimbursement"],
+)
+def test_void_in_locked_period_of_a_document_names_the_lock_move(
+    session, owner, chart, source_type
+):
+    ids = sorted(a.id for a in chart.values())
+    draft = EntryDraft(
+        date(2026, 3, 1),
+        [LineDraft(ids[0], debit=Decimal("5.00")), LineDraft(ids[1], credit=Decimal("5.00"))],
+        source_type=SourceType(source_type),
+    )
+    svc = LedgerPostingService(session)
+    entry = svc.post(draft, actor=owner)
+    PeriodLockService(session).set(MARCH_31, password=PASSWORD, actor=owner)
+    with pytest.raises(PeriodLockedError) as err:
+        svc.void(entry.id, entry_date=date(2026, 4, 2), actor=owner)
+    assert err.value.message == (
+        "The books are locked through 2026-03-31; an entry dated in that period cannot be "
+        f"voided. To void this {source_type}, {DOCUMENT_VOID_TEXT}."
+    )
+
+
+def test_void_in_locked_period_of_a_manual_entry_keeps_the_reverse_advice(session, owner, chart):
+    entry = _post(session, chart, owner, date(2026, 3, 1))
+    PeriodLockService(session).set(MARCH_31, password=PASSWORD, actor=owner)
+    with pytest.raises(PeriodLockedError) as err:
+        LedgerPostingService(session).void(entry.id, entry_date=date(2026, 4, 2), actor=owner)
+    assert err.value.message == (
+        "The books are locked through 2026-03-31; an entry dated in that period cannot be "
+        f"voided. {MANUAL_VOID_TEXT}"
+    )

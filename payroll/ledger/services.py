@@ -157,10 +157,18 @@ class LedgerPostingService:
                 select(PeriodLock.lock_date).where(PeriodLock.id == 1).with_for_update(read=True)
             ).first()
             if lock_date is not None and original.entry_date <= lock_date:
+                if original.source_type == SourceType.MANUAL:
+                    advice = "Reverse it with a date after the lock instead."
+                else:
+                    # A reversal dated after the lock would leave the document open while its
+                    # entry is reversed (ledger/subledger split); void the document itself.
+                    advice = (
+                        f"To void this {original.source_type}, move the lock back "
+                        "(Settings > Ledger), void the document, then lock again."
+                    )
                 raise PeriodLockedError(
                     message=f"The books are locked through {lock_date.isoformat()}; an entry "
-                    "dated in that period cannot be voided. Reverse it with a date after the "
-                    "lock instead."
+                    f"dated in that period cannot be voided. {advice}"
                 )
         lines = self.session.exec(
             select(JournalLine)
