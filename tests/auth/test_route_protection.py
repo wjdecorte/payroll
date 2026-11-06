@@ -495,6 +495,13 @@ def test_ledger_route_list_matches_the_app():
     assert _ledger_unsafe_routes() == set(LEDGER_UNSAFE_ENDPOINTS)
     pages = _readable_ledger_pages()
     assert "/reports/trial-balance" in pages and f"{LEDGER}/reports/journal.csv" in pages
+    for report_page in (
+        "/reports/owner-reimbursement",
+        "/reports/owner-reimbursement.csv",
+        "/reports/owner-reimbursement.pdf",
+    ):
+        assert report_page in pages, report_page
+    assert f"{LEDGER}/reports/owner-reimbursement.csv" not in pages  # page-only: no API twin
     assert len(pages) >= 20
 
 

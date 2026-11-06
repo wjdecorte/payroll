@@ -302,9 +302,9 @@ def test_blocking_routes_are_threadpool_functions_and_engine_has_lock_timeout():
     assert "/settings/ledger/lock" in paths and "/reports/profit-and-loss.pdf" in paths
     assert any(p.endswith("/period-lock") for p in paths)
     assert (
-        len(heavy) == 28
+        len(heavy) == 30
     )  # 24 export routes (6 reports, csv and pdf, page and API twins) + 2 locks + invoice PDF
-    # + the expenses CSV
+    # + the expenses CSV + the owner-reimbursement csv and pdf (page only, no API twin)
     for route in heavy:
         assert not inspect.iscoroutinefunction(route.endpoint), route.path
     with engine.connect() as conn:

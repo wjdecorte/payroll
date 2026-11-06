@@ -10,7 +10,7 @@
     <div class="card-header bg-primary"><i class="bi bi-person-badge me-2"></i>Owed to me</div>
     <div class="card-body">
       <p class="display-6 mb-1" id="owed-to-me">{{ summary.owed_to_me | currency }}</p>
-      <p class="text-muted mb-0">The Due to Owner balance in the ledger.</p>
+      <p class="text-muted mb-0">The Due to Owner balance in the ledger. <a href="/reports/owner-reimbursement">Reimbursement report</a></p>
       {% if not summary.matches %}
       <div class="alert alert-warning mt-3 mb-0" id="mismatch-note" role="note">
         The Due to Owner balance is {{ summary.owed_to_me | currency }}, but the open expenses you paid personally add up to {{ summary.open_expense_total | currency }}.

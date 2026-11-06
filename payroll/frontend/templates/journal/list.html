@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Journal · DCI Books{% endblock %}
+{% from "_source_link.html" import source_link %}
 {% block content %}
 {% set is_owner = current_user and current_user.role == "owner" %}
 <div class="container-xl py-3">
@@ -41,7 +42,7 @@
           <tr{% if e.status == "void" %} class="text-muted"{% endif %}>
             <td>{{ e.entry_date }}</td>
             <td><a href="/journal/{{ e.id }}">#{{ e.entry_no }}</a></td>
-            <td>{{ e.source_type | replace("_", " ") | capitalize }}</td>
+            <td>{{ e.source_type | replace("_", " ") | capitalize }}{{ source_link(e.source_type, e.source_id) }}</td>
             <td>{{ e.memo or "" }}</td>
             <td class="num">{{ row.total | currency }}</td>
             <td>
