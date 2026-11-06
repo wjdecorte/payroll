@@ -13,6 +13,11 @@ Commands (no password is ever prompted: the actor is the owner found by email):
   receivables: four customers, three items, invoices (open, partial, paid, overdue, void),
   payments (to Undeposited Funds and straight to the bank, one overpayment), a deposit and a
   refund, so the aging page and every report on both bases have something to show.
+  Finally it adds expenses (skipped when vendors already exist): two vendors, a split expense
+  paid from the bank, two owner-paid expenses with one reimbursed, a credit card expense and a
+  bank-to-card payment transfer, and a tiny PDF receipt stored under the attachment directory
+  (skipped with a notice when that directory is not writable), so the Due to Owner balance,
+  the owner report and the expense pages have something to show.
 
 When run as a program the CLI first applies pending migrations, like
 ``payroll.auth.cli``. Exit codes: 0 ok, 1 error (message on stderr), 2 usage error.
@@ -33,6 +38,12 @@ from sqlmodel import Session, func, select
 from payroll import app_settings
 from payroll.auth.models import User, UserRole
 from payroll.exceptions import AppBaseError
+from payroll.expenses.attachments import AttachmentService
+from payroll.expenses.expenses import ExpenseLineInput, ExpenseService
+from payroll.expenses.models import Vendor
+from payroll.expenses.reimbursements import ReimbursementService
+from payroll.expenses.transfers import TransferService
+from payroll.expenses.vendors import VendorService
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.default_chart import seed_default_chart
 from payroll.ledger.models import AccountType, JournalEntry, SourceType
@@ -326,6 +337,132 @@ def _post_demo_receivables(db: Session, actor: User) -> ReceivablesSummary:
     return ReceivablesSummary(customers=4, items=3, invoices=7, payments=4, deposits=1, refunds=1)
 
 
+@dataclass(frozen=True)
+class ExpensesSummary:
+    vendors: int
+    expenses: int
+    reimbursements: int
+    transfers: int
+    receipts: int
+    receipt_notice: str | None = None
+
+
+# A minimal valid one-page PDF; the demo receipt is this placeholder.
+DEMO_RECEIPT_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]>>endobj\n"
+    b"trailer<</Root 1 0 R/Size 4>>\n%%EOF\n"
+)
+
+
+def _post_demo_expenses(db: Session, actor: User) -> ExpensesSummary:
+    """
+    Expenses for the demo year, built through the real services (each commits itself).
+
+    Idempotent per name: vendors and the credit card account are looked up by name before
+    being created. At 2026-12-31 the owner is owed 67.15 (one of the two owner-paid expenses
+    is reimbursed) and the card balance is 112.60 after a partial payment.
+    """
+    accounts = AccountService(db)
+    ids = {n.full_name: n.account.id for n in accounts.tree(include_inactive=True)}
+    if "Business Visa" not in ids:
+        ids["Business Visa"] = accounts.create(
+            actor=actor, name="Business Visa", type=AccountType.LIABILITY
+        ).id
+    vendor_service = VendorService(db)
+    vendors: dict[str, Vendor] = {v.name: v for v in vendor_service.list(include_inactive=True)}
+    for name, note in (
+        ("Office Supply Co", "Paper, toner and small equipment"),
+        ("City Utilities", "Electricity and water"),
+    ):
+        if name not in vendors:
+            vendors[name] = vendor_service.create(actor=actor, name=name, note=note)
+    expenses = ExpenseService(db)
+
+    def line(account: str, amount: str, memo: str | None = None) -> ExpenseLineInput:
+        return ExpenseLineInput(ids[account], D(amount), memo)
+
+    split = expenses.create(
+        actor=actor,
+        expense_date=date(DEMO_YEAR, 10, 3),
+        vendor_id=vendors["Office Supply Co"].id,
+        source="account",
+        paid_from_account_id=ids[CHECKING],
+        lines=[
+            line("Office Expenses", "86.40", "Paper and toner"),
+            line("Software and Subscriptions", "49.00", "Design software seat"),
+            line("Other Expenses", "12.35", "Delivery"),
+        ],
+        memo="Office order",
+    )
+    utilities = expenses.create(
+        actor=actor,
+        expense_date=date(DEMO_YEAR, 11, 3),
+        vendor_id=vendors["City Utilities"].id,
+        source="owner",
+        paid_from_account_id=None,
+        lines=[line("Other Expenses", "184.22", "Home office utilities")],
+        memo="Paid personally by the owner",
+    )
+    expenses.create(
+        actor=actor,
+        expense_date=date(DEMO_YEAR, 11, 10),
+        vendor_id=vendors["Office Supply Co"].id,
+        source="owner",
+        paid_from_account_id=None,
+        lines=[line("Office Expenses", "67.15", "Printer cartridges")],
+        memo="Paid personally by the owner",
+    )
+    ReimbursementService(db).create(
+        actor=actor,
+        reimbursement_date=date(DEMO_YEAR, 11, 20),
+        paid_from_account_id=ids[CHECKING],
+        expense_ids=[utilities.id],
+        memo="Reimbursed from checking",
+    )
+    expenses.create(
+        actor=actor,
+        expense_date=date(DEMO_YEAR, 11, 12),
+        payee_text="Regional Airline",
+        source="account",
+        paid_from_account_id=ids["Business Visa"],
+        lines=[line("Travel", "412.60", "Flight to client site")],
+        memo="Charged to the company card",
+    )
+    TransferService(db).create(
+        actor=actor,
+        transfer_date=date(DEMO_YEAR, 12, 5),
+        from_account_id=ids[CHECKING],
+        to_account_id=ids["Business Visa"],
+        amount=D("300.00"),
+        memo="Card payment",
+    )
+
+    receipts, notice = 0, None
+    try:
+        AttachmentService(db).add(
+            actor=actor,
+            owner_type="expense",
+            owner_id=split.id,
+            filename="office-order-receipt.pdf",
+            data=DEMO_RECEIPT_PDF,
+        )
+        receipts = 1
+    except OSError as exc:
+        db.rollback()
+        notice = f"Receipt skipped: cannot write to {app_settings.attachment_dir} ({exc.strerror or exc})."
+    return ExpensesSummary(
+        vendors=2,
+        expenses=4,
+        reimbursements=1,
+        transfers=1,
+        receipts=receipts,
+        receipt_notice=notice,
+    )
+
+
 # ----------------------------------------------------------------------
 # Commands
 # ----------------------------------------------------------------------
@@ -375,13 +512,27 @@ def _run(args: argparse.Namespace, db: Session) -> str:
             f"Receivables: {rec.customers} customers, {rec.items} items, {rec.invoices} invoices, "
             f"{rec.payments} payments, {rec.deposits} deposit, {rec.refunds} refund."
         )
+    if db.exec(select(func.count()).select_from(Vendor)).one():
+        expenses = "Expenses not added: vendors already exist."
+    else:
+        try:
+            exp = _post_demo_expenses(db, actor)
+        except AppBaseError as exc:
+            raise CliError(f"Posted the demo year but not the expenses: {exc.message}") from exc
+        expenses = (
+            f"Expenses: {exp.vendors} vendors, {exp.expenses} expenses, "
+            f"{exp.reimbursements} reimbursement, {exp.transfers} card payment, "
+            f"{exp.receipts} receipt."
+        )
+        if exp.receipt_notice:
+            expenses += f" {exp.receipt_notice}"
     return (
         f"Posted {summary.entries} demo journal entries for {DEMO_YEAR} "
         f"({summary.reversals} reversals, {summary.voided} voided); "
         f"created {summary.accounts_created} account(s). "
         f"Trial balance at {DEMO_YEAR}-12-31: debits {summary.total_debits}, "
         f"{'balanced' if summary.balanced else 'NOT balanced'}. "
-        f"{receivables}"
+        f"{receivables} {expenses}"
     )
 
 
