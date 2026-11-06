@@ -39,6 +39,16 @@ def hrefs(text: str) -> list[str]:
     return [html.unescape(h) for h in re.findall(r'href="([^"]*)"', text)]
 
 
+def owner_anchors(text: str) -> list[str]:
+    """Labels of the source-link anchors (the macro's) that point at /owner.
+
+    The navbar and owner tabs also link to /owner on every page, so only anchors carrying
+    the ``source-link`` class count as the drill-down.
+    """
+    found = re.findall(r'<a class="source-link[^"]*" href="([^"]*)">([^<]*)</a>', text)
+    return [label for href, label in found if href == "/owner"]
+
+
 @pytest.fixture
 def docs(session, owner_user, chart):
     """An account-paid expense, an owner-paid one that is reimbursed, and a transfer."""
@@ -116,28 +126,34 @@ def test_source_href(source_type, source_id, expected):
 
 
 def test_general_ledger_links_all_three_source_types(owner_client, docs):
-    links = hrefs(owner_client.get(f"/reports/general-ledger?preset=custom&{WINDOW}").text)
+    text = owner_client.get(f"/reports/general-ledger?preset=custom&{WINDOW}").text
+    links = hrefs(text)
     assert f"/expenses/{docs['expense'].id}" in links
     assert f"/expenses/{docs['owned'].id}" in links
     assert f"/transfers/{docs['transfer'].id}" in links
-    assert "/owner" in links
+    # the reimbursement entry has two lines (Due to Owner, checking): one anchor each
+    assert owner_anchors(text) == ["Reimbursement"] * 2
 
 
 def test_journal_report_links_all_three_source_types(owner_client, docs):
-    links = hrefs(owner_client.get(f"/reports/journal?preset=custom&{WINDOW}").text)
+    text = owner_client.get(f"/reports/journal?preset=custom&{WINDOW}").text
+    links = hrefs(text)
     assert f"/expenses/{docs['expense'].id}" in links
     assert f"/transfers/{docs['transfer'].id}" in links
-    assert "/owner" in links
+    assert owner_anchors(text) == ["Reimbursement"]
 
 
 def test_account_registers_link_their_documents(owner_client, docs):
     chart = docs["chart"]
-    office = hrefs(owner_client.get(f"/accounts/{docs['office'].id}/register?{WINDOW}").text)
+    office_text = owner_client.get(f"/accounts/{docs['office'].id}/register?{WINDOW}").text
+    office = hrefs(office_text)
     assert f"/expenses/{docs['expense'].id}" in office
+    assert owner_anchors(office_text) == []  # no reimbursement entry on this account
     savings = hrefs(owner_client.get(f"/accounts/{docs['savings'].id}/register?{WINDOW}").text)
     assert f"/transfers/{docs['transfer'].id}" in savings
-    owner = hrefs(owner_client.get(f"/accounts/{chart['Due to Owner'].id}/register?{WINDOW}").text)
-    assert "/owner" in owner
+    owner_text = owner_client.get(f"/accounts/{chart['Due to Owner'].id}/register?{WINDOW}").text
+    owner = hrefs(owner_text)
+    assert owner_anchors(owner_text) == ["Reimbursement"]
     assert f"/expenses/{docs['owned'].id}" in owner
 
 
@@ -145,21 +161,29 @@ def test_cash_basis_register_detail_rows_link_the_documents(owner_client, docs):
     page = owner_client.get(f"/accounts/{docs['office'].id}/register?{WINDOW}&basis=cash")
     assert page.status_code == 200 and "Cash basis view" in page.text
     assert f"/expenses/{docs['expense'].id}" in hrefs(page.text)
+    checking = owner_client.get(
+        f"/accounts/{docs['chart']['Business Checking'].id}/register?{WINDOW}&basis=cash"
+    )
+    assert owner_anchors(checking.text) == ["Reimbursement"]
 
 
 def test_journal_list_and_entry_view_link_the_documents(owner_client, session, docs):
-    listing = hrefs(owner_client.get("/journal?start=2026-01-01&end=2026-12-31").text)
+    listing_text = owner_client.get("/journal?start=2026-01-01&end=2026-12-31").text
+    listing = hrefs(listing_text)
     assert f"/expenses/{docs['expense'].id}" in listing
     assert f"/transfers/{docs['transfer'].id}" in listing
-    assert "/owner" in listing
+    assert owner_anchors(listing_text) == ["Reimbursement"]
     for key, expected in (
         ("expense", f"/expenses/{docs['expense'].id}"),
         ("transfer", f"/transfers/{docs['transfer'].id}"),
-        ("reimbursement", "/owner"),
     ):
         view = owner_client.get(f"/journal/{docs[key].entry_id}")
         assert view.status_code == 200
         assert expected in hrefs(view.text), key
+        assert owner_anchors(view.text) == [], key
+    view = owner_client.get(f"/journal/{docs['reimbursement'].entry_id}")
+    assert view.status_code == 200
+    assert owner_anchors(view.text) == ["Reimbursement"]
 
 
 def test_a_voided_documents_reversal_entry_links_the_same_way(
@@ -182,6 +206,7 @@ def test_legacy_source_ids_render_without_a_link_and_without_a_500(
         (SourceType.EXPENSE, "legacy-abc"),
         (SourceType.TRANSFER, "99999999999999999999"),
         (SourceType.EXPENSE, None),
+        (SourceType.REIMBURSEMENT, "legacy-abc"),
     ):
         LedgerPostingService(session).post(
             EntryDraft(
@@ -196,18 +221,21 @@ def test_legacy_source_ids_render_without_a_link_and_without_a_500(
             actor=owner_user,
         )
     session.commit()
-    pages = (
-        f"/reports/general-ledger?preset=custom&{WINDOW}",
-        f"/reports/journal?preset=custom&{WINDOW}",
-        f"/accounts/{chart['Office Expenses'].id}/register?{WINDOW}",
-        f"/accounts/{chart['Office Expenses'].id}/register?{WINDOW}&basis=cash",
-        "/journal?start=2026-01-01&end=2026-12-31",
-    )
-    for path in pages:
+    # A reimbursement has no per-document page, so a legacy id still points at /owner
+    # (designed behaviour): one anchor per rendered line of the one reimbursement entry.
+    pages = {
+        f"/reports/general-ledger?preset=custom&{WINDOW}": 2,
+        f"/reports/journal?preset=custom&{WINDOW}": 1,
+        f"/accounts/{chart['Office Expenses'].id}/register?{WINDOW}": 1,
+        f"/accounts/{chart['Office Expenses'].id}/register?{WINDOW}&basis=cash": 1,
+        "/journal?start=2026-01-01&end=2026-12-31": 1,
+    }
+    for path, anchors in pages.items():
         response = owner_client.get(path)
         assert response.status_code == 200, path
         links = hrefs(response.text)
         assert not [h for h in links if h.startswith(("/expenses/", "/transfers/"))], path
+        assert owner_anchors(response.text) == ["Reimbursement"] * anchors, path
 
 
 # --- cash basis --------------------------------------------------------------------
