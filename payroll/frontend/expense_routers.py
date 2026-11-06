@@ -753,7 +753,13 @@ async def expense_create(
         return _expense_form(
             request, session, values=values, error=exc.message, status_code=_form_status(exc)
         )
-    stored, problem, status = _store_receipts(session, actor, expense.id, uploads)  # type: ignore[arg-type]
+    stored, problem, status = await run_in_threadpool(
+        _store_receipts,
+        session,
+        actor,
+        expense.id,  # type: ignore[arg-type]
+        uploads,
+    )
     if problem is not None:
         warning = (
             f"The expense was saved, but {len(uploads) - stored} of {len(uploads)} receipt(s) "
@@ -885,7 +891,9 @@ async def expense_add_receipts(
         return _expense_page(
             request, session, number, error=exc.message, status_code=_form_status(exc)
         )
-    stored, problem, status = _store_receipts(session, actor, number, uploads)
+    stored, problem, status = await run_in_threadpool(
+        _store_receipts, session, actor, number, uploads
+    )
     if problem is not None:
         note = f" {stored} receipt(s) were attached before the problem." if stored else ""
         return _expense_page(
@@ -1090,7 +1098,7 @@ def _owner_page(
     error: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
-    summary = owner_summary(session)
+    summary = owner_summary(session, company_today())
     history = ReimbursementService(session).list(limit=PAGE_SIZE)
     service = ReimbursementService(session)
     covered = {r.id: service.expenses(r.id) for r in history if r.id is not None}  # type: ignore[arg-type]

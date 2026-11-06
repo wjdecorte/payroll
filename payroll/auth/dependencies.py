@@ -296,11 +296,15 @@ async def verify_csrf(
     """
     App-wide: 403 (:class:`CSRFError`) for an unsafe method without the right
     CSRF token. The expected token is worked out first; when there is none (no
-    session and no valid pre-session cookie) the request is refused before its
-    body is read. A request with no session on any route that is not public is
-    passed on without reading its body at all (a wrong header token is still a
-    403; the route's own sign-in check refuses the rest), so an anonymous client cannot make the server parse a large form
-    or multipart upload; the pre-session token is only compared on the public
+    session and no valid pre-session cookie) the request is refused before this
+    dependency reads its body. A request with no session on any route that is not
+    public is passed on without this dependency reading the body (a wrong header
+    token is still a 403; the route's own sign-in check refuses the rest). That is
+    not a guarantee that nothing parses it: FastAPI parses the body of a route that
+    declares ``Form(...)`` / ``File(...)`` parameters before any dependency runs
+    (bounded by the 1 MiB body limit). The upload routes declare none and read
+    ``request.form()`` themselves, so for them an anonymous body is never parsed.
+    The pre-session token is only compared on the public
     sign-in forms. A signed-in owner on a receipt upload route is granted the larger
     body limit (``scope["upload_body_limit"]``, set by ``BodySizeLimitMiddleware``)
     before the form is read; everyone else keeps the ordinary limit.

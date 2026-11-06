@@ -328,6 +328,15 @@ def test_void_uses_caller_memo(session, owner_user, expense_account, card):
     assert session.get(JournalEntry, voided.void_entry_id).memo == "dup"
 
 
+@pytest.mark.parametrize("memo", ["bad\x00memo", "tab\tmemo", "line\nbreak", "x" * 501])
+def test_void_refuses_a_dirty_memo(session, owner_user, expense_account, card, memo):
+    expense = make(session, owner_user, [line(expense_account)], paid_from_account_id=card.id)
+    with pytest.raises(InvalidExpenseError):
+        ExpenseService(session).void(expense.id, actor=owner_user, void_date=DAY, memo=memo)
+    session.refresh(expense)
+    assert expense.status == "posted"
+
+
 def test_void_refusals(session, owner_user, expense_account, card, chart):
     service = ExpenseService(session)
     expense = make(session, owner_user, [line(expense_account)], paid_from_account_id=card.id)

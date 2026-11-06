@@ -386,36 +386,51 @@ def test_garbage_ids_in_paths_are_422_or_404_never_500(owner_client, session, ba
         assert response.status_code in (404, 422), (method, path, response.status_code)
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        "date_from=garbage",
-        "date_to=2026-02-30",
-        "date_from=2026-3-1",
-        "date_from=0001-01-01",
-        "vendor_id=abc",
-        "vendor_id=99999999999999999999",
-        "vendor_id=-3",
-        "account_id=x",
-        "account_id=99999999999999999999",
-        "status=bogus",
-        "open_owner_paid=maybe",
-        "page=0",
-        "page=-2",
-        "page=abc",
-        "page=99999999999999999999",
-        "page=1.5",
-        "page=",
-    ],
-)
+GARBAGE_PAGE_QUERIES = [
+    "page=0",
+    "page=-2",
+    "page=abc",
+    "page=99999999999999999999",
+    "page=1.5",
+    "page=",
+]
+GARBAGE_FILTER_QUERIES = [
+    "date_from=garbage",
+    "date_to=2026-02-30",
+    "date_from=2026-3-1",
+    "date_from=0001-01-01",
+    "vendor_id=abc",
+    "vendor_id=99999999999999999999",
+    "vendor_id=-3",
+    "account_id=x",
+    "account_id=99999999999999999999",
+    "status=bogus",
+    "open_owner_paid=maybe",
+]
+
+
+@pytest.mark.parametrize("query", GARBAGE_FILTER_QUERIES)
 @pytest.mark.parametrize("path", ["/expenses", "/expenses.csv"])
-def test_garbage_filters_and_pages_are_422_never_500(owner_client, path, query):
+def test_garbage_filters_are_422_never_500(owner_client, path, query):
     response = owner_client.get(f"{path}?{query}")
-    if query.startswith("page") and path == "/expenses.csv":
-        pytest.skip("the CSV is not paged")
+    assert response.status_code == 422, (path, query, response.status_code)
+
+
+@pytest.mark.parametrize("query", GARBAGE_PAGE_QUERIES)
+def test_garbage_pages_are_422_never_500(owner_client, query):
+    response = owner_client.get(f"/expenses?{query}")
     # an empty ``page=`` means "first page"; everything else here is refused
     expected = 200 if query == "page=" else 422
-    assert response.status_code == expected, (path, query, response.status_code)
+    assert response.status_code == expected, (query, response.status_code)
+
+
+@pytest.mark.parametrize("query", [*GARBAGE_PAGE_QUERIES, "page=2", "page=999"])
+def test_csv_ignores_page(owner_client, session, owner_user, card, expense_account, query):
+    make_expense(session, owner_user, card, expense_account, payee_text="Row one")
+    plain = owner_client.get("/expenses.csv")
+    paged = owner_client.get(f"/expenses.csv?{query}")
+    assert plain.status_code == paged.status_code == 200
+    assert paged.text == plain.text and "Row one" in paged.text
 
 
 def test_garbage_void_input_is_422(owner_client, session, owner_user, card, expense_account):
@@ -559,6 +574,38 @@ def test_oserror_storing_a_receipt_keeps_the_expense_and_warns(
     assert "expense was saved" in response.text.lower() and "receipts" in response.text.lower()
     assert "Saved Anyway" in response.text
     assert count(session, Expense) == 1 and count(session, Attachment) == 0
+
+
+def test_receipts_are_stored_off_the_event_loop(
+    owner_client, session, card, expense_account, monkeypatch
+):
+    import threading
+
+    from payroll.frontend import expense_routers
+
+    session.commit()
+    seen: dict[str, int] = {}
+    real_read = expense_routers._read_uploads
+    real_add = AttachmentService.add
+
+    async def read(form):  # a coroutine: runs on the event loop thread
+        seen["loop"] = threading.get_ident()
+        return await real_read(form)
+
+    def add(self, **kwargs):
+        seen["add"] = threading.get_ident()
+        return real_add(self, **kwargs)
+
+    monkeypatch.setattr(expense_routers, "_read_uploads", read)
+    monkeypatch.setattr(AttachmentService, "add", add)
+    response = owner_client.post(
+        "/expenses/new",
+        data=new_form(card, expense_account),
+        files=[("receipts", ("scan.pdf", PDF, "application/pdf"))],
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert seen["add"] != seen["loop"]
 
 
 def test_add_receipts_to_an_existing_expense(

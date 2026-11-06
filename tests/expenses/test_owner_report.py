@@ -95,9 +95,9 @@ def test_figures_reconcile_to_the_ledger(session, books):
         D("70.00"),
         True,
     )
-    assert [
-        (r.expense_id, r.total, r.memo, r.payee, r.reimbursed) for r in result.open_expenses
-    ] == [(b.id, D("70.00"), "Toner", "Cash buy", False)]
+    assert [(r.expense_id, r.total, r.memo, r.payee) for r in result.open_expenses] == [
+        (b.id, D("70.00"), "Toner", "Cash buy")
+    ]
     assert result.open_expenses[0].date == D2
     [row] = result.reimbursements
     assert (row.id, row.date, row.total, row.status, row.void_date, row.expense_count) == (

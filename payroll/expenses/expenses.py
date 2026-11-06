@@ -37,6 +37,7 @@ from payroll.common.documents import (
     clean_text,
     commit_or_rollback,
     is_int,
+    lock_accounts,
     locked_role_account,
     utcnow_naive,
     void_memo,
@@ -292,6 +293,7 @@ class ExpenseService:
         ensure_role(actor, OWNER)
 
         def work() -> Expense:
+            clean_memo = _clean_text(memo, "Memo", MAX_MEMO)
             expense = self.session.exec(
                 select(Expense)
                 .where(Expense.id == expense_id)
@@ -312,7 +314,7 @@ class ExpenseService:
                 expense.entry_id,  # type: ignore[arg-type]
                 entry_date=void_date,
                 actor=actor,
-                memo=void_memo(memo, f"Void of expense {expense.date.isoformat()}"),
+                memo=void_memo(clean_memo, f"Void of expense {expense.date.isoformat()}"),
             )
             expense.status = "void"
             expense.void_date = void_date
@@ -343,17 +345,14 @@ class ExpenseService:
             raise _invalid("Add at least one expense line")
         if len(items) > MAX_LINES:
             raise _invalid(f"An expense can have at most {MAX_LINES} lines")
+        amounts: list[Decimal] = []
         for line in items:
             if not isinstance(line, ExpenseLineInput) or not is_int(line.account_id):
                 raise _invalid("Choose an account for every line")
-            checked_amount(line.amount, "A line amount", InvalidExpenseError)
+            amounts.append(checked_amount(line.amount, "A line amount", InvalidExpenseError))
         return [
-            ExpenseLineInput(
-                line.account_id,
-                checked_amount(line.amount, "A line amount", InvalidExpenseError),
-                _clean_text(line.memo, "Line memo", MAX_MEMO),
-            )
-            for line in items
+            ExpenseLineInput(line.account_id, amount, _clean_text(line.memo, "Line memo", MAX_MEMO))
+            for line, amount in zip(items, amounts, strict=True)
         ]
 
     def _check_vendor(self, vendor_id: int) -> None:
@@ -375,14 +374,7 @@ class ExpenseService:
     def _lock_accounts(self, ids: set[int]) -> dict[int, Account]:
         if any(not is_int(i) for i in ids):
             raise _invalid("Choose valid accounts")
-        rows = self.session.exec(
-            select(Account)
-            .where(col(Account.id).in_(sorted(ids)))
-            .order_by(col(Account.id))
-            .with_for_update(read=True)
-            .execution_options(populate_existing=True)
-        ).all()
-        return {row.id: row for row in rows}  # type: ignore[misc]
+        return lock_accounts(self.session, ids)
 
     @staticmethod
     def _check_line_account(account: Account | None) -> None:

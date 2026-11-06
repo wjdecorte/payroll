@@ -2,7 +2,7 @@
 
 # ruff: noqa: F811  (fixtures re-exported below are used as arguments)
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -444,3 +444,21 @@ def test_anonymous_is_refused(anon_client):
 def test_nav_links(owner_client):
     page = owner_client.get("/owner")
     assert 'href="/transfers"' in page.text and 'href="/owner"' in page.text
+
+
+def test_owner_page_and_report_agree_on_a_future_dated_expense(
+    owner_client, session, owner_user, expense_account, owner_role
+):
+    from payroll.reports.periods import company_today
+
+    future = company_today() + timedelta(days=30)
+    owner_expense(session, owner_user, expense_account, "41.00", payee_text="Past shop")
+    owner_expense(
+        session, owner_user, expense_account, "17.00", payee_text="Future shop", expense_date=future
+    )
+    page = owner_client.get("/owner")
+    report = owner_client.get("/reports/owner-reimbursement")
+    assert page.status_code == report.status_code == 200
+    assert "Past shop" in page.text and "Past shop" in report.text
+    assert "Future shop" not in page.text and "Future shop" not in report.text
+    assert 'id="open-total">$41.00' in page.text.replace("\n", "")

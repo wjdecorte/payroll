@@ -25,7 +25,6 @@ class OpenExpenseRow:
     payee: str
     memo: str
     total: Decimal
-    reimbursed: bool = False
 
 
 @dataclass(frozen=True)

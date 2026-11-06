@@ -30,6 +30,7 @@ from payroll.common.documents import (
     clean_text,
     commit_or_rollback,
     is_int,
+    lock_accounts,
     utcnow_naive,
     void_memo,
 )
@@ -98,7 +99,7 @@ class TransferService:
             clean_memo = clean_text(memo, "Memo", MAX_MEMO, InvalidTransferError)
 
             # (2) lock both accounts FOR SHARE in id order, then check them
-            accounts = self._lock_accounts({from_account_id, to_account_id})
+            accounts = lock_accounts(self.session, {from_account_id, to_account_id})
             source = self._check_account(accounts.get(from_account_id), "from")
             target = self._check_account(accounts.get(to_account_id), "to")
 
@@ -178,16 +179,6 @@ class TransferService:
         return commit_or_rollback(self.session, work)
 
     # ---------------------------------------------------------------- helpers
-
-    def _lock_accounts(self, ids: set[int]) -> dict[int, Account]:
-        rows = self.session.exec(
-            select(Account)
-            .where(col(Account.id).in_(sorted(ids)))
-            .order_by(col(Account.id))
-            .with_for_update(read=True)
-            .execution_options(populate_existing=True)
-        ).all()
-        return {row.id: row for row in rows}  # type: ignore[misc]
 
     @staticmethod
     def _check_account(account: Account | None, end: str) -> Account:

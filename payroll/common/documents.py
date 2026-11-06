@@ -156,3 +156,15 @@ def lock_rows[M: SQLModel](
     if len(rows) != len(set(ids)):
         raise error()
     return rows
+
+
+def lock_accounts(session: Session, ids: set[int]) -> dict[int, Account]:
+    """The accounts with ``ids`` (those that exist), locked FOR SHARE in id order."""
+    rows = session.exec(
+        select(Account)
+        .where(col(Account.id).in_(sorted(ids)))
+        .order_by(col(Account.id))
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    ).all()
+    return {row.id: row for row in rows}  # type: ignore[misc]
