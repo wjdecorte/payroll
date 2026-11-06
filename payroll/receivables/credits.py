@@ -25,15 +25,15 @@ from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
-from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType, SystemRole
-from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import (
+from payroll.common.documents import (
     check_void_date,
     commit_or_rollback,
     locked_role_account,
     utcnow_naive,
     void_memo,
 )
+from payroll.ledger.models import Account, AccountType, JournalEntry, SourceType, SystemRole
+from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
     InvalidPaymentError,

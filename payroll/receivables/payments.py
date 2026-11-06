@@ -15,7 +15,7 @@ same invoice lock) race-free.
 """
 
 import logging
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -28,6 +28,13 @@ from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
+from payroll.common.documents import (
+    check_void_date,
+    commit_or_rollback,
+    locked_role_account,
+    utcnow_naive,
+    void_memo,
+)
 from payroll.common.money import round_money
 from payroll.ledger.exceptions import PeriodLockedError
 from payroll.ledger.models import (
@@ -39,7 +46,6 @@ from payroll.ledger.models import (
     SystemRole,
 )
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import check_void_date, utcnow_naive, void_memo
 from payroll.receivables.credits import min_credit_from
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
@@ -80,6 +86,10 @@ class ApplicationInput:
 
 def _invalid(message: str) -> InvalidPaymentError:
     return InvalidPaymentError(message=message)
+
+
+def _ar_missing() -> ARNotConfiguredError:
+    return ARNotConfiguredError(message="Bind Accounts receivable in Settings > Ledger first")
 
 
 def check_amount(value: object, label: str = "Amount") -> Decimal:
@@ -191,7 +201,7 @@ class PaymentService:
         ensure_role(actor, OWNER)
 
         def work() -> Payment:
-            ar = self._locked_ar()
+            ar = locked_role_account(self.session, SystemRole.ACCOUNTS_RECEIVABLE, _ar_missing)
             customer = (
                 self.session.get(Customer, customer_id) if isinstance(customer_id, int) else None
             )
@@ -239,7 +249,7 @@ class PaymentService:
             )
             return payment
 
-        payment = self._commit(work)
+        payment = commit_or_rollback(self.session, work)
         logger.info("Recorded payment id=%s", payment.id)
         return payment
 
@@ -249,11 +259,7 @@ class PaymentService:
         ensure_role(actor, OWNER)
 
         def work() -> Payment:
-            ar = self._locked_ar()
-            if ar is None:
-                raise ARNotConfiguredError(
-                    message="Bind Accounts receivable in Settings > Ledger first"
-                )
+            ar = locked_role_account(self.session, SystemRole.ACCOUNTS_RECEIVABLE, _ar_missing)
             checked = self._check_inputs(applications)
             if not checked:
                 raise _invalid("Enter an amount to apply")
@@ -271,7 +277,7 @@ class PaymentService:
             )
             return payment
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     def void(
         self, payment_id: int, *, actor: User, void_date: date, memo: str | None = None
@@ -315,23 +321,9 @@ class PaymentService:
             )
             return payment
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     # ---------------------------------------------------------------- helpers
-
-    def _locked_ar(self) -> Account:
-        """The A/R account, held FOR SHARE so a rebind waits until this transaction ends."""
-        ar = self.session.exec(
-            select(Account)
-            .where(Account.system_role == SystemRole.ACCOUNTS_RECEIVABLE)
-            .with_for_update(read=True)
-            .execution_options(populate_existing=True)
-        ).first()
-        if ar is None or ar.system_role != SystemRole.ACCOUNTS_RECEIVABLE:
-            raise ARNotConfiguredError(
-                message="Bind Accounts receivable in Settings > Ledger first"
-            )
-        return ar
 
     def _locked_payment(self, payment_id: int) -> Payment:
         """The payment FOR UPDATE, after every payment of its customer (FOR UPDATE, by id).
@@ -574,16 +566,6 @@ class PaymentService:
             ),
             actor=actor,
         )
-
-    def _commit(self, work: Callable[[], Payment]) -> Payment:
-        """Run ``work`` and commit; on any error roll back at once (frees row locks)."""
-        try:
-            result = work()
-            self.session.commit()
-        except Exception:
-            self.session.rollback()
-            raise
-        return result
 
     def _void_default_memo(self, payment: Payment) -> str:
         customer = self.session.get(Customer, payment.customer_id)

@@ -7,7 +7,6 @@ are owner-only, audited, and commit through a wrapper that rolls back on any err
 """
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -20,10 +19,15 @@ from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
 from payroll.common.dates import is_supported_date, supported_range_text
+from payroll.common.documents import (
+    check_void_date,
+    commit_or_rollback,
+    utcnow_naive,
+    void_memo,
+)
 from payroll.common.money import round_money
 from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
-from payroll.receivables._common import check_void_date, utcnow_naive, void_memo
 from payroll.receivables.exceptions import (
     ARNotConfiguredError,
     InvalidInvoiceError,
@@ -159,7 +163,7 @@ class InvoiceService:
             )
             return invoice
 
-        invoice = self._commit(work)
+        invoice = commit_or_rollback(self.session, work)
         logger.info("Created draft invoice id=%s", invoice.id)
         return invoice
 
@@ -194,7 +198,7 @@ class InvoiceService:
             )
             return invoice
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     def discard_draft(self, invoice_id: int, *, actor: User) -> Invoice:
         ensure_role(actor, OWNER)
@@ -217,7 +221,7 @@ class InvoiceService:
             )
             return invoice
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     def issue(self, invoice_id: int, *, actor: User) -> Invoice:
         ensure_role(actor, OWNER)
@@ -271,7 +275,7 @@ class InvoiceService:
             )
             return invoice
 
-        invoice = self._commit(work)
+        invoice = commit_or_rollback(self.session, work)
         logger.info("Issued invoice id=%s number=%s", invoice.id, invoice.number)
         return invoice
 
@@ -326,7 +330,7 @@ class InvoiceService:
             )
             return invoice
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     def void(
         self, invoice_id: int, *, actor: User, void_date: date, memo: str | None = None
@@ -361,7 +365,7 @@ class InvoiceService:
             )
             return invoice
 
-        return self._commit(work)
+        return commit_or_rollback(self.session, work)
 
     # ---------------------------------------------------------------- helpers
 
@@ -430,16 +434,6 @@ class InvoiceService:
             ),
             actor=actor,
         )
-
-    def _commit(self, work: Callable[[], Invoice]) -> Invoice:
-        """Run ``work`` and commit; on any error roll back at once (frees row locks)."""
-        try:
-            result = work()
-            self.session.commit()
-        except Exception:
-            self.session.rollback()
-            raise
-        return result
 
     def _locked_draft(
         self, invoice_id: int, message: str = "Only a draft invoice can be edited or discarded"

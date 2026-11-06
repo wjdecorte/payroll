@@ -1,11 +1,11 @@
-"""Helpers shared by the receivables services."""
+"""Helpers shared by the document services (receivables, expenses)."""
 
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, SQLModel, col, select
 
 from payroll.exceptions import AppBaseError
 from payroll.ledger.models import Account, SystemRole
@@ -90,3 +90,25 @@ def locked_role_account(
     if account is None or account.system_role != role:
         raise error()
     return account
+
+
+def lock_rows[M: SQLModel](
+    session: Session, model: type[M], ids: Sequence[int], error: Callable[[], AppBaseError]
+) -> list[M]:
+    """The rows of ``model`` with ``ids``, locked FOR UPDATE in id order.
+
+    Locking in a fixed order keeps concurrent writers from deadlocking. ``error()`` is
+    raised if any id is missing.
+    """
+    rows = list(
+        session.exec(
+            select(model)
+            .where(col(model.id).in_(ids))  # type: ignore[attr-defined]
+            .order_by(col(model.id))  # type: ignore[attr-defined]
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    if len(rows) != len(set(ids)):
+        raise error()
+    return rows
