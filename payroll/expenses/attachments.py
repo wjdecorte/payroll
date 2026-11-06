@@ -41,8 +41,9 @@ FALLBACK_NAME = "receipt"
 HEIC_BRANDS = frozenset({b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"})
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # Unicode categories removed from names: controls (incl. NUL), format characters (bidi
-# overrides and isolates, zero-width), and line/paragraph separators.
-_STRIPPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+# overrides and isolates, zero-width), line/paragraph separators, lone surrogates (which
+# cannot be encoded as UTF-8), private-use and unassigned code points.
+_STRIPPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"})
 
 
 def _invalid(message: str) -> InvalidAttachmentError:
@@ -63,18 +64,19 @@ def detect_type(data: bytes) -> str | None:
 
 
 def safe_filename(name: str) -> str:
-    """A display-safe basename: no path, no control characters, at most 150 characters."""
+    """A display-safe basename: no path, no unprintable characters, no trailing dots or
+    spaces, at most 150 characters."""
     text = name if isinstance(name, str) else ""
     text = unicodedata.normalize("NFC", text)
     text = "".join(ch for ch in text if unicodedata.category(ch) not in _STRIPPED_CATEGORIES)
-    text = text.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    text = text.replace("\\", "/").rsplit("/", 1)[-1].strip().rstrip(" .")
     if len(text) > MAX_FILENAME:
         stem, ext = os.path.splitext(text)
         if ext and len(ext) < MAX_FILENAME // 2:
             text = stem[: MAX_FILENAME - len(ext)] + ext
         else:
             text = text[:MAX_FILENAME]
-        text = text.strip()
+        text = text.strip().rstrip(" .")
     if text in ("", ".", ".."):
         return FALLBACK_NAME
     return text
@@ -85,9 +87,11 @@ def _make_dirs(root: Path, *parts: str) -> Path:
     current = root
     for part in ("", *parts):
         current = current / part if part else current
-        if not current.exists():
+        try:
             current.mkdir(mode=0o700)
-            current.chmod(0o700)
+        except FileExistsError:
+            continue  # already there (or made by a concurrent upload): leave its mode alone
+        current.chmod(0o700)  # mkdir's mode is masked by the umask
     return current
 
 

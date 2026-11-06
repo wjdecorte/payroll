@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -137,10 +138,24 @@ def test_every_allowed_type_is_stored(svc, owner_user, expense, data, kind):
         ("\u2066x\u2069.pdf", "x.pdf"),
         ("  spaced.pdf  ", "spaced.pdf"),
         ("e\u0301.pdf", "\u00e9.pdf"),  # NFC
+        ("bad\ud800name.pdf", "badname.pdf"),  # lone surrogate (cannot be UTF-8 encoded)
+        ("priv\ue000ate.pdf", "private.pdf"),  # private use (Co)
+        ("un\u0378assigned.pdf", "unassigned.pdf"),  # unassigned (Cn)
+        ("receipt.", "receipt"),
+        ("receipt. . ", "receipt"),
+        ("dir/receipt...", "receipt"),
+        ("...", "receipt"),
+        (".hidden", ".hidden"),
     ],
 )
 def test_safe_filename(raw, expected):
     assert safe_filename(raw) == expected
+
+
+def test_safe_filename_is_always_utf8_encodable_and_has_no_trailing_dot_or_space():
+    name = safe_filename("x" * 149 + ". .pdf" + "\ud800" + " .")
+    name.encode("utf-8")
+    assert name == name.rstrip(" .") and len(name) <= 150
 
 
 def test_long_filename_is_cut_to_150_keeping_the_extension():
@@ -284,6 +299,28 @@ def test_storage_layout_and_modes(svc, owner_user, expense):
     for directory in (root, root / year, root / year / month):
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700
     assert [p.name for p in path.parent.iterdir()] == [name]  # no temp file left
+
+
+def test_make_dirs_survives_a_racing_creator_and_only_chmods_what_it_made(tmp_path, monkeypatch):
+    real_mkdir = Path.mkdir
+    raced = []
+
+    def racing_mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        if self.name == "2026" and not raced:
+            raced.append(self)
+            real_mkdir(self, mode=0o755)  # another request got there first
+            raise FileExistsError(str(self))
+        return real_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    root = tmp_path / "store"
+    made = attachments_module._make_dirs(root, "2026", "11")
+    assert made == root / "2026" / "11" and made.is_dir()
+    assert stat.S_IMODE((root / "2026").stat().st_mode) == 0o755  # not ours: untouched
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(made.stat().st_mode) == 0o700
+    # Calling again over existing directories is fine.
+    assert attachments_module._make_dirs(root, "2026", "11") == made
 
 
 def test_open_of_a_deleted_file_raises(svc, owner_user, expense):
