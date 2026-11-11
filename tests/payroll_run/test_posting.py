@@ -629,10 +629,113 @@ def test_void_must_run_in_reverse_order_and_names_the_later_run(session, owner_u
     assert posting.void(jan.id, actor=owner_user, void_date=FEB_END).status == "void"
 
 
-def test_a_later_draft_does_not_block_a_void(session, owner_user, posting, bank):
+def test_a_later_draft_blocks_a_void_until_it_is_deleted(session, owner_user, posting, bank):
     jan = approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
-    save(session, owner_user, period="2026-02", use_previous_ytd_fica=True)
+    feb = save(session, owner_user, period="2026-02", use_previous_ytd_fica=True)
+    error = refused(
+        session,
+        lambda: posting.void(jan.id, actor=owner_user, void_date=JAN_END),
+        PayrollRunStateError,
+        fragment="2026-02",
+    )
+    assert "delete it first" in error.message
+    PayrollRunService(session).delete_run(feb.id, actor=owner_user)
     assert posting.void(jan.id, actor=owner_user, void_date=JAN_END).status == "void"
+
+
+def test_a_later_imported_run_blocks_a_void(session, owner_user, posting, bank):
+    jan = approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
+    plant(session, "imported", "2026-02")
+    refused(
+        session,
+        lambda: posting.void(jan.id, actor=owner_user, void_date=JAN_END),
+        PayrollRunStateError,
+        fragment="2026-02",
+    )
+
+
+# ----------------------------------------------------- year-to-date chain stays consistent
+
+
+def test_void_then_approve_of_the_next_month_is_refused_at_the_void(
+    session, owner_user, posting, bank
+):
+    """Reviewer sequence 1: Jan's void must not leave a Feb draft counting Jan's wages."""
+    jan = approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
+    feb = save(session, owner_user, period="2026-02", use_previous_ytd_fica=True)
+    assert feb.ytd_fica_before == jan.ytd_fica_after > 0
+    refused(
+        session,
+        lambda: posting.void(jan.id, actor=owner_user, void_date=JAN_END),
+        PayrollRunStateError,
+    )
+    assert session.get(PayrollRun, jan.id).status == "approved"
+
+
+def test_saving_an_earlier_period_after_a_later_approval_is_refused(
+    session, owner_user, posting, bank
+):
+    """Reviewer sequence 2: Feb approved with no Jan, then Jan saved."""
+    approve(posting, owner_user, save(session, owner_user, period="2026-02"), bank, day=FEB_END)
+    service = PayrollRunService(session)
+    payload = PayrollInput(pay_period="2026-01", gross_salary="8000.00", save_run=True)
+    with nothing_written(session):
+        with pytest.raises(PayrollRunStateError) as caught:
+            service.calculate(payload, actor=owner_user)
+    assert "2026-02" in caught.value.message and "void" in caught.value.message
+
+
+@pytest.mark.parametrize("later", ["draft", "approved", "imported", "void"])
+def test_save_of_an_earlier_period_is_refused_by_any_later_non_void_run(
+    session, owner_user, posting, bank, later
+):
+    if later == "draft":
+        save(session, owner_user, period="2026-03")
+    elif later == "approved":
+        approve(posting, owner_user, save(session, owner_user, period="2026-03"), bank)
+    elif later == "imported":
+        plant(session, "imported", "2026-03")
+    else:
+        run = approve(posting, owner_user, save(session, owner_user, period="2026-03"), bank)
+        posting.void(run.id, actor=owner_user, void_date=date(2026, 3, 31))
+    payload = PayrollInput(pay_period="2026-01", gross_salary="8000.00", save_run=True)
+    service = PayrollRunService(session)
+    if later == "void":
+        assert service.calculate(payload, actor=owner_user).saved
+        return
+    with nothing_written(session):
+        with pytest.raises(PayrollRunStateError) as caught:
+            service.calculate(payload, actor=owner_user)
+    assert "2026-03" in caught.value.message
+    # An unsaved calculation is unaffected.
+    payload.save_run = False
+    assert not service.calculate(payload, actor=owner_user).saved
+
+
+def test_approval_is_refused_when_the_year_to_date_figures_are_stale(
+    session, owner_user, posting, bank
+):
+    approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
+    feb = save(session, owner_user, period="2026-02", use_previous_ytd_fica=True)
+    session.execute(
+        text("UPDATE payroll_run SET ytd_fica_before = ytd_fica_before + 1 WHERE id = :i"),
+        {"i": feb.id},
+    )
+    session.commit()
+    refused(
+        session,
+        lambda: approve(posting, owner_user, feb, bank, day=FEB_END),
+        InvalidPayrollRunError,
+        fragment="out of date",
+    )
+    assert session.get(PayrollRun, feb.id).status == "draft"
+
+
+def test_approval_with_no_earlier_run_accepts_a_manual_year_to_date(
+    session, owner_user, posting, bank
+):
+    run = save(session, owner_user, period="2026-05", ytd_fica_wages="25000.00")
+    assert approve(posting, owner_user, run, bank, day=date(2026, 5, 31)).status == "approved"
 
 
 def test_second_void_and_void_of_non_approved_runs_are_refused(session, owner_user, posting, bank):

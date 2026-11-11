@@ -189,12 +189,13 @@ def test_void_of_the_earlier_month_waits_for_the_later_approval_and_is_then_refu
 
 def test_approval_waits_for_the_earlier_void_in_flight(pr_db, monkeypatch):
     engine, ids = pr_db
-    jan, feb = add_draft(engine, "2026-01"), add_draft(engine, "2026-02")
+    jan = add_draft(engine, "2026-01")
     approve(engine, ids, jan)
     hold = Hold(monkeypatch, "payroll_run.void", jan)
     results: dict = {}
     voider = run_thread(results, "void", lambda: void(engine, ids, jan))
     assert hold.reached.wait(timeout=30)
+    feb = add_draft(engine, "2026-02")  # a later draft would block the void, so it arrives after
     approver = run_thread(results, "feb", lambda: approve(engine, ids, feb, FEB_END))
     wait_for_lock_waiter(engine)
     assert approver.is_alive() and "feb" not in results

@@ -97,6 +97,21 @@ class PayrollRunService:
                     message=f"Payroll run for '{payload.pay_period}' already exists (id={existing.id}). "
                     "Delete it first or use a different pay period."
                 )
+            later = self.session.exec(
+                select(PayrollRun)
+                .where(
+                    PayrollRun.tax_year == tax.TAX_YEAR,
+                    PayrollRun.pay_period > payload.pay_period,
+                    PayrollRun.status != "void",
+                )
+                .order_by(col(PayrollRun.pay_period))
+            ).first()
+            if later:
+                raise PayrollRunStateError(
+                    message=f"The {later.pay_period} payroll run ({later.status}) is later than "
+                    f"'{payload.pay_period}', so its year-to-date wages would no longer match. "
+                    "Delete or void the later runs first."
+                )
 
         # Resolve YTD FICA wages from the most recent saved run if requested
         if payload.use_previous_ytd_fica:

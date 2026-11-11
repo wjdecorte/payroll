@@ -234,6 +234,7 @@ class PayrollPostingService:
                     message=f"The {earlier_draft[0].pay_period} payroll run is still a draft; "
                     "approve or delete it first, because its year-to-date wages feed this run"
                 )
+            self._check_chain_figures(run)
             lines = build_lines(
                 run,
                 PostingAccounts({r: a.id for r, a in roles.items()}, net_pay.id),  # type: ignore[misc]
@@ -296,11 +297,19 @@ class PayrollPostingService:
         def work() -> PayrollRun:
             clean_memo = clean_text(memo, "Memo", MAX_MEMO, InvalidPayrollRunError)
             run = self._get(run_id)
+            seen = (run.status, run.net_pay_account_id)
 
             # Same locks as approve: role accounts, net-pay account, the tax year's runs.
             self._role_accounts(lock=True, required=False)
             self._stored_net_pay_account(run, lock=True)
             run = self._lock_year(run)
+            if (run.status, run.net_pay_account_id) != seen:
+                # Changed by another request since the net-pay account to lock was chosen
+                # from the earlier read; that may not be the account locked above.
+                raise PayrollRunStateError(
+                    message=f"Payroll run {run.pay_period} changed while it was being voided; "
+                    "try again"
+                )
 
             if run.status != "approved":
                 raise PayrollRunStateError(
@@ -313,11 +322,15 @@ class PayrollPostingService:
                 "payroll run",
                 InvalidPayrollRunError,
             )
-            later = self._year_runs(run, earlier=False, statuses=("approved",))
+            later = self._year_runs(run, earlier=False, statuses=("draft", "approved", "imported"))
             if later:
+                nxt = later[0]
+                advice = {"draft": "delete it first", "approved": "void the later run first"}.get(
+                    nxt.status, "imported history after this period cannot be undone"
+                )
                 raise PayrollRunStateError(
-                    message=f"The {later[0].pay_period} payroll run is approved after this one; "
-                    "void the later run first"
+                    message=f"The {nxt.pay_period} payroll run is {nxt.status} after this one; "
+                    f"{advice}"
                 )
 
             before = self._snapshot(run)
@@ -426,6 +439,20 @@ class PayrollPostingService:
             if row.id == run.id:
                 return row
         raise PayrollRunNotFoundError(message=f"Payroll run with id={run.id} not found")
+
+    def _check_chain_figures(self, run: PayrollRun) -> None:
+        """Year-to-date wages must continue from the latest earlier non-void run.
+
+        With no earlier run the figure is a manual starting point and is accepted.
+        """
+        earlier = self._year_runs(run, earlier=True, statuses=("draft", "approved", "imported"))
+        if earlier and run.ytd_fica_before != earlier[-1].ytd_fica_after:
+            raise _invalid(
+                f"The year-to-date figures of payroll run {run.pay_period} are out of date "
+                f"(the {earlier[-1].pay_period} run ends at {earlier[-1].ytd_fica_after:,.2f}, "
+                f"this run starts at {run.ytd_fica_before:,.2f}); "
+                "delete it and save it again"
+            )
 
     def _year_runs(
         self, run: PayrollRun, *, earlier: bool, statuses: tuple[str, ...]
