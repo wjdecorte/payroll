@@ -27,20 +27,34 @@ DEFAULT_CHART: list[ChartRow] = [
     ChartRow("Undeposited Funds", A, "1150", role=SystemRole.UNDEPOSITED_FUNDS),
     ChartRow("Due to Owner", L, "2000", role=SystemRole.DUE_TO_OWNER),
     ChartRow("Payroll Liabilities", L, "2100"),
-    ChartRow("Federal Taxes (941/943/944)", L, parent="Payroll Liabilities"),
-    ChartRow("GA Income Tax", L, parent="Payroll Liabilities"),
-    ChartRow("S-Corp Health Insurance", L, parent="Payroll Liabilities"),
-    ChartRow("Co. HSA", L, parent="Payroll Liabilities"),
-    ChartRow("FUTA Payable", L, parent="Payroll Liabilities"),
-    ChartRow("GA SUTA Payable", L, parent="Payroll Liabilities"),
+    ChartRow(
+        "Federal Taxes (941/943/944)",
+        L,
+        parent="Payroll Liabilities",
+        role=SystemRole.PAYROLL_FEDERAL_PAYABLE,
+    ),
+    ChartRow(
+        "GA Income Tax", L, parent="Payroll Liabilities", role=SystemRole.PAYROLL_GA_WH_PAYABLE
+    ),
+    ChartRow(
+        "S-Corp Health Insurance",
+        L,
+        parent="Payroll Liabilities",
+        role=SystemRole.PAYROLL_HEALTH_PAYABLE,
+    ),
+    ChartRow("Co. HSA", L, parent="Payroll Liabilities", role=SystemRole.PAYROLL_HSA_PAYABLE),
+    ChartRow("FUTA Payable", L, parent="Payroll Liabilities", role=SystemRole.PAYROLL_FUTA_PAYABLE),
+    ChartRow(
+        "GA SUTA Payable", L, parent="Payroll Liabilities", role=SystemRole.PAYROLL_SUTA_PAYABLE
+    ),
     ChartRow("Common Stock", E, "3000"),
     ChartRow("Retained Earnings", E, "3100", role=SystemRole.RETAINED_EARNINGS),
     ChartRow("Shareholder Distributions", E, "3200"),
     ChartRow("Opening Balance Equity", E, "3900", role=SystemRole.OPENING_BALANCE_EQUITY),
     ChartRow("Services Revenue", INC, "4000"),
     ChartRow("Payroll Expenses", X, "6000"),
-    ChartRow("Wages", X, parent="Payroll Expenses"),
-    ChartRow("Taxes", X, parent="Payroll Expenses"),
+    ChartRow("Wages", X, parent="Payroll Expenses", role=SystemRole.PAYROLL_WAGES),
+    ChartRow("Taxes", X, parent="Payroll Expenses", role=SystemRole.PAYROLL_TAX_EXPENSE),
     ChartRow("Health Insurance Expense", X, "6100"),
     ChartRow("HSA Contribution Expense", X, "6110"),
     ChartRow("Professional Fees", X, "6200"),
@@ -76,6 +90,9 @@ def seed_default_chart(session: Session, *, actor: User) -> int:
         )
         created += 1
     for row in DEFAULT_CHART:
-        if row.role is not None and svc.account_by_role(row.role) is None:
-            svc.bind_role(row.role, existing[row.name].id, actor=actor)
+        if row.role is None or svc.account_by_role(row.role) is not None:
+            continue
+        account = existing[f"{row.parent}:{row.name}" if row.parent else row.name]
+        if account.is_active and account.system_role is None:
+            svc.bind_role(row.role, account.id, actor=actor)
     return created

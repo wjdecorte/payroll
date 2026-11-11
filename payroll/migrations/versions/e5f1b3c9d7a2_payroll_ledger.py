@@ -47,6 +47,39 @@ def _fk(column: str, target: str) -> sa.ForeignKeyConstraint:
     return sa.ForeignKeyConstraint([column], [target], ondelete="RESTRICT")
 
 
+# (role, account type, account name, parent name or None) of the default chart accounts.
+_PAYROLL_ROLE_ACCOUNTS = (
+    ("payroll_wages", "expense", "Wages", "Payroll Expenses"),
+    ("payroll_tax_expense", "expense", "Taxes", "Payroll Expenses"),
+    ("payroll_federal_payable", "liability", "Federal Taxes (941/943/944)", "Payroll Liabilities"),
+    ("payroll_ga_wh_payable", "liability", "GA Income Tax", "Payroll Liabilities"),
+    ("payroll_futa_payable", "liability", "FUTA Payable", "Payroll Liabilities"),
+    ("payroll_suta_payable", "liability", "GA SUTA Payable", "Payroll Liabilities"),
+    ("payroll_health_payable", "liability", "S-Corp Health Insurance", "Payroll Liabilities"),
+    ("payroll_hsa_payable", "liability", "Co. HSA", "Payroll Liabilities"),
+)
+
+
+def _bind_payroll_roles() -> None:
+    """Bind each payroll role to its default account if it exists, is active and is unbound.
+
+    A role already bound, or an account already holding another role, is left alone; the
+    owner binds anything missing in Settings > Ledger.
+    """
+    bind = op.get_bind()
+    for role, account_type, name, parent in _PAYROLL_ROLE_ACCOUNTS:
+        bind.execute(
+            sa.text(
+                "UPDATE account SET system_role = :role, modify_date = (now() AT TIME ZONE 'UTC') "
+                "WHERE id = (SELECT a.id FROM account a JOIN account p ON p.id = a.parent_id "
+                "WHERE a.name = :name AND p.name = :parent AND p.parent_id IS NULL "
+                "AND a.type = :type AND a.is_active AND a.system_role IS NULL) "
+                "AND NOT EXISTS (SELECT 1 FROM account WHERE system_role = :role)"
+            ),
+            {"role": role, "name": name, "parent": parent, "type": account_type},
+        )
+
+
 def upgrade() -> None:
     money = sa.Numeric(14, 2)
 
@@ -124,6 +157,11 @@ def upgrade() -> None:
         "payroll_run",
         "status NOT IN ('draft', 'imported') OR (entry_id IS NULL "
         "AND void_entry_id IS NULL AND void_date IS NULL)",
+    )
+    op.create_check_constraint(
+        "ck_payroll_run_approved_no_void",
+        "payroll_run",
+        "status <> 'approved' OR (void_entry_id IS NULL AND void_date IS NULL)",
     )
     op.create_check_constraint(
         "ck_payroll_run_unemployment_nonneg",
@@ -286,6 +324,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_tax_payment_agency_date", "tax_payment", ["agency", "payment_date"])
 
+    _bind_payroll_roles()
+
 
 def downgrade() -> None:
     bind = op.get_bind()
@@ -318,6 +358,7 @@ def downgrade() -> None:
     op.drop_index("uq_payroll_run_period_active", table_name="payroll_run")
     for name in (
         "ck_payroll_run_unemployment_nonneg",
+        "ck_payroll_run_approved_no_void",
         "ck_payroll_run_no_entry_fields",
         "ck_payroll_run_void_fields",
         "ck_payroll_run_net_pay_source",

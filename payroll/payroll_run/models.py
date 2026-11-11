@@ -43,6 +43,10 @@ class PayrollRun(AppBaseModel, table=True):
             name="ck_payroll_run_no_entry_fields",
         ),
         CheckConstraint(
+            "status <> 'approved' OR (void_entry_id IS NULL AND void_date IS NULL)",
+            name="ck_payroll_run_approved_no_void",
+        ),
+        CheckConstraint(
             "futa_wages >= 0 AND futa >= 0 AND suta_wages >= 0 AND suta >= 0",
             name="ck_payroll_run_unemployment_nonneg",
         ),

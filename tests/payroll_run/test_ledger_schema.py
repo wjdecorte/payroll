@@ -191,6 +191,14 @@ def test_draft_and_imported_carry_no_entry_or_void_fields(session, entries, stat
     session.rollback()
 
 
+@pytest.mark.parametrize("field", ["void_entry_id", "void_date"])
+def test_approved_run_carries_no_void_fields(session, entries, field):
+    value = JAN if field == "void_date" else entries()
+    with pytest.raises(IntegrityError, match="ck_payroll_run_approved_no_void"):
+        _approved(session, entries, **{field: value})
+    session.rollback()
+
+
 @pytest.mark.parametrize("column", ["futa_wages", "futa", "suta_wages", "suta"])
 def test_unemployment_figures_cannot_be_negative(session, column):
     with pytest.raises(IntegrityError, match="ck_payroll_run_unemployment_nonneg"):
