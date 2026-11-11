@@ -77,7 +77,7 @@ Database CHECKs and triggers (as in M2/M3):
 
 New `SystemRole` values (type in brackets), frozen like Due to Owner once any run is approved or any tax payment
 exists: `payroll_wages` [expense], `payroll_tax_expense` [expense], `payroll_federal_payable` [liability],
-`payroll_ga_withholding_payable` [liability], `payroll_futa_payable` [liability],
+`payroll_ga_wh_payable` [liability], `payroll_futa_payable` [liability],
 `payroll_suta_payable` [liability], `payroll_health_payable` [liability], `payroll_hsa_payable` [liability].
 The default chart binds them to the accounts it already has (Wages, Taxes, Federal Taxes (941/943/944),
 GA Income Tax, FUTA Payable, GA SUTA Payable, S-Corp Health Insurance, Co. HSA). `seed-chart` and the
@@ -143,7 +143,7 @@ asserts it and refuses to post (422, nothing written) if the stored figures do n
 
 `TaxPaymentService.create(*, actor, payment_date, agency, bank_account_id, amount, memo=None)` and
 `void(id, *, actor, void_date, memo=None)`. Agency maps to the payable role:
-`irs_941 -> payroll_federal_payable`, `irs_futa -> payroll_futa_payable`, `ga_dor -> payroll_ga_withholding_payable`,
+`irs_941 -> payroll_federal_payable`, `irs_futa -> payroll_futa_payable`, `ga_dor -> payroll_ga_wh_payable`,
 `ga_dol -> payroll_suta_payable`. Posting: Dr the payable account, Cr the bank (an asset account that is not a bound
 role). The amount may exceed the balance owed (the difference is an overpayment shown as a negative balance);
 penalties and interest are M3 expenses. Date rules, validation order, owner-only, audit and error classes follow the
