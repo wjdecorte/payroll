@@ -3,7 +3,6 @@
 # ruff: noqa: F811  (fixtures re-exported by conftest are used as arguments)
 
 import threading
-import time
 from datetime import date
 from decimal import Decimal
 
@@ -25,7 +24,7 @@ from payroll.payroll_run.models import PayrollRun
 from payroll.payroll_run.posting import PayrollPostingService
 from tests.conftest import make_user
 from tests.ledger.conftest import chart  # noqa: F401
-from tests.payroll_run.test_posting_concurrency import Hold
+from tests.payroll_run.concurrency import Hold, wait_for_lock_waiter
 
 D = Decimal
 DAY = date(2026, 1, 15)
@@ -336,24 +335,6 @@ def race_db(scratch_engine):
     engine.dispose()
 
 
-def _wait_for_lock_waiter(engine, timeout: float = 10.0) -> None:
-    """Block until some backend in the scratch database waits on a row lock."""
-    deadline = time.monotonic() + timeout
-    with engine.connect() as conn:
-        while time.monotonic() < deadline:
-            waiting = conn.execute(
-                sa.text(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
-                )
-            ).scalar_one()
-            if waiting:
-                return
-            conn.rollback()
-            time.sleep(0.02)
-    raise AssertionError("nothing ever waited on a row lock")
-
-
 def _approve_run(engine, ids) -> int:
     """Approve the draft through the real service; returns the account its wages line hit."""
     with Session(engine) as db:
@@ -401,7 +382,7 @@ def test_rebind_started_mid_approval_waits_then_is_refused(race_db, monkeypatch)
     assert hold.reached.wait(timeout=30)
     rebinder = threading.Thread(target=_rebind, args=(engine, ids, outcome))
     rebinder.start()
-    _wait_for_lock_waiter(engine)  # the rebind is blocked on the role row, not racing past it
+    wait_for_lock_waiter(engine)  # the rebind is blocked on the role row, not racing past it
     assert rebinder.is_alive() and not outcome
     hold.release.set()
     for t in (issuer, rebinder):

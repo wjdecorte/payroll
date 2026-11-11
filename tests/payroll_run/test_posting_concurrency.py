@@ -6,7 +6,6 @@ second one is blocked on the first, never racing past it, and the outcome is the
 """
 
 import threading
-import time
 from datetime import date
 from decimal import Decimal
 
@@ -15,15 +14,20 @@ import sqlalchemy as sa
 from sqlmodel import Session, func, select
 
 from payroll.auth.models import User
-from payroll.exceptions import AppBaseError
 from payroll.ledger.accounts import PAYROLL_ROLES, ROLE_TYPES
 from payroll.ledger.models import Account, AccountType, JournalEntry
 from payroll.migrations import alembic_runner
-from payroll.payroll_run import posting as posting_module
 from payroll.payroll_run.models import PayrollRun
 from payroll.payroll_run.posting import PayrollPostingService
 from payroll.payroll_run.services import PayrollRunService
 from tests.conftest import make_user
+from tests.payroll_run.concurrency import (
+    Hold,
+    finish,
+    outcome_of,
+    run_thread,
+    wait_for_lock_waiter,
+)
 
 D = Decimal
 JAN_END = date(2026, 1, 31)
@@ -47,24 +51,6 @@ def pr_db(scratch_engine):
     engine = sa.create_engine(scratch_engine.url, pool_size=10)
     yield engine, ids
     engine.dispose()
-
-
-def wait_for_lock_waiter(engine, timeout: float = 10.0) -> None:
-    """Block until some backend in the scratch database waits on a lock."""
-    deadline = time.monotonic() + timeout
-    with engine.connect() as conn:
-        while time.monotonic() < deadline:
-            waiting = conn.execute(
-                sa.text(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
-                )
-            ).scalar_one()
-            if waiting:
-                return
-            conn.rollback()
-            time.sleep(0.02)
-    raise AssertionError("nothing ever waited on a lock")
 
 
 def add_draft(engine, period: str) -> int:
@@ -96,14 +82,6 @@ def void(engine, ids, run_id: int, day: date = JAN_END) -> PayrollRun:
         )
 
 
-def outcome_of(call) -> str:
-    try:
-        call()
-    except AppBaseError as exc:
-        return type(exc).__name__
-    return "ok"
-
-
 def statuses(engine) -> dict[str, str]:
     with Session(engine) as db:
         return dict(db.exec(select(PayrollRun.pay_period, PayrollRun.status)).all())
@@ -112,35 +90,6 @@ def statuses(engine) -> dict[str, str]:
 def entry_count(engine) -> int:
     with Session(engine) as db:
         return db.exec(select(func.count()).select_from(JournalEntry)).one()
-
-
-class Hold:
-    """Pauses the approve or void of one run right after it posts, before it commits."""
-
-    def __init__(self, monkeypatch, action: str, run_id: int) -> None:
-        self.reached = threading.Event()
-        self.release = threading.Event()
-        real_audit = posting_module.record_audit
-
-        def paused_audit(*args, **kwargs):
-            if kwargs.get("action") == action and kwargs.get("entity_id") == str(run_id):
-                self.reached.set()  # the locks are held and the entry is posted
-                assert self.release.wait(timeout=30)
-            return real_audit(*args, **kwargs)
-
-        monkeypatch.setattr(posting_module, "record_audit", paused_audit)
-
-
-def run_thread(results: dict, key: str, call) -> threading.Thread:
-    thread = threading.Thread(target=lambda: results.__setitem__(key, outcome_of(call)))
-    thread.start()
-    return thread
-
-
-def finish(*threads: threading.Thread) -> None:
-    for thread in threads:
-        thread.join(timeout=30)
-        assert not thread.is_alive(), "a worker is stuck (deadlock?)"
 
 
 # --------------------------------------------------------------------------- tax-year row lock
