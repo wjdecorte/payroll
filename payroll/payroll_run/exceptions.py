@@ -63,3 +63,9 @@ class InvalidTaxPaymentError(AppBaseError):
 class TaxPaymentError(AppBaseError):
     message: str = "The tax payment cannot be changed in its current state"
     http_code: int = 409
+
+
+@dataclass
+class InvalidPayrollSettingsError(AppBaseError):
+    message: str = "Invalid payroll settings"
+    http_code: int = 422

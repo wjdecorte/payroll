@@ -40,6 +40,7 @@ from payroll.auth.dependencies import (  # noqa: E402
 from payroll.auth.models import User  # noqa: E402
 from payroll.common.dependencies import get_session  # noqa: E402
 from payroll.migrations import alembic_runner  # noqa: E402
+from payroll.payroll_run import ledger_models  # noqa: E402,F401  (M4 tables on SQLModel.metadata)
 
 
 @pytest.fixture(name="engine", scope="session")
