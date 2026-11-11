@@ -37,6 +37,7 @@ from payroll.common.documents import (
     utcnow_naive,
     void_memo,
 )
+from payroll.ledger.accounts import PAYROLL_ROLES
 from payroll.ledger.models import Account, JournalEntry, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 
@@ -132,7 +133,7 @@ class TaxPaymentService:
             role = AGENCY_ROLES[clean_agency]
             payable = locked_role_account(self.session, role, lambda: _unbound(role))
             bank = self._check_bank(
-                lock_accounts(self.session, {bank_account_id}).get(bank_account_id), payable
+                lock_accounts(self.session, {bank_account_id}).get(bank_account_id)
             )
 
             # (3) write the document, then post
@@ -222,13 +223,15 @@ class TaxPaymentService:
     # ---------------------------------------------------------------- helpers
 
     @staticmethod
-    def _check_bank(account: Account | None, payable: Account) -> Account:
+    def _check_bank(account: Account | None) -> Account:
         if account is None:
             raise _invalid("The bank account was not found")
-        if account.type not in PAYMENT_TYPES or account.system_role in RESERVED_ROLES:
+        if (
+            account.type not in PAYMENT_TYPES
+            or account.system_role in RESERVED_ROLES
+            or account.system_role in PAYROLL_ROLES
+        ):
             raise _invalid(f"{account.name} cannot pay a tax; use a bank, cash or card account")
-        if account.id == payable.id:
-            raise _invalid("Choose a bank account other than the payable account being paid")
         if not account.is_active:
             raise _invalid(f"{account.name} is inactive")
         return account

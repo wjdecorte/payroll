@@ -11,7 +11,7 @@ from sqlmodel import func, select
 
 from payroll.audit.models import AuditLog
 from payroll.auth.permissions import PermissionDeniedError
-from payroll.ledger.accounts import AccountService
+from payroll.ledger.accounts import PAYROLL_ROLES, AccountService
 from payroll.ledger.exceptions import PeriodLockedError
 from payroll.ledger.models import AccountType, JournalEntry, SystemRole
 from payroll.payroll_run.exceptions import (
@@ -144,11 +144,9 @@ def test_bound_role_bank_refused(session, owner_user, bank, role):
     rejected(session, owner_user, bound)
 
 
-def test_payroll_role_account_as_bank_refused_not_reserved(session, owner_user, payroll_roles):
-    """A payroll payable is a liability account, so only the role set decides: still allowed."""
-    payable = payroll_roles[SystemRole.PAYROLL_HSA_PAYABLE]
-    payment = make(session, owner_user, payable)
-    assert payment.bank_account_id == payable.id
+@pytest.mark.parametrize("role", PAYROLL_ROLES)
+def test_any_payroll_role_account_as_bank_refused(session, owner_user, payroll_roles, role):
+    rejected(session, owner_user, payroll_roles[role], "cannot pay a tax")
 
 
 def test_revenue_account_refused(session, owner_user, bank):
@@ -349,7 +347,7 @@ def test_void_missing_payment(session, owner_user):
 
 @pytest.mark.parametrize("bad", ["1", 1.5, True, None])
 def test_void_non_int_id_refused(session, owner_user, bad):
-    with pytest.raises((InvalidTaxPaymentError, TaxPaymentNotFoundError)):
+    with pytest.raises(InvalidTaxPaymentError):
         TaxPaymentService(session).void(bad, actor=owner_user, void_date=LATER)
 
 
@@ -411,8 +409,3 @@ def test_get_and_list(session, owner_user, bank):
 def test_list_validates_arguments(session, limit, offset, agency):
     with pytest.raises(InvalidTaxPaymentError):
         TaxPaymentService(session).list(agency=agency, limit=limit, offset=offset)
-
-
-def test_bank_equal_to_payable_account_refused(session, owner_user, payroll_roles):
-    payable = payroll_roles[SystemRole.PAYROLL_FEDERAL_PAYABLE]
-    rejected(session, owner_user, payable, "other than the payable")
