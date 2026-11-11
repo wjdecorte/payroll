@@ -14,8 +14,6 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from payroll.ledger.models import SourceType
-from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.migrations import alembic_runner
 from payroll.payroll_run.ledger_models import PayrollDepositRules, PayrollSettings, TaxPayment
 from payroll.payroll_run.models import PayrollRun
@@ -46,28 +44,6 @@ def _refused(session, statement, match, exc=DBAPIError, **params):
     with pytest.raises(exc, match=match):
         with session.begin_nested():
             session.execute(sa.text(statement), params)
-
-
-@pytest.fixture
-def entries(session, owner_user, chart):  # noqa: F811
-    """A factory for journal entries (``entry_id`` / ``void_entry_id`` targets)."""
-    cash, sales = chart["Business Checking"].id, chart["Services Revenue"].id
-
-    def make() -> int:
-        draft = EntryDraft(
-            JAN,
-            [LineDraft(cash, debit=D("1")), LineDraft(sales, credit=D("1"))],
-            memo="x",
-            source_type=SourceType.PAYROLL_RUN,
-        )
-        return LedgerPostingService(session).post(draft, actor=owner_user).id
-
-    return make
-
-
-@pytest.fixture
-def bank(chart):  # noqa: F811
-    return chart["Business Checking"]
 
 
 def _run(session, **kw) -> PayrollRun:

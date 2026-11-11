@@ -8,6 +8,7 @@ Alembic migrations, and each test runs inside a rolled-back transaction.
 
 import os
 from contextlib import contextmanager
+from decimal import Decimal
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql://payroll:payroll@localhost:5433/payroll_test"
@@ -241,6 +242,21 @@ def viewer_client(db_override, viewer_user):
 # ---------------------------------------------------------------------------
 
 PREFIX = "/payroll/api/v1"
+
+
+@pytest.fixture
+def year_settings(session):
+    """The 2026 FUTA / Georgia SUTA settings a saved payroll run needs (rate 2.64% is a sample)."""
+    row = ledger_models.PayrollSettings(
+        tax_year=2026,
+        futa_rate=Decimal("0.006"),
+        futa_wage_base=Decimal("7000.00"),
+        suta_rate=Decimal("0.0264"),
+        suta_wage_base=Decimal("9500.00"),
+    )
+    session.add(row)
+    session.flush()
+    return row
 
 
 @pytest.fixture

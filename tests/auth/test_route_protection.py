@@ -28,6 +28,9 @@ from payroll.auth.permissions import PUBLIC_PATHS, ROLES, is_public_path, requir
 from payroll.payroll_run.models import PayrollRun
 from tests.conftest import add_presession_csrf
 
+# Saving a run needs the year's FUTA / SUTA settings.
+pytestmark = pytest.mark.usefixtures("year_settings")
+
 PREFIX = app_settings.base_url_prefix
 API = f"{PREFIX}/payroll"
 

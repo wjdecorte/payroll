@@ -20,21 +20,25 @@ import re
 from datetime import datetime
 from decimal import Decimal
 
-from sqlmodel import Session, select
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, col, select
 
 from payroll import app_settings
 from payroll.audit.services import record as record_audit
 from payroll.auth.models import User
 from payroll.auth.permissions import OWNER, ensure_role
+from payroll.common.documents import commit_or_rollback
 from payroll.tax import constants as tax
 from payroll.tax.engine import calc_payroll
 from payroll.tax.schemas import PayrollCalculation, TaxConstantsSchema
+from payroll.tax.unemployment import UnemploymentResult, calc_unemployment
 
 from .config_services import PayrollConfigService
 from .exceptions import (
     InvalidPayPeriodError,
     PayrollRunAlreadyExistsError,
     PayrollRunNotFoundError,
+    PayrollRunStateError,
 )
 from .models import PayrollRun
 from .schemas import (
@@ -46,10 +50,13 @@ from .schemas import (
     TaxDetail,
     TaxPaymentSummary,
 )
+from .settings_service import PayrollSettingsService
 
 logger = logging.getLogger(f"{app_settings.logger_name}.payroll_run.service")
 
 _PAY_PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+# Runs whose year-to-date wages feed the next run (a void run no longer counts).
+_CHAIN_STATUSES = ("approved", "imported", "draft")
 
 
 class PayrollRunService:
@@ -58,6 +65,7 @@ class PayrollRunService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.config_service = PayrollConfigService(session)
+        self.settings_service = PayrollSettingsService(session)
 
     # ------------------------------------------------------------------
     # Public API
@@ -72,8 +80,10 @@ class PayrollRunService:
         Raises:
             PermissionDeniedError: If save_run=True and ``actor`` is not an owner.
             InvalidPayPeriodError: If pay_period is not in YYYY-MM format.
-            PayrollRunAlreadyExistsError: If a run for this period already exists
-                                          and save_run=True.
+            PayrollRunAlreadyExistsError: If a non-void run for this period already
+                                          exists and save_run=True.
+            PayrollSettingsMissingError: If save_run=True and the tax year has no
+                                         payroll (FUTA / SUTA) settings.
         """
         if payload.save_run:
             ensure_role(actor, OWNER)
@@ -93,6 +103,14 @@ class PayrollRunService:
             payload.ytd_fica_wages = self._get_previous_ytd_fica(payload.pay_period)
             logger.info("Resolved YTD FICA from previous run: %s", payload.ytd_fica_wages)
 
+        # Saving needs the year's FUTA / SUTA settings; a calculation that is not saved
+        # reports them only when they exist.
+        settings = (
+            self.settings_service.require_year(tax.TAX_YEAR)
+            if payload.save_run
+            else self.settings_service.get_year(tax.TAX_YEAR)
+        )
+
         calc = calc_payroll(
             gross_salary=payload.gross_salary,
             health_insurance=payload.health_insurance,
@@ -109,13 +127,29 @@ class PayrollRunService:
             calc.net_pay,
         )
 
+        # Unemployment wages are the run's FICA wages, so they follow the same year-to-date chain.
+        unemployment = None
+        if settings is not None:
+            unemployment = calc_unemployment(
+                payload.ytd_fica_wages,
+                calc.ytd_fica_after,
+                self.settings_service.rates(tax.TAX_YEAR),
+            )
+
         saved_run: PayrollRun | None = None
         if payload.save_run:
-            saved_run = self._persist(payload, calc, actor)
+            assert unemployment is not None and settings is not None  # require_year above
+            saved_run = self._persist(payload, calc, unemployment, settings.suta_rate, actor)
             logger.info("Saved payroll run id=%d", saved_run.id)
 
         tax_detail = self._tax_detail_from_calc(calc, payload.ytd_fica_wages)
-        return self._build_result(payload, tax_detail, saved_run)
+        return self._build_result(
+            payload,
+            tax_detail,
+            saved_run,
+            unemployment,
+            settings.suta_rate if settings else None,
+        )
 
     def get_run(self, run_id: int) -> PayrollResult:
         """Retrieve a saved payroll run by ID and rebuild its full result.
@@ -125,7 +159,10 @@ class PayrollRunService:
         they reflect any account-name changes made since the run was saved.
         """
         run = self._get_or_raise(run_id)
-        return self._build_result(run, self._tax_detail_from_run(run), run)
+        stored = UnemploymentResult(
+            futa_wages=run.futa_wages, futa=run.futa, suta_wages=run.suta_wages, suta=run.suta
+        )
+        return self._build_result(run, self._tax_detail_from_run(run), run, stored, run.suta_rate)
 
     def list_runs(self, limit: int = 50, offset: int = 0) -> list[PayrollRunSummary]:
         """Return a paginated list of saved payroll runs, newest first."""
@@ -139,20 +176,37 @@ class PayrollRunService:
         return [PayrollRunSummary.model_validate(r) for r in runs]
 
     def delete_run(self, run_id: int, *, actor: User) -> None:
-        """Delete a payroll run by ID. ``actor`` must be an owner (checked first)."""
+        """
+        Delete a draft payroll run by ID. ``actor`` must be an owner (checked first).
+
+        Approved, void and imported runs are history and are kept
+        (``PayrollRunStateError``).
+        """
         ensure_role(actor, OWNER)
-        run = self._get_or_raise(run_id)
-        # Audited in the same transaction as the delete (committed together below).
-        record_audit(
-            self.session,
-            action="payroll_run.delete",
-            user_id=actor.id,
-            entity="payroll_run",
-            entity_id=str(run.id),
-            before=self._audit_snapshot(run),
-        )
-        self.session.delete(run)
-        self.session.commit()
+
+        def work() -> None:
+            # Row lock: an approval cannot change the status between the check and the delete.
+            run = self.session.exec(
+                select(PayrollRun).where(PayrollRun.id == run_id).with_for_update()
+            ).first()
+            if run is None:
+                raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
+            if run.status != "draft":
+                raise PayrollRunStateError(
+                    message=f"Payroll run {run_id} is {run.status} — only a draft can be deleted"
+                )
+            # Audited in the same transaction as the delete.
+            record_audit(
+                self.session,
+                action="payroll_run.delete",
+                user_id=actor.id,
+                entity="payroll_run",
+                entity_id=str(run.id),
+                before=self._audit_snapshot(run),
+            )
+            self.session.delete(run)
+
+        commit_or_rollback(self.session, work)
         logger.info("Deleted payroll run id=%d", run_id)
 
     # ------------------------------------------------------------------
@@ -166,14 +220,18 @@ class PayrollRunService:
             )
 
     def _find_by_period(self, pay_period: str) -> PayrollRun | None:
+        """The non-void run for ``pay_period`` (a void run frees its period)."""
         return self.session.exec(
-            select(PayrollRun).where(PayrollRun.pay_period == pay_period)
+            select(PayrollRun).where(
+                PayrollRun.pay_period == pay_period, PayrollRun.status != "void"
+            )
         ).first()
 
     def _get_previous_ytd_fica(self, pay_period: str) -> Decimal:
         """Return ytd_fica_after from the most recent saved run before this period.
 
-        Only considers runs in the same calendar year (YTD resets each January).
+        Only considers runs in the same calendar year (YTD resets each January) that
+        are approved, imported or draft; a void run does not count.
         Returns 0.00 when no prior run exists.
         """
         year = pay_period[:4]
@@ -182,6 +240,7 @@ class PayrollRunService:
             .where(
                 PayrollRun.pay_period < pay_period,
                 PayrollRun.pay_period >= f"{year}-01",
+                col(PayrollRun.status).in_(_CHAIN_STATUSES),
             )
             .order_by(PayrollRun.pay_period.desc())  # type: ignore[attr-defined]
             .limit(1)
@@ -194,8 +253,16 @@ class PayrollRunService:
             raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
         return run
 
-    def _persist(self, payload: PayrollInput, calc: PayrollCalculation, actor: User) -> PayrollRun:
+    def _persist(
+        self,
+        payload: PayrollInput,
+        calc: PayrollCalculation,
+        unemployment: UnemploymentResult,
+        suta_rate: Decimal,
+        actor: User,
+    ) -> PayrollRun:
         run = PayrollRun(
+            status="draft",
             pay_period=payload.pay_period,
             gross_salary=payload.gross_salary,
             health_insurance=payload.health_insurance,
@@ -222,19 +289,37 @@ class PayrollRunService:
             total_employer_taxes=calc.total_employer_taxes,
             total_employer_cost=calc.total_employer_cost,
             ytd_fica_after=calc.ytd_fica_after,
+            # FUTA / SUTA, with the SUTA rate used
+            futa_wages=unemployment.futa_wages,
+            futa=unemployment.futa,
+            suta_wages=unemployment.suta_wages,
+            suta=unemployment.suta,
+            suta_rate=suta_rate,
         )
-        self.session.add(run)
-        self.session.flush()  # assign run.id for the audit row
-        # Audited in the same transaction as the save (committed together below).
-        record_audit(
-            self.session,
-            action="payroll_run.save",
-            user_id=actor.id,
-            entity="payroll_run",
-            entity_id=str(run.id),
-            after=self._audit_snapshot(run),
-        )
-        self.session.commit()
+
+        def work() -> None:
+            self.session.add(run)
+            try:
+                self.session.flush()  # assign run.id for the audit row
+            except IntegrityError as exc:
+                # Another save for this period won the race past the existence check.
+                if "uq_payroll_run_period_active" not in str(exc.orig):
+                    raise
+                raise PayrollRunAlreadyExistsError(
+                    message=f"Payroll run for '{payload.pay_period}' already exists. "
+                    "Delete it first or use a different pay period."
+                ) from exc
+            # Audited in the same transaction as the save.
+            record_audit(
+                self.session,
+                action="payroll_run.save",
+                user_id=actor.id,
+                entity="payroll_run",
+                entity_id=str(run.id),
+                after=self._audit_snapshot(run),
+            )
+
+        commit_or_rollback(self.session, work)
         self.session.refresh(run)
         return run
 
@@ -243,8 +328,11 @@ class PayrollRunService:
         """The key fields of a run recorded in the audit log."""
         return {
             "pay_period": run.pay_period,
+            "status": run.status,
             "gross_salary": run.gross_salary,
             "net_pay": run.net_pay,
+            "futa": run.futa,
+            "suta": run.suta,
         }
 
     @staticmethod
@@ -308,6 +396,8 @@ class PayrollRunService:
         source: PayrollInput | PayrollRun,
         td: TaxDetail,
         run: PayrollRun | None,
+        unemployment: UnemploymentResult | None,
+        suta_rate: Decimal | None,
     ) -> PayrollResult:
         """Assemble the API result from the inputs (payload or saved run) and amounts."""
         acct = self.config_service.get_accounts()
@@ -335,6 +425,14 @@ class PayrollRunService:
             journal_entries=journal_entries,
             tax_payment_summary=tax_payment,
             create_date=run.create_date if run else datetime.utcnow(),
+            status=run.status if run else None,
+            pay_date=run.pay_date if run else None,
+            entry_id=run.entry_id if run else None,
+            futa_wages=unemployment.futa_wages if unemployment else None,
+            futa=unemployment.futa if unemployment else None,
+            suta_wages=unemployment.suta_wages if unemployment else None,
+            suta=unemployment.suta if unemployment else None,
+            suta_rate=suta_rate,
         )
 
     # ------------------------------------------------------------------
