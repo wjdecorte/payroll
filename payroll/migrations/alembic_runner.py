@@ -26,7 +26,7 @@ _ALEMBIC_INI = Path(__file__).parent / "alembic.ini"
 _INITIAL_REVISION = "c3a8d2f19b40"  # baseline tables, no next_journal_no
 _JOURNAL_NO_REVISION = "4a7f8b2c9d1e"  # adds next_journal_no to payroll_config
 _MONEY_REVISION = "9d4e6b1f2a37"  # money columns float -> NUMERIC(14,2)
-_HEAD_REVISION = "d4e0a2b8c6f1"  # expenses tables (line-sum, reimbursement triggers)
+_HEAD_REVISION = "e5f1b3c9d7a2"  # payroll ledger (run lifecycle, settings, tax payments)
 
 # Postgres advisory-lock key serializing migrations across processes (e.g. two
 # gunicorn workers booting at once). Arbitrary constant, unique to this app.

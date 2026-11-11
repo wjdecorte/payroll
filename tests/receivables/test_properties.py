@@ -64,7 +64,8 @@ activity = st.lists(operation, min_size=1, max_size=14)
 
 RESET = (
     "TRUNCATE application_income, payment_application, invoice_line, invoice, deposit, payment, "
-    "customer_refund, customer, item, expense_line, expense, reimbursement, transfer, vendor, "
+    "customer_refund, customer, item, tax_payment, payroll_run, expense_line, expense, "
+    "reimbursement, transfer, vendor, "
     "journal_line, journal_entry, account"
 )
 
