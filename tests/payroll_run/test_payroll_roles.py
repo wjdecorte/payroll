@@ -12,19 +12,20 @@ import sqlalchemy as sa
 from sqlmodel import Session, col, select
 
 from payroll.auth.models import User
-from payroll.common.documents import locked_role_account
 from payroll.exceptions import AppBaseError
 from payroll.frontend.ledger_routers import ROLE_LABELS
 from payroll.ledger.accounts import PAYROLL_ROLES, ROLE_TYPES, AccountService
 from payroll.ledger.default_chart import seed_default_chart
 from payroll.ledger.exceptions import InvalidAccountError
-from payroll.ledger.models import Account, AccountType, SourceType, SystemRole
+from payroll.ledger.models import Account, AccountType, JournalLine, SourceType, SystemRole
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
 from payroll.migrations import alembic_runner
 from payroll.payroll_run.ledger_models import TaxPayment
 from payroll.payroll_run.models import PayrollRun
+from payroll.payroll_run.posting import PayrollPostingService
 from tests.conftest import make_user
 from tests.ledger.conftest import chart  # noqa: F401
+from tests.payroll_run.test_posting_concurrency import Hold
 
 D = Decimal
 DAY = date(2026, 1, 15)
@@ -307,23 +308,28 @@ def race_db(scratch_engine):
     alembic_runner.upgrade()
     with Session(scratch_engine) as db:
         user = make_user(db)
-        wages = Account(
-            name="Wages", type=AccountType.EXPENSE, system_role=SystemRole.PAYROLL_WAGES
-        )
+        roles = {
+            role: Account(name=f"Role {role.value}", type=ROLE_TYPES[role], system_role=role)
+            for role in PAYROLL_ROLES
+        }
         spare = Account(name="Other Wages", type=AccountType.EXPENSE)
-        cash = Account(name="Cash", type=AccountType.ASSET)
-        sales = Account(name="Sales", type=AccountType.INCOME)
-        db.add_all([wages, spare, cash, sales])
-        db.flush()
-        entry = LedgerPostingService(db).post(
-            EntryDraft(
-                DAY,
-                [LineDraft(cash.id, debit=D("1")), LineDraft(sales.id, credit=D("1"))],
-                source_type=SourceType.PAYROLL_RUN,
-            ),
-            actor=user,
+        bank = Account(name="Bank", type=AccountType.ASSET)
+        db.add_all([*roles.values(), spare, bank])
+        run = PayrollRun(
+            pay_period="2026-01",
+            gross_salary=D("100.00"),
+            fica_wages=D("100.00"),
+            net_pay=D("100.00"),
         )
-        ids = {"user": user.id, "wages": wages.id, "spare": spare.id, "entry": entry.id}
+        db.add(run)
+        db.flush()
+        ids = {
+            "user": user.id,
+            "wages": roles[SystemRole.PAYROLL_WAGES].id,
+            "spare": spare.id,
+            "bank": bank.id,
+            "run": run.id,
+        }
         db.commit()
     engine = sa.create_engine(scratch_engine.url, pool_size=5)
     yield engine, ids
@@ -348,30 +354,22 @@ def _wait_for_lock_waiter(engine, timeout: float = 10.0) -> None:
     raise AssertionError("nothing ever waited on a row lock")
 
 
-def _missing() -> AppBaseError:
-    return AppBaseError(message="role missing")
-
-
-def _issue_run(engine, ids, *, locked: threading.Event | None, release: threading.Event | None):
-    """The stand-in issuer: lock the role account like a document does, then insert a run."""
+def _approve_run(engine, ids) -> int:
+    """Approve the draft through the real service; returns the account its wages line hit."""
     with Session(engine) as db:
-        account = locked_role_account(db, SystemRole.PAYROLL_WAGES, _missing)
-        if locked is not None:
-            locked.set()
-        if release is not None:
-            assert release.wait(timeout=30)
-        db.add(
-            PayrollRun(
-                pay_period="2026-01",
-                gross_salary=D("100.00"),
-                status="approved",
-                pay_date=DAY,
-                net_pay_source="owner",
-                entry_id=ids["entry"],
-            )
+        run = PayrollPostingService(db).approve(
+            ids["run"],
+            actor=db.get(User, ids["user"]),
+            pay_date=DAY,
+            net_pay_source="account",
+            net_pay_account_id=ids["bank"],
         )
-        db.commit()
-        return account.id
+        wages_line = db.exec(
+            select(JournalLine)
+            .where(JournalLine.entry_id == run.entry_id)
+            .where(col(JournalLine.debit) > 0)
+        ).one()
+        return wages_line.account_id
 
 
 def _rebind(engine, ids, outcome: dict) -> None:
@@ -392,35 +390,33 @@ def _bound_id(engine) -> int:
         ).one()
 
 
-def test_rebind_started_mid_issue_waits_then_is_refused(race_db):
-    """The rebind waits for the issuer's lock; once the run commits it sees it and refuses."""
+def test_rebind_started_mid_approval_waits_then_is_refused(race_db, monkeypatch):
+    """The rebind waits for the approval's role lock; once the run commits it refuses."""
     engine, ids = race_db
-    locked, release = threading.Event(), threading.Event()
+    hold = Hold(monkeypatch, "payroll_run.approve", ids["run"])
     issued: dict = {}
     outcome: dict = {}
-    issuer = threading.Thread(
-        target=lambda: issued.update(id=_issue_run(engine, ids, locked=locked, release=release))
-    )
+    issuer = threading.Thread(target=lambda: issued.update(id=_approve_run(engine, ids)))
     issuer.start()
-    assert locked.wait(timeout=30)
+    assert hold.reached.wait(timeout=30)
     rebinder = threading.Thread(target=_rebind, args=(engine, ids, outcome))
     rebinder.start()
     _wait_for_lock_waiter(engine)  # the rebind is blocked on the role row, not racing past it
     assert rebinder.is_alive() and not outcome
-    release.set()
+    hold.release.set()
     for t in (issuer, rebinder):
         t.join(timeout=30)
         assert not t.is_alive(), "a worker is stuck (deadlock?)"
     assert outcome == {"rebind": "InvalidAccountError"}
     assert issued["id"] == ids["wages"] == _bound_id(engine)  # the run is on the bound account
     with Session(engine) as db:
-        assert db.exec(select(PayrollRun.id)).all()
+        assert db.exec(select(PayrollRun.status)).all() == ["approved"]
 
 
-def test_issue_after_a_committed_rebind_locks_the_new_role_account(race_db):
+def test_approval_after_a_committed_rebind_posts_to_the_new_role_account(race_db):
     engine, ids = race_db
     outcome: dict = {}
     _rebind(engine, ids, outcome)
     assert outcome == {"rebind": "ok"}
-    assert _issue_run(engine, ids, locked=None, release=None) == ids["spare"]
+    assert _approve_run(engine, ids) == ids["spare"]
     assert _bound_id(engine) == ids["spare"]

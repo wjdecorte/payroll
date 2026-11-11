@@ -187,7 +187,10 @@ class PayrollRunService:
         def work() -> None:
             # Row lock: an approval cannot change the status between the check and the delete.
             run = self.session.exec(
-                select(PayrollRun).where(PayrollRun.id == run_id).with_for_update()
+                select(PayrollRun)
+                .where(PayrollRun.id == run_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             ).first()
             if run is None:
                 raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
