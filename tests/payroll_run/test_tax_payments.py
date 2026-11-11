@@ -11,7 +11,7 @@ from sqlmodel import func, select
 
 from payroll.audit.models import AuditLog
 from payroll.auth.permissions import PermissionDeniedError
-from payroll.ledger.accounts import PAYROLL_ROLES, AccountService
+from payroll.ledger.accounts import PAYROLL_ROLES, ROLE_TYPES, AccountService
 from payroll.ledger.exceptions import PeriodLockedError
 from payroll.ledger.models import AccountType, JournalEntry, SystemRole
 from payroll.payroll_run.exceptions import (
@@ -144,8 +144,25 @@ def test_bound_role_bank_refused(session, owner_user, bank, role):
     rejected(session, owner_user, bound)
 
 
-@pytest.mark.parametrize("role", PAYROLL_ROLES)
-def test_any_payroll_role_account_as_bank_refused(session, owner_user, payroll_roles, role):
+LIABILITY_PAYROLL_ROLES = [r for r in PAYROLL_ROLES if ROLE_TYPES[r] == AccountType.LIABILITY]
+EXPENSE_PAYROLL_ROLES = [r for r in PAYROLL_ROLES if ROLE_TYPES[r] == AccountType.EXPENSE]
+
+
+def test_payroll_role_types_split_six_and_two():
+    assert len(LIABILITY_PAYROLL_ROLES) == 6 and len(EXPENSE_PAYROLL_ROLES) == 2
+
+
+@pytest.mark.parametrize("role", LIABILITY_PAYROLL_ROLES)
+def test_payroll_payable_account_as_bank_refused_by_role(session, owner_user, payroll_roles, role):
+    """A liability passes the type check, so only the payroll-role rule refuses it."""
+    rejected(session, owner_user, payroll_roles[role], "is a payroll account")
+
+
+@pytest.mark.parametrize("role", EXPENSE_PAYROLL_ROLES)
+def test_payroll_expense_account_as_bank_refused_as_non_payment_type(
+    session, owner_user, payroll_roles, role
+):
+    """Wages and tax expense are expense accounts: refused as a non-payment account type."""
     rejected(session, owner_user, payroll_roles[role], "cannot pay a tax")
 
 

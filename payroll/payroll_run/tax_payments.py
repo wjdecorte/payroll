@@ -226,12 +226,12 @@ class TaxPaymentService:
     def _check_bank(account: Account | None) -> Account:
         if account is None:
             raise _invalid("The bank account was not found")
-        if (
-            account.type not in PAYMENT_TYPES
-            or account.system_role in RESERVED_ROLES
-            or account.system_role in PAYROLL_ROLES
-        ):
+        if account.type not in PAYMENT_TYPES or account.system_role in RESERVED_ROLES:
             raise _invalid(f"{account.name} cannot pay a tax; use a bank, cash or card account")
+        if account.system_role in PAYROLL_ROLES:
+            raise _invalid(
+                f"{account.name} is a payroll account and cannot be the bank for a tax payment"
+            )
         if not account.is_active:
             raise _invalid(f"{account.name} is inactive")
         return account
