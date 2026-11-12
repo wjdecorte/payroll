@@ -124,10 +124,16 @@ def entry_id(session, owner_user, chart) -> int:
     return LedgerPostingService(session).post(draft, actor=owner_user).id
 
 
-def _run(session, entry_id: int | None, status: str, period: str = "2026-01") -> PayrollRun:
+def _run(
+    session, entry_id: int | None, status: str, period: str = "2026-01", source: str = "owner"
+) -> PayrollRun:
     fields: dict = {"pay_period": period, "gross_salary": D("100.00"), "status": status}
     if status in ("approved", "void"):
-        fields.update(pay_date=DAY, net_pay_source="owner", entry_id=entry_id)
+        fields.update(pay_date=DAY, net_pay_source=source, entry_id=entry_id)
+        if source == "account":
+            fields["net_pay_account_id"] = session.exec(
+                select(Account.id).where(Account.name == "Business Checking")
+            ).one()
     if status == "void":
         fields.update(void_entry_id=entry_id, void_date=DAY)
     run = PayrollRun(**fields)
@@ -192,6 +198,37 @@ def test_a_tax_payment_freezes_every_payroll_role(
     )
     session.flush()
     _assert_frozen(session, owner_user, payroll_roles, spares)
+
+
+@pytest.mark.parametrize("status", ["approved", "void"])
+def test_an_owner_funded_run_freezes_due_to_owner_but_a_bank_funded_one_does_not(
+    session, owner_user, payroll_roles, spares, entry_id, chart, status
+):
+    """An owner-source run finds its net-pay account through the role, so the role is fixed."""
+    accounts = AccountService(session)
+    due_to_owner = accounts.account_by_role(SystemRole.DUE_TO_OWNER)
+    other = accounts.create(
+        actor=owner_user, name="Other Owner Liability", type=AccountType.LIABILITY
+    )
+    message = "Due to Owner cannot change after owner-paid expenses or reimbursements"
+
+    # Before any run: movable.
+    accounts.bind_role(SystemRole.DUE_TO_OWNER, other.id, actor=owner_user)
+    accounts.bind_role(SystemRole.DUE_TO_OWNER, due_to_owner.id, actor=owner_user)
+
+    # A bank-funded run stores its net-pay account and does not touch the role.
+    bank_run = _run(session, entry_id, status, period="2026-01", source="account")
+    assert bank_run.net_pay_account_id == chart["Business Checking"].id
+    accounts.bind_role(SystemRole.DUE_TO_OWNER, other.id, actor=owner_user)
+    accounts.bind_role(SystemRole.DUE_TO_OWNER, due_to_owner.id, actor=owner_user)
+
+    # An owner-funded run freezes it, to another account and to nothing.
+    _run(session, entry_id, status, period="2026-02")
+    for target in (other.id, None):
+        with pytest.raises(InvalidAccountError) as caught:
+            accounts.bind_role(SystemRole.DUE_TO_OWNER, target, actor=owner_user)
+        assert message in caught.value.message
+    assert accounts.account_by_role(SystemRole.DUE_TO_OWNER).id == due_to_owner.id
 
 
 # ---------------------------------------------------------------------------

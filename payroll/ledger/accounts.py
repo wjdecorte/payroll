@@ -408,16 +408,24 @@ class AccountService:
         return self.session.exec(stmt.limit(1)).first() is not None
 
     def _owner_activity(self) -> bool:
-        """Any owner-paid expense (voided included) or any reimbursement exists."""
-        # Imported here: the expenses package depends on the ledger, not the reverse.
+        """Any owner-paid expense (voided included), reimbursement, or owner-funded payroll run."""
+        # Imported here: the expenses and payroll_run packages depend on the ledger, not the reverse.
         from payroll.expenses.models import Expense, Reimbursement
+        from payroll.payroll_run.models import PayrollRun
 
         if (
             self.session.exec(select(Expense.id).where(Expense.source == "owner").limit(1)).first()
             is not None
         ):
             return True
-        return self.session.exec(select(Reimbursement.id).limit(1)).first() is not None
+        if self.session.exec(select(Reimbursement.id).limit(1)).first() is not None:
+            return True
+        # An owner-source run finds its net-pay account through the role, so the role must hold.
+        run = select(PayrollRun.id).where(
+            PayrollRun.net_pay_source == "owner",
+            col(PayrollRun.status).in_(["approved", "void"]),
+        )
+        return self.session.exec(run.limit(1)).first() is not None
 
     def _payroll_activity(self) -> bool:
         """Any approved or void payroll run (drafts and imports excluded) or any tax payment."""
