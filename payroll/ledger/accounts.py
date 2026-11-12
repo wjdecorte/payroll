@@ -42,11 +42,31 @@ ROLE_TYPES: dict[SystemRole, AccountType] = {
     SystemRole.DUE_TO_OWNER: AccountType.LIABILITY,
     SystemRole.RETAINED_EARNINGS: AccountType.EQUITY,
     SystemRole.OPENING_BALANCE_EQUITY: AccountType.EQUITY,
+    SystemRole.PAYROLL_WAGES: AccountType.EXPENSE,
+    SystemRole.PAYROLL_TAX_EXPENSE: AccountType.EXPENSE,
+    SystemRole.PAYROLL_FEDERAL_PAYABLE: AccountType.LIABILITY,
+    SystemRole.PAYROLL_GA_WH_PAYABLE: AccountType.LIABILITY,
+    SystemRole.PAYROLL_FUTA_PAYABLE: AccountType.LIABILITY,
+    SystemRole.PAYROLL_SUTA_PAYABLE: AccountType.LIABILITY,
+    SystemRole.PAYROLL_HEALTH_PAYABLE: AccountType.LIABILITY,
+    SystemRole.PAYROLL_HSA_PAYABLE: AccountType.LIABILITY,
 }
+
+# The accounts payroll runs and tax payments post to.
+PAYROLL_ROLES: tuple[SystemRole, ...] = (
+    SystemRole.PAYROLL_WAGES,
+    SystemRole.PAYROLL_TAX_EXPENSE,
+    SystemRole.PAYROLL_FEDERAL_PAYABLE,
+    SystemRole.PAYROLL_GA_WH_PAYABLE,
+    SystemRole.PAYROLL_FUTA_PAYABLE,
+    SystemRole.PAYROLL_SUTA_PAYABLE,
+    SystemRole.PAYROLL_HEALTH_PAYABLE,
+    SystemRole.PAYROLL_HSA_PAYABLE,
+)
 
 
 # Roles whose rebind waits for in-flight postings and is refused once documents exist.
-FROZEN_ROLES = (SystemRole.ACCOUNTS_RECEIVABLE, SystemRole.DUE_TO_OWNER)
+FROZEN_ROLES = (SystemRole.ACCOUNTS_RECEIVABLE, SystemRole.DUE_TO_OWNER, *PAYROLL_ROLES)
 
 
 def utcnow_naive() -> datetime:
@@ -341,8 +361,15 @@ class AccountService:
             if role == SystemRole.DUE_TO_OWNER and self._owner_activity():
                 raise InvalidAccountError(
                     message=(
-                        "Due to Owner cannot change after owner-paid expenses or "
-                        "reimbursements have been recorded"
+                        "Due to Owner cannot change after owner-paid expenses, reimbursements "
+                        "or payroll runs paid to it have been recorded"
+                    )
+                )
+            if role in PAYROLL_ROLES and self._payroll_activity():
+                raise InvalidAccountError(
+                    message=(
+                        f"Payroll role {role.value} cannot change after payroll runs have been "
+                        "approved or tax payments recorded"
                     )
                 )
         before = {"account_id": current.id if current else None}
@@ -381,16 +408,35 @@ class AccountService:
         return self.session.exec(stmt.limit(1)).first() is not None
 
     def _owner_activity(self) -> bool:
-        """Any owner-paid expense (voided included) or any reimbursement exists."""
-        # Imported here: the expenses package depends on the ledger, not the reverse.
+        """Any owner-paid expense (voided included), reimbursement, or owner-funded payroll run."""
+        # Imported here: the expenses and payroll_run packages depend on the ledger, not the reverse.
         from payroll.expenses.models import Expense, Reimbursement
+        from payroll.payroll_run.models import PayrollRun
 
         if (
             self.session.exec(select(Expense.id).where(Expense.source == "owner").limit(1)).first()
             is not None
         ):
             return True
-        return self.session.exec(select(Reimbursement.id).limit(1)).first() is not None
+        if self.session.exec(select(Reimbursement.id).limit(1)).first() is not None:
+            return True
+        # An owner-source run finds its net-pay account through the role, so the role must hold.
+        run = select(PayrollRun.id).where(
+            PayrollRun.net_pay_source == "owner",
+            col(PayrollRun.status).in_(["approved", "void"]),
+        )
+        return self.session.exec(run.limit(1)).first() is not None
+
+    def _payroll_activity(self) -> bool:
+        """Any approved or void payroll run (drafts and imports excluded) or any tax payment."""
+        # Imported here: the payroll_run package depends on the ledger, not the reverse.
+        from payroll.payroll_run.ledger_models import TaxPayment
+        from payroll.payroll_run.models import PayrollRun
+
+        run = select(PayrollRun.id).where(col(PayrollRun.status).in_(["approved", "void"]))
+        if self.session.exec(run.limit(1)).first() is not None:
+            return True
+        return self.session.exec(select(TaxPayment.id).limit(1)).first() is not None
 
     def _check_parent(self, account: Account | None, parent_id: int, new_type: AccountType) -> None:
         parent = self.get(parent_id)

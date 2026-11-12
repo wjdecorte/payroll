@@ -97,7 +97,8 @@ async def get_payroll_run(
 @router.delete(
     "/runs/{run_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a saved payroll run",
+    summary="Delete a draft payroll run",
+    description="Only a draft can be deleted; approved, void and imported runs are kept (409).",
 )
 async def delete_payroll_run(
     run_id: int,

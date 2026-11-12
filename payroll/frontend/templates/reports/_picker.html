@@ -38,6 +38,12 @@
     <input class="form-control" type="date" id="date_to" name="date_to" value="{{ picker.date_to }}">
   </div>
   {% endif %}
+  {% if picker.liability %}
+  <div class="col-auto">
+    <label class="form-label" for="as_of">As of</label>
+    <input class="form-control" type="date" id="as_of" name="as_of" value="{{ picker.as_of }}">
+  </div>
+  {% endif %}
   {% if picker.accounts %}
   <div class="col-auto">
     <label class="form-label" for="account">Account</label>

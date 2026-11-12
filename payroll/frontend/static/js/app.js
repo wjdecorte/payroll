@@ -31,6 +31,19 @@
     }
   });
 
+  // Forms marked data-swap-errors (Approve and Void on the run panel) answer a refusal with
+  // a 409 or 422 panel that carries the message and the typed values, and a run that is gone
+  // with a 404 error partial; HTMX skips 4xx responses by default, so tell it to swap these
+  // in. A 403 is not swapped: it comes from the auth dependency as JSON, not as a partial.
+  document.addEventListener('htmx:beforeSwap', function (event) {
+    const status = event.detail.xhr.status;
+    const source = event.detail.requestConfig && event.detail.requestConfig.elt;
+    if ((status === 404 || status === 409 || status === 422) && source && source.hasAttribute('data-swap-errors')) {
+      event.detail.shouldSwap = true;
+      event.detail.isError = false;
+    }
+  });
+
   // [data-stop-propagation]: keep a click on e.g. a row's delete button from also
   // triggering the row's own hx-get. This must be a listener on the element itself
   // (a document-level listener runs after the row's), so attach it on every load.

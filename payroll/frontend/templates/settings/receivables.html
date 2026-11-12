@@ -5,6 +5,8 @@
 <div class="container-xl py-3">
   {% set tab = "" %}
   {% include "receivables/_tabs.html" %}
+  {% set settings_tab = "receivables" %}
+  {% include "settings/_tabs.html" %}
   {% if saved %}<div class="alert alert-success py-2" role="status">{{ saved }}</div>{% endif %}
   <div class="row g-3">
     <div class="col-lg-5">

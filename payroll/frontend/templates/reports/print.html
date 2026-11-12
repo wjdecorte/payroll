@@ -130,6 +130,23 @@ Open expenses I paid personally: {{ owner.open_expense_total | currency }}.
     {% endfor %}
   </tbody>
 </table>
+{% elif liability %}
+<p class="sub">As of {{ liability.as_of }}</p>
+{% for a in liability.agencies %}
+<h2>{{ a.label }}</h2>
+<p>Ledger balance {{ a.balance | currency }}. {% if a.next_due %}Next due {{ a.next_due }}.{% else %}Nothing due.{% endif %}</p>
+<table>
+  <thead><tr><th>Pay period</th><th>Due date</th><th class="num">Liability</th><th class="num">Paid</th><th class="num">Unpaid</th><th>Overdue</th></tr></thead>
+  <tbody>
+    {% for p in a.periods %}
+    <tr><td>{{ p.pay_period }}</td><td>{{ p.due_date }}</td><td class="num">{{ p.liability | currency }}</td><td class="num">{{ p.paid | currency }}</td><td class="num">{{ p.unpaid | currency }}</td><td{% if p.overdue %} class="bad"{% endif %}>{{ "Overdue" if p.overdue else "" }}</td></tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No pay periods.</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><td colspan="4">Other (not explained by pay periods)</td><td class="num">{{ a.other | currency }}</td><td></td></tr></tfoot>
+</table>
+{% endfor %}
 {% elif ledger %}
 <p class="sub">{{ ledger.start }} to {{ ledger.end }}</p>
 {% for reg in ledger.accounts %}

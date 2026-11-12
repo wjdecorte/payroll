@@ -1,0 +1,139 @@
+{# _run_lifecycle.html — ledger preview, Approve and Void for a saved run #}
+{# Context vars: result (dict), run (PayrollRun), preview (list|None), preview_error (str|None),
+   banks (list of accounts), form (dict of typed values), error (str|None),
+   default_pay_date, default_void_date, current_user #}
+
+{% from "partials/_macros.html" import status_badge %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+{% set status = result.status %}
+
+<div class="card" id="run-lifecycle">
+  <div class="card-header bg-dark d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-journal-check me-2"></i>Ledger · Run #{{ result.id }}</span>
+    {{ status_badge(status) }}
+  </div>
+  <div class="card-body">
+
+    {% if error %}
+    <div class="alert alert-danger py-2" role="alert" style="font-size:.85rem">{{ error }}</div>
+    {% endif %}
+
+    {% if status == "imported" %}
+    <p class="mb-0 text-muted" style="font-size:.85rem">
+      This run was imported from before the ledger. It is history only and is never posted.
+    </p>
+    {% else %}
+
+    {% if status == "approved" or status == "void" %}
+    <div class="mb-2" style="font-size:.85rem">
+      Paid {{ result.payDate }}.
+      {% if result.entryId %}
+      <a href="/journal/{{ result.entryId }}">Journal entry #{{ result.entryId }}</a>
+      {% endif %}
+      {% if status == "void" and run.void_entry_id %}
+      · Voided {{ run.void_date.isoformat() }}:
+      <a href="/journal/{{ run.void_entry_id }}">reversing entry #{{ run.void_entry_id }}</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="section-label">{{ "Ledger preview" if status == "draft" else "Posted entry" }}</div>
+    {% if preview_error %}
+    <div class="alert alert-warning py-2" style="font-size:.85rem">{{ preview_error }}</div>
+    {% elif preview %}
+    <table class="je-table">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Memo</th>
+          <th class="r" style="width:8rem">Debit</th>
+          <th class="r" style="width:8rem">Credit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in preview %}
+        <tr class="{{ 'dr-row' if line.debit | nonzero else 'cr-row' }}">
+          <td class="account">{{ line.account_label }}</td>
+          <td>{{ line.memo or '' }}</td>
+          <td class="r">{{ line.debit | currency if line.debit | nonzero else '—' }}</td>
+          <td class="r">{{ line.credit | currency if line.credit | nonzero else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if is_owner and status == "draft" %}
+    <form class="mt-3 no-print" id="approve-run-form"
+          hx-post="/htmx/runs/{{ result.id }}/approve"
+          hx-target="#results-panel"
+          hx-swap="innerHTML"
+          data-swap-errors>
+      <div class="section-label">Approve and post to the ledger</div>
+      <div class="row g-2 mb-2">
+        <div class="col-sm-4">
+          <label class="form-label" for="approve-pay-date">Pay date</label>
+          <input type="date" class="form-control" id="approve-pay-date" name="pay_date"
+                 value="{{ form.pay_date if form and form.pay_date is not none else default_pay_date }}" required>
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label" for="approve-source">Net pay goes to</label>
+          {% set source = form.net_pay_source if form else "account" %}
+          <select class="form-select" id="approve-source" name="net_pay_source">
+            <option value="account" {{ 'selected' if source != "owner" else '' }}>A bank account</option>
+            <option value="owner" {{ 'selected' if source == "owner" else '' }}>Due to Owner</option>
+          </select>
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label" for="approve-bank">Bank account</label>
+          <select class="form-select" id="approve-bank" name="net_pay_account_id">
+            <option value="">Choose account</option>
+            {% for account in banks %}
+            <option value="{{ account.id }}" {{ 'selected' if form and form.net_pay_account_id == (account.id | string) else '' }}>{{ account.number ~ ' ' if account.number else '' }}{{ account.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="tax-note mb-2">
+        An earlier run of the year that is still a draft, or whose year-to-date start is out of
+        date, blocks approval. Approving freezes the run's figures.
+      </div>
+      <button type="submit" class="btn btn-sm btn-success">
+        <i class="bi bi-check2-circle me-1"></i>Approve and post
+      </button>
+    </form>
+    {% endif %}
+
+    {% if is_owner and status == "approved" %}
+    <form class="mt-3 no-print" id="void-run-form"
+          hx-post="/htmx/runs/{{ result.id }}/void"
+          hx-target="#results-panel"
+          hx-swap="innerHTML"
+          hx-confirm="Void the payroll run for {{ result.payPeriod }}? This posts a reversing entry."
+          data-swap-errors>
+      <div class="section-label">Void this run</div>
+      <div class="row g-2 mb-2">
+        <div class="col-sm-4">
+          <label class="form-label" for="void-date">Void date</label>
+          <input type="date" class="form-control" id="void-date" name="void_date"
+                 value="{{ form.void_date if form and form.void_date is not none else default_void_date }}" required>
+        </div>
+        <div class="col-sm-8">
+          <label class="form-label" for="void-memo">Memo <span class="fw-normal text-muted">(optional)</span></label>
+          <input type="text" class="form-control" id="void-memo" name="memo" maxlength="500"
+                 value="{{ form.memo if form and form.memo is not none else '' }}">
+        </div>
+      </div>
+      <div class="tax-note mb-2">
+        A run cannot be voided while a later run of the year is approved (void in reverse
+        order) or a draft (delete it first). Once voided, the period can be saved again.
+      </div>
+      <button type="submit" class="btn btn-sm btn-outline-danger">
+        <i class="bi bi-x-octagon me-1"></i>Void run
+      </button>
+    </form>
+    {% endif %}
+
+    {% endif %}
+  </div>
+</div>

@@ -46,7 +46,10 @@ posts about forty balanced 2026 entries (with reversals and a void) and a set of
 (four customers, three items, invoices that are open, partial, paid, overdue and void,
 payments, one overpayment, a deposit and a refund) so every report and the aging page have
 something to show. It refuses to run when any journal entry exists unless `--force`, and
-even then only adds: never run it against real books.
+even then only adds: never run it against real books. It also adds demo expenses and, from 2.4.0, a
+year of payroll saved and approved through the real services (twelve runs, one paid to Due to Owner and
+settled by a journal, March voided and approved again, and tax payments). The demo year still carries its
+older manual "Owner payroll" journal entries, so the demo Profit and Loss shows wage expense from both.
 
 ## Receivables (M2): customers to deposits
 
@@ -103,6 +106,34 @@ which must be a mounted volume in production and part of your backups. Before th
 owner-paid expense, bind **Due to Owner** in Settings > Ledger (frozen after first use). Bank
 reconciliation is not part of this release. See [docs/RUNBOOK.md](docs/RUNBOOK.md)
 ("Upgrading to v2.3.0").
+
+## Payroll to the ledger (M4): runs, tax payments, liabilities
+
+Release 2.4.0 makes the payroll calculator post to the ledger. Only the owner can create or change
+anything; accountants and viewers read every page and report.
+
+| Page | Purpose |
+|------|---------|
+| `/` | The calculator. Save creates a **draft**; the run's panel shows the ledger entry Approve would post, an Approve form (pay date, net pay from a bank account or to Due to Owner) and, once approved, a link to the entry and a Void form. The QuickBooks entries and CSV are unchanged. |
+| `/payroll/tax-payments` | Record money paid to IRS (941), IRS (FUTA), Georgia DOR or Georgia DOL from a bank account; void |
+| `/reports/payroll-liability` | Per agency: ledger balance, unpaid amount by pay period with due dates (payments settle an opening amount, journaled by hand before the first run, first), and an Other line; CSV (columns Agency, Row, Pay period, Due date, Liability, Paid, Unpaid, Overdue) and PDF |
+| `/settings/payroll` | FUTA and SUTA rates (typed as percentages) and wage bases for the tax year, and the deposit due-date rules |
+
+A run is `draft`, `approved`, `void` or `imported` (runs saved before 2.4.0: kept for history, never
+posted, cannot be deleted). Only a draft can be deleted. Approving posts one balanced entry and the run's
+figures never change afterwards; voiding posts the reversal. FUTA and SUTA are calculated when the run is
+saved, so enter the year's rates in Settings > Payroll first. Only the engine's tax year (2026)
+can be saved. The year-to-date wages must chain: a run cannot be saved before a later non-void run,
+approved after an earlier draft, approved when it starts at a different year-to-date figure than the run just before it ends at
+(only if that run is approved; after an imported run any start is accepted), deleted (a draft) or
+voided while any later non-void run (imported included) exists. Eight payroll roles (for example `payroll_ga_wh_payable`) point the postings at your
+accounts in Settings > Ledger; they are frozen once any run is approved or void or any tax payment exists. Due to Owner is also
+frozen once a run has paid net pay to it.
+
+Known limitation: when net pay is posted to Due to Owner, the Owner page shows a difference equal to the
+unpaid net pay until you settle it, and for now the only way is a manual journal (Dr Due to Owner / Cr
+bank). The QuickBooks account names in the payroll config stay until M7. See
+[docs/RUNBOOK.md](docs/RUNBOOK.md) ("Upgrading to v2.4.0").
 
 ## Authentication and roles
 
@@ -216,8 +247,9 @@ payroll/
 │   ├── reports/             Trial balance, P&L, balance sheet, GL, journal; CSV/PDF export
 │   ├── tax/                 Pure calculation engine (no I/O)
 │   │   ├── constants.py     ← Update tax rates here each January
-│   │   └── engine.py        calc_payroll() — all withholding math
-│   ├── payroll_run/         Payroll domain (models, schemas, service, API routes)
+│   │   ├── engine.py        calc_payroll() — all withholding math
+│   │   └── unemployment.py  calc_unemployment() — FUTA and SUTA
+│   ├── payroll_run/         Payroll domain (models, schemas, services, API routes, run posting, tax payments, liability report)
 │   ├── migrations/          Alembic runner and versions
 │   ├── exceptions.py, logger_conf.py, gunicorn_config.py
 ├── tests/                   pytest suite (needs Postgres)
@@ -236,7 +268,7 @@ payroll/
 | `POST` | `/payroll/api/v1/payroll/runs/calculate` | Calculate payroll + get journal entries |
 | `GET` | `/payroll/api/v1/payroll/runs` | List saved payroll history |
 | `GET` | `/payroll/api/v1/payroll/runs/{id}` | Get a saved run with full journal entries |
-| `DELETE` | `/payroll/api/v1/payroll/runs/{id}` | Delete a saved run (owner) |
+| `DELETE` | `/payroll/api/v1/payroll/runs/{id}` | Delete a draft run (owner); approved, void and imported runs are refused (409) |
 | `GET` | `/payroll/api/v1/payroll/tax-constants` | View current tax year rates |
 | `GET` | `/payroll/api/v1/healthcheck` | Health check (public) |
 | `GET` `POST` `PATCH` | `/payroll/api/v1/ledger/accounts[...]` | Chart of accounts (writes: owner) |

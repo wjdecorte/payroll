@@ -208,8 +208,10 @@ def test_seed_default_chart_skips_inactive_rows(session, owner_user):
     svc = AccountService(session)
     seed_default_chart(session, actor=owner_user)
     wages = next(n.account for n in svc.tree() if n.full_name == "Payroll Expenses:Wages")
+    svc.bind_role(SystemRole.PAYROLL_WAGES, None, actor=owner_user)  # a role holder stays active
     svc.set_active(wages.id, False, actor=owner_user)
     assert seed_default_chart(session, actor=owner_user) == 0  # exists, even inactive
+    assert svc.account_by_role(SystemRole.PAYROLL_WAGES) is None  # and is not bound again
 
 
 def test_tree_orders_children_under_parent(session, chart):
