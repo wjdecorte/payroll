@@ -265,3 +265,12 @@ Where the build differs from the text above. The code is the reference; the desi
 - Known limitation, not in the design: when net pay is posted to Due to Owner, the Owner report shows a
   difference equal to the unpaid net pay until it is settled, and the only way to settle it is a manual
   journal (Dr Due to Owner / Cr bank). No settlement document exists; it is a follow-up.
+- Section 6 and 11.4 (amended approve rule, controller ruling P11): approval enforces that a run's
+  year-to-date start equals the previous run's end only when that run is approved; after an imported run
+  any start is accepted, because imported rows can never be edited or deleted. Only a pay period in the
+  engine's tax year can be saved, and the save, approve and void rules consider only pay periods of that
+  year (`pay_period LIKE 'YYYY-%'`), so a stray imported row of another year takes no part.
+- Section 8 (liability report, controller ruling P12): an opening bucket per agency, the net credit on the
+  payable account as of the date (floored at zero) from entries whose source is neither a payroll run nor
+  a tax payment, comes before the first period. Payments settle it first, then the periods oldest first;
+  its unpaid remainder is part of Other, so `balance = sum(unpaid) + other` still holds.

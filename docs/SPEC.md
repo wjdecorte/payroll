@@ -175,7 +175,7 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    refund is recorded with a manual journal.
 4. **Vendor or free-text payee.** Each expense has exactly one of a vendor or a payee text.
 5. **The Due to Owner role is frozen** once any owner-source expense or reimbursement exists
-   (voided ones included), like the A/R rule. Posting an owner-source expense with the role
+   (voided ones included), or an approved or void payroll run paid net pay to it (M4), like the A/R rule. Posting an owner-source expense with the role
    unbound is refused.
 6. **A reimbursement is paid from an asset account only** (not a credit card or other liability).
 7. **Transfers are in M3.** A transfer moves an amount between two different asset or liability
@@ -211,17 +211,21 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
 
 1. **Run states.** `draft`, `approved`, `void` and `imported`. Saving a run creates a draft; only a
    draft can be deleted. A run saved before M4 is `imported`: it keeps its figures, is never posted,
-   cannot be deleted, and still counts in the year-to-date wage chain. The database refuses any change
+   cannot be deleted, and still counts in the year-to-date wage chain (as a starting point, see 3). The database refuses any change
    to a non-draft run except approved to void.
 2. **Approval posts once.** Approving takes a pay date (not before the first day of the pay period),
    and net pay from a bank account or Due to Owner, and posts one entry dated the pay date. The stored
    figures are never recalculated. Voiding takes a date on or after the pay date and after the lock,
    and posts the reversal. Zero lines are dropped.
-3. **Year-to-date chain.** One non-void run per pay period (a void run frees its period). A run cannot
-   be saved while a later-period non-void run exists in the tax year. It cannot be approved while an
-   earlier run of the year is a draft, or when its year-to-date start differs from the previous non-void
-   run's end (delete it and save it again). It cannot be voided while any later non-void run of the
-   year exists (void later approved runs first and delete a later draft).
+3. **Year-to-date chain.** One non-void run per pay period (a void run frees its period). Only a pay
+   period in the engine's tax year can be saved (an unsaved calculation is unaffected), and only pay
+   periods of that year take part in these rules. A run cannot be saved while a later-period non-void
+   run exists in the tax year. It cannot be approved while an earlier run of the year is a draft, or
+   when its year-to-date start differs from the end of the previous non-void run **and that run is
+   approved** (delete it and save it again); after an imported run any start is accepted, because an
+   imported run can never be edited or deleted. It cannot be voided while any later non-void run of
+   the year exists (void later approved runs first and delete a later draft); a later imported run
+   blocks the void too, and that cannot be undone.
 4. **FUTA and SUTA** are calculated at save from the run's FICA wages and the year-to-date wages, with
    the rates and wage bases in Settings > Payroll, and stored on the run. Rates are entered as
    percentages. Only the tax engine's year (`TAX_YEAR`) is read; saving a run is refused until that
@@ -230,7 +234,7 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    `payroll_federal_payable`, `payroll_ga_wh_payable`, `payroll_futa_payable`, `payroll_suta_payable`,
    `payroll_health_payable`, `payroll_hsa_payable`). One federal payable account holds withholding,
    Social Security and Medicare. The roles are frozen once any run is approved or void or any tax
-   payment exists. Approving with a role unbound is refused and names the role.
+   payment exists; Due to Owner is also frozen once an approved or void run paid net pay to it. Approving with a role unbound is refused and names the role.
 6. **Paying the insurer and funding the HSA** are M3 transfers (or an expense when the premium is paid
    directly), not part of a run.
 7. **Net pay to Due to Owner (known limitation).** The Owner page and the Owner reimbursement report
@@ -268,8 +272,8 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    and posts Dr the agency's payable account (`payroll_federal_payable`, `payroll_futa_payable`,
    `payroll_ga_wh_payable`, `payroll_suta_payable`) / Cr the bank. The bank account is an asset or
    liability account that is not bound to a payroll role or to A/R, Undeposited Funds or Due to Owner.
-2. **Payments are not tied to a period.** The liability report applies the payments to the oldest
-   period first; nothing is stored. An amount above the balance is an overpayment (a negative
+2. **Payments are not tied to a period.** The liability report applies the payments to an opening
+   amount first (see 5), then to the oldest period first; nothing is stored. An amount above the balance is an overpayment (a negative
    balance). Penalties and interest are ordinary expenses.
 3. **Payments are voided** with a date on or after the payment date and after the lock.
 4. **Deposit due dates** are one set of rules (table `payroll_deposit_rules`), not per tax year, with a
@@ -278,8 +282,15 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    quarter). Semiweekly schedules are not supported.
 5. **Liability report.** Per agency: the ledger balance of the payable account, the unpaid amount of each
    pay period, the next due date, and an Other line (the balance not explained by the periods) that is
-   always shown and never aged. A run or tax payment voided after the as-of date still counts as of
-   that date. Periods with no liability for an agency are not listed. CSV and PDF are available.
+   always shown and never aged. Before the first period sits an opening amount: the net credit on the
+   payable account, as of the date and never below zero, from entries that are neither payroll runs
+   nor tax payments (a pre-upgrade liability journaled by hand, an opening balance). Payments settle it
+   first, so a payment for a month before the upgrade does not settle the first approved period (only
+   if that month's liability was journaled into the ledger, otherwise the payment goes to the oldest
+   approved period); its unpaid remainder is part of Other. A run or tax payment voided after the
+   as-of date still counts as of that date. Periods with no liability for an agency are not listed.
+   CSV (columns Agency, Row, Pay period, Due date, Liability, Paid, Unpaid, Overdue) and PDF are
+   available.
 6. **Drill-down.** A payroll run entry opens `/?run={id}`; a tax payment entry opens
    `/payroll/tax-payments/{id}`.
 

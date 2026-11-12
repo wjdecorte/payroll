@@ -241,9 +241,10 @@ pay date; draft and imported runs carry none of these; FUTA and SUTA figures are
 unique index allows one non-void run per `pay_period`. A trigger refuses any UPDATE of a non-draft run
 except approved to void (status, void fields, `modify_date`) and any DELETE of a non-draft run. Existing
 runs were set to `imported` by the migration. The downgrade refuses once any run is approved or void or
-any tax payment exists.
+any tax payment exists; otherwise it also unbinds the eight payroll roles.
 
-New `SystemRole` values, frozen once any run is approved or void or any tax payment exists:
+New `SystemRole` values, frozen once any run is approved or void or any tax payment exists (Due to Owner
+is also frozen by an approved or void run whose net pay source is the owner):
 `payroll_wages` and `payroll_tax_expense` (expense), and `payroll_federal_payable`,
 `payroll_ga_wh_payable`, `payroll_futa_payable`, `payroll_suta_payable`, `payroll_health_payable` and
 `payroll_hsa_payable` (liability). The default chart binds them to Wages, Taxes, Federal Taxes
@@ -265,8 +266,10 @@ tax_payment     id, payment_date, agency (irs_941|irs_futa|ga_dor|ga_dol), bank_
 A payment posts Dr the agency's payable account / Cr the bank (`payroll_federal_payable`,
 `payroll_futa_payable`, `payroll_ga_wh_payable`, `payroll_suta_payable`). The liability per agency is
 derived, not stored (`payroll_run/liability.py`): the ledger balance of the payable account, the
-approved runs' liability by pay period with the payments applied oldest first, and an Other line for the
-rest of the balance. Return snapshots (`return_snapshot`) are still planned for M5.
+approved runs' liability by pay period, and an Other line for the rest of the balance. Payments are
+applied to an opening bucket first (the net credit on the payable from entries that are neither
+payroll runs nor tax payments, floored at zero), then to the periods oldest first; the unpaid
+remainder of the opening bucket is part of Other. Return snapshots (`return_snapshot`) are still planned for M5.
 
 ### 4.6 Auth
 
@@ -308,9 +311,11 @@ config are kept as they were until M7.
 `tax/engine.py` stays a pure function (no I/O) — converted to `Decimal`.
 YTD figures (SS wage base tracking) come from approved runs for the employee
 instead of the manually typed `ytd_fica_before`, removing a manual-entry error.
-In M4 (v2.4.0) the run's `use_previous_ytd_fica` option reads the latest earlier non-void run
-of the same tax year (draft, approved or imported), and approval requires the stored start to match
-that run's end (see the run rules in the RUNBOOK, "Upgrading to v2.4.0").
+In M4 (v2.4.0) only a pay period in the engine's tax year can be saved. The run's
+`use_previous_ytd_fica` option reads the latest earlier non-void run of the same calendar year (draft,
+approved or imported), and approval requires the stored start to match that run's end only when that
+run is approved: an imported run cannot be edited or deleted, so its end is a manual starting point
+and any start is accepted (see the run rules in the RUNBOOK, "Upgrading to v2.4.0").
 
 ### 6.2 Versioned tax constants
 `tax/constants_2026.py`, `constants_2027.py`, … selected by the run's tax year,

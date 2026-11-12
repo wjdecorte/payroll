@@ -76,7 +76,9 @@ step 1).
 
 **The downgrade is refused** while any run is approved or void (or has a journal entry) or any tax
 payment exists, because dropping the columns would destroy the links to the ledger. Rolling back after
-real use means restoring the `pg_dump` taken below and pinning the previous image tag.
+real use means restoring the `pg_dump` taken below and pinning the previous image tag. A permitted
+downgrade (only drafts and imported runs) also unbinds the eight payroll roles, which the earlier
+release does not know.
 
 1. **Check for duplicate pay periods first.** The migration adds a unique index that allows one
    non-void run per pay period. The old app refused a second run for a period, but the column was
@@ -90,22 +92,41 @@ real use means restoring the `pg_dump` taken below and pinning the previous imag
    release (Payroll history, delete), keeping the one that matches what you entered in QBO, and check
    that the later runs' year-to-date wages still follow from it. Run the query again until it returns
    no rows.
-2. **Before merging or pushing to `master`, stop Watchtower** (it would pull the image as soon
+2. **List runs for future months or other years, and delete them in the old release.** Only the
+   tax year the app calculates (2026) can be saved from now on, and every run saved before the
+   upgrade becomes imported, which can never be edited or deleted; an imported run for a month that
+   has not happened yet, or for another year, would stay in the history for good and would block
+   saving or voiding later months. Run:
+   ```bash
+   docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c \
+     "SELECT id, pay_period FROM payroll_run WHERE pay_period > to_char(now(), 'YYYY-MM') OR pay_period NOT LIKE '2026-%' ORDER BY pay_period"
+   ```
+   No rows means nothing to do. Delete each listed run in the current release (Payroll history,
+   delete) before upgrading.
+3. **A payment for a pre-upgrade month is only reported correctly if that month's liability was
+   journaled into the ledger first.** The liability report counts, per agency, an opening amount: what
+   the payable account holds from entries that are not payroll runs or tax payments (a manual journal
+   or an opening balance). Tax payments settle that opening amount first and the approved periods
+   after. If the month's liability was never credited to the payable account (the runs saved before
+   the upgrade are imported and post nothing), a payment you record for it is applied to the oldest
+   approved period instead. Journal it first (Dr the expense, Cr the payable, dated in that month)
+   when you want the report to be right.
+4. **Before merging or pushing to `master`, stop Watchtower** (it would pull the image as soon
    as the build finishes): `docker compose -f compose.synology.yml stop watchtower`
-3. **Back up the database:**
+5. **Back up the database:**
    ```bash
    docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_4_$(date +%F).dump
    ```
-4. Merge/push, and let the image build (tests must pass first).
-5. Pull and start:
+6. Merge/push, and let the image build (tests must pass first).
+7. Pull and start:
    ```bash
    docker compose -f compose.synology.yml pull
    docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
    ```
-6. **Verify:** `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+8. **Verify:** `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
    prints `e5f1b3c9d7a2`, and
    `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
-7. **Start Watchtower again:** `docker compose -f compose.synology.yml start watchtower`
+9. **Start Watchtower again:** `docker compose -f compose.synology.yml start watchtower`
 
 First use, as the owner, before saving the next run:
 
@@ -115,7 +136,8 @@ First use, as the owner, before saving the next run:
    `payroll_suta_payable`, `payroll_health_payable` and `payroll_hsa_payable`. Approving a run with a
    role unbound is refused and names the role. The roles are **frozen** once any run is approved or
    void or any tax payment exists (drafts and imported runs do not count), so confirm the accounts
-   first.
+   first. **Due to Owner** is also frozen once an approved or void run has paid net pay to it, because
+   that run finds its account through the role.
 2. **Enter the FUTA and SUTA rates and wage bases** in Settings > Payroll. The page opens on the tax
    engine's year (2026), which is the only year the run service reads, and starts empty. Rates are
    typed as percentages (0.6 for 0.6%). **Saving a run is refused until that year's settings exist.**
@@ -129,14 +151,20 @@ First use, as the owner, before saving the next run:
    shows the quarterly date regardless. The dates only drive "next due" and "overdue" on the
    liability report.
 4. **Run lifecycle.** Saving a run creates a **draft**. On the run's panel the owner approves it (a pay
-   date, and net pay from a bank account or to Due to Owner), which posts one journal entry dated the
+   date, which cannot be before the first day of the pay period, and net pay from a bank account or
+   to Due to Owner), which posts one journal entry dated the
    pay date, or voids an approved run, which posts the reversal. Only a draft can be deleted; approved,
    void and imported runs are kept. These rules keep the year-to-date wages consistent:
+   - Only a pay period in the tax year the app calculates (2026) can be saved; another year is
+     refused. A calculation that is not saved works for any year.
    - A run cannot be saved while a later-period run that is not void exists in the same tax year.
    - A run cannot be approved while an earlier run of the year is still a draft, or when its
-     year-to-date start differs from the previous non-void run's end (delete it and save it again).
+     year-to-date start differs from the end of the previous run if that run is **approved** (delete
+     it and save it again). When the previous run is **imported**, any year-to-date start is accepted:
+     an imported run cannot be edited or deleted, so its end figure is only a starting point.
    - A run cannot be voided while **any** later non-void run of the year exists: void later approved
-     runs first, and delete a later draft (a later draft blocks the void too).
+     runs first, and delete a later draft (a later draft blocks the void too). A later **imported**
+     run blocks it as well, and that cannot be undone, because an imported run can never be deleted.
    - A void run frees its pay period; the same month can be saved and approved again.
 5. **Tax payments** (`/payroll/tax-payments`) record money paid to IRS (941), IRS (FUTA), Georgia DOR
    or Georgia DOL: Dr the agency's payable account, Cr the bank. The bank account cannot be one bound
@@ -145,9 +173,14 @@ First use, as the owner, before saving the next run:
 6. **Payroll liability report** (`/reports/payroll-liability`, with CSV and PDF): per agency, the
    ledger balance of the payable account, each pay period's liability, paid and unpaid amounts with
    its due date, and an **Other** line for whatever the periods do not explain (an opening balance, a
-   manual journal, an overpayment). Payments are applied to the oldest period first. A run or tax
-   payment voided after the as-of date still counts as of that date; periods with no liability for an
-   agency are not listed; the Other line is always shown.
+   manual journal, an overpayment). Before the first period sits an **opening amount**: the net credit
+   on the payable account from entries that are neither payroll runs nor tax payments, as of the
+   date. Payments settle the opening amount first, then the periods oldest first; what is left of the
+   opening amount stays in the Other line. A run or tax payment voided after the as-of date still
+   counts as of that date; periods with no liability for an agency are not listed; the Other line is
+   always shown. The CSV has one row per line with the columns Agency, Row (Balance, Period, Other or
+   Next due), Pay period, Due date, Liability, Paid, Unpaid and Overdue: the balance is in Liability,
+   Other in Unpaid (so the Unpaid column adds up to the balance) and the next due date in Due date.
 7. Paying the health insurer and funding the HSA are not part of a run: record them with a Transfer
    from the bank to the health payable or HSA payable account, or as an expense when the premium is
    paid directly.
@@ -222,7 +255,8 @@ First use, as the owner:
    liability account. The default chart (`seed-chart`) already binds it; a chart imported from QBO
    does not, so bind it yourself. Posting an owner-paid expense with the role unbound is refused
    with a message telling you to bind it. The role is **frozen** after the first owner-paid
-   expense or reimbursement is recorded (voided ones count), so choose the account first.
+   expense or reimbursement is recorded (voided ones count) or a payroll run pays net pay to it
+   (from v2.4.0), so choose the account first.
 2. Add vendors (or type a free-text payee on each expense), then expenses. Pick **Owner
    (personal card)** as the source for something you paid personally; it credits Due to Owner
    until you reimburse it from the Owner page (whole expenses only, paid from an asset account).
