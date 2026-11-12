@@ -51,7 +51,8 @@ ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
     }
 )
 # the M2 receivables routes added 19, the M3 vendor/expense/transfer/owner routes added 10
-MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 10
+# and the M4 payroll run approve and void routes added 2
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 10 + 2
 # The ledger (M1) mutating routes: all owner-only. The sweep test below checks this
 # list against the app's real routes, so a new ledger route cannot be left out.
 LEDGER = f"{PREFIX}/ledger"
@@ -113,6 +114,11 @@ EXPENSES_UNSAFE_ENDPOINTS = (
     ("POST", "/owner/reimburse"),
     ("POST", "/owner/reimbursements/1/void"),
 )
+# The payroll run lifecycle (M4) page routes: owner-only HTMX posts.
+PAYROLL_RUN_UNSAFE_ENDPOINTS = (
+    ("POST", "/htmx/runs/1/approve"),
+    ("POST", "/htmx/runs/1/void"),
+)
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
 _PATH_PARAM = re.compile(r"\{[^}]+\}")
@@ -135,6 +141,7 @@ HTMX_FORM = {
     "ytd_fica_wages": "0",
 }
 HX = {"HX-Request": "true"}
+APPROVE_FORM = {"pay_date": "2026-01-31", "net_pay_source": "owner"}
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +234,7 @@ def test_every_route_requires_auth(any_app):
         *LEDGER_UNSAFE_ENDPOINTS,
         *RECEIVABLES_UNSAFE_ENDPOINTS,
         *EXPENSES_UNSAFE_ENDPOINTS,
+        *PAYROLL_RUN_UNSAFE_ENDPOINTS,
         *ANONYMOUS_ENDPOINTS,
     ]:
         assert known in endpoints, known
@@ -490,6 +498,37 @@ def test_expense_routes_need_csrf(owner_client, session):
     assert counts()[0] == before[0] + 1
 
 
+def test_payroll_run_route_list_matches_the_app():
+    found = {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS
+        and path.startswith("/htmx/runs/")
+        and path.endswith(("/approve", "/void"))
+    }
+    assert found == set(PAYROLL_RUN_UNSAFE_ENDPOINTS)
+
+
+def test_payroll_run_routes_need_csrf(owner_client, session):
+    """A signed-in owner without the CSRF token is refused (403) and the run is untouched."""
+    from payroll.auth.dependencies import CSRF_HEADER
+
+    run_id = _saved_run_id(owner_client)
+    session.commit()
+    token = owner_client.headers.pop(CSRF_HEADER)
+    audit_before = len(session.exec(select(AuditLog)).all())
+    body = {"pay_date": "2026-01-31", "net_pay_source": "owner", "void_date": "2026-02-01"}
+    for method, path in PAYROLL_RUN_UNSAFE_ENDPOINTS:
+        response = owner_client.request(
+            method, path.replace("/1/", f"/{run_id}/"), data=body, headers=HX
+        )
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json() == {"detail": "CSRF token missing or invalid"}
+    assert session.get(PayrollRun, run_id).status == "draft"
+    assert len(session.exec(select(AuditLog)).all()) == audit_before
+    owner_client.headers[CSRF_HEADER] = token
+
+
 def test_receivables_route_list_matches_the_app():
     assert _receivables_unsafe_routes() == set(RECEIVABLES_UNSAFE_ENDPOINTS)
 
@@ -612,6 +651,8 @@ def test_viewer_cannot_mutate(request, role_client, owner_client, session):
         client.post("/htmx/save-run", data=HTMX_FORM, headers=HX),
         client.delete(f"/htmx/runs/{run_id}", headers=HX),
         client.post("/htmx/increment-journal-no", headers=HX),
+        client.post(f"/htmx/runs/{run_id}/approve", data=APPROVE_FORM, headers=HX),
+        client.post(f"/htmx/runs/{run_id}/void", data={"void_date": "2026-02-01"}, headers=HX),
     ]
     for response in attempts:
         assert response.status_code == 403, (response.request.method, response.request.url)

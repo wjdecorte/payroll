@@ -1,6 +1,7 @@
 {# _results.html — rendered when a calculation succeeds (fresh calc or loaded saved run) #}
 {# Context vars: result (dict), history (list), save_run (bool), next_journal_no (int) #}
 
+{% from "partials/_macros.html" import status_badge %}
 {% set r = result %}
 {% set td = r.taxDetail %}
 
@@ -13,6 +14,7 @@
         <span class="badge bg-success py-1 px-2">
           <i class="bi bi-check-lg me-1"></i>Saved · Run #{{ r.id }}{% if r.notes %} · {{ r.notes }}{% endif %}
         </span>
+        {{ status_badge(r.status) }}
       {% else %}
         <form id="save-run-form"
               hx-post="/htmx/save-run"
@@ -114,6 +116,18 @@
           <span>Medicare (ER 1.45%)</span>
           <span>{{ td.medicareEr | currency }}</span>
         </div>
+        {% if r.futa | nonzero %}
+        <div class="s-row er">
+          <span>Federal Unemployment (FUTA)</span>
+          <span>{{ r.futa | currency }}</span>
+        </div>
+        {% endif %}
+        {% if r.suta | nonzero %}
+        <div class="s-row er">
+          <span>Georgia Unemployment (SUTA)</span>
+          <span>{{ r.suta | currency }}</span>
+        </div>
+        {% endif %}
         <div class="s-row total">
           <span>Total ER Cost</span>
           <span>{{ td.totalEmployerCost | currency }}</span>
@@ -197,6 +211,11 @@
     </div>
   </div>
 </div>
+
+<!-- ── Ledger: preview, approve and void (saved runs only) ───────── -->
+{% if r.id and run %}
+{% include "partials/_run_lifecycle.html" %}
+{% endif %}
 
 <!-- Embed payroll data for client-side QBO CSV generation -->
 <script type="application/json" id="qbo-payroll-data">{{ result | tojson }}</script>

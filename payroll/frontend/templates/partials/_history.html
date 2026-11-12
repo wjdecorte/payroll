@@ -1,6 +1,7 @@
 {# _history.html — list of saved payroll runs #}
 {# Context var: history (list of run dicts) #}
 
+{% from "partials/_macros.html" import status_badge %}
 {% if history %}
 <table class="table table-sm mb-0 history-table">
   <thead class="table-light">
@@ -8,6 +9,7 @@
       <th>Period</th>
       <th class="text-end">Gross</th>
       <th class="text-end">Net Pay</th>
+      <th>Status</th>
       <th class="no-print" style="width:2.5rem"></th>
     </tr>
   </thead>
@@ -25,7 +27,9 @@
       </td>
       <td class="text-end">{{ run.grossSalary | currency }}</td>
       <td class="text-end">{{ run.netPay | currency }}</td>
+      <td>{{ status_badge(run.status) }}</td>
       <td class="text-end no-print">
+        {% if run.status == "draft" %}
         <button class="btn btn-sm btn-outline-danger py-0 px-1"
                 hx-delete="/htmx/runs/{{ run.id }}"
                 hx-target="#history-panel"
@@ -35,6 +39,7 @@
                 data-stop-propagation>
           <i class="bi bi-trash3" style="font-size:.75rem"></i>
         </button>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}
