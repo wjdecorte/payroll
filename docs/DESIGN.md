@@ -59,9 +59,11 @@ payroll/                       (package name kept to avoid churn; can rename lat
 ├── ledger/        accounts, journal entries, lines, posting service, period lock
 ├── receivables/   customers, items, invoices, payments, deposits
 ├── expenses/      expenses, owner-paid flow, attachments
-├── payroll_run/   existing; adds employee, posting, Decimal money
+├── payroll_run/   existing; adds run lifecycle and posting, FUTA/SUTA settings, tax payments,
+│                  liability report (M4); employee still to come
 ├── tax/           existing pure engine; constants versioned per year
-├── payroll_tax/   liabilities by agency, tax payments, returns (941/GA-7M/DOL-4N/940/W-2)
+├── payroll_tax/   returns (941/GA-7M/DOL-4N/940/W-2); planned for M5 (liabilities and tax
+│                  payments were built inside payroll_run in M4)
 ├── reports/       report queries, period presets, CSV/PDF export
 ├── imports/       QBO CSV importers (chart, customers, items, GL by date range,
 │                  payroll history), opening balances, historical backfill
@@ -218,27 +220,53 @@ is set-once (and only to a posted reimbursement); expense lines and attachments 
 Locking order: payment/role rows first (Due to Owner FOR SHARE; `bind_role` takes it FOR UPDATE),
 then document rows by id, then the period lock FOR SHARE, then the per-source entry counter.
 
-### 4.4 Payroll
+### 4.4 Payroll (built in M4, v2.4.0)
+
+Migration `e5f1b3c9d7a2`. The tax engine (`tax/engine.py`) is untouched; FUTA and SUTA come from a
+separate pure function, `calc_unemployment` (`tax/unemployment.py`). There is still no employee table.
 
 ```
-employee        id, name, address, ssn_enc, filing_status, w4_* fields, pay_frequency,
-                is_owner, hire_date, active
-payroll_run     (existing columns, Money→Numeric) + employee_id, status
-                (draft|approved|void), entry_id, approved_at
-payroll_config  (existing) — account name strings replaced by account_id FKs / system roles
-tax_constants   year, key, value / or versioned Python module per year (see 6.2)
+payroll_run     (existing columns) + status (draft|approved|void|imported), pay_date,
+                net_pay_source (account|owner), net_pay_account_id, entry_id, void_entry_id,
+                void_date, futa_wages, futa, suta_wages, suta, suta_rate
+payroll_settings       one row per tax_year: futa_rate, futa_wage_base, suta_rate, suta_wage_base
+payroll_deposit_rules  single row (id = 1): per agency (irs_941, ga_dor, futa, ga_dol) a cadence
+                       (monthly|quarterly) and a due day (1..31, or 0 = last day of the month)
+payroll_config  (existing) — QuickBooks account-name strings, kept for the QBO entries until M7
 ```
 
-### 4.5 Payroll tax
+Integrity is in the database. CHECKs keep `status` and its fields consistent (an approved run has a pay
+date, an entry and a net pay source; a void run also has its reversal entry and a void date not before the
+pay date; draft and imported runs carry none of these; FUTA and SUTA figures are not negative). A partial
+unique index allows one non-void run per `pay_period`. A trigger refuses any UPDATE of a non-draft run
+except approved to void (status, void fields, `modify_date`) and any DELETE of a non-draft run. Existing
+runs were set to `imported` by the migration. The downgrade refuses once any run is approved or void or
+any tax payment exists.
+
+New `SystemRole` values, frozen once any run is approved or void or any tax payment exists:
+`payroll_wages` and `payroll_tax_expense` (expense), and `payroll_federal_payable`,
+`payroll_ga_wh_payable`, `payroll_futa_payable`, `payroll_suta_payable`, `payroll_health_payable` and
+`payroll_hsa_payable` (liability). The default chart binds them to Wages, Taxes, Federal Taxes
+(941/943/944), GA Income Tax, FUTA Payable, GA SUTA Payable, S-Corp Health Insurance and Co. HSA;
+`seed-chart` and the migration bind them on an existing install only when those accounts exist under
+Payroll Expenses or Payroll Liabilities, are active and the role is unbound.
+
+Locking order for approve and void: the eight role accounts FOR SHARE (id order) and the net pay
+account FOR SHARE, then every run of the tax year FOR UPDATE in id order, then the period lock FOR
+SHARE, then the per-source entry counter.
+
+### 4.5 Payroll tax (built in M4, v2.4.0)
 
 ```
-tax_agency        id, name (IRS | GA DOR | GA DOL), kind
-tax_liability     derived view over payroll_run by agency & component
-tax_payment       id, agency_id, period, paid_date, bank_account_id, amount,
-                  entry_id, components JSONB
-return_snapshot   id, form (941|GA-7M|DOL-4N|940|W2), period, generated_at,
-                  data JSONB, source_run_ids   -- frozen copy of what was filed
+tax_payment     id, payment_date, agency (irs_941|irs_futa|ga_dor|ga_dol), bank_account_id,
+                amount (> 0), memo, status (posted|void), entry_id, void_entry_id, void_date
 ```
+
+A payment posts Dr the agency's payable account / Cr the bank (`payroll_federal_payable`,
+`payroll_futa_payable`, `payroll_ga_wh_payable`, `payroll_suta_payable`). The liability per agency is
+derived, not stored (`payroll_run/liability.py`): the ledger balance of the payable account, the
+approved runs' liability by pay period with the payments applied oldest first, and an Other line for the
+rest of the balance. Return snapshots (`return_snapshot`) are still planned for M5.
 
 ### 4.6 Auth
 
@@ -264,15 +292,15 @@ One `PostingService` per source type builds a `JournalEntryDraft` and calls
 | Expense paid from bank/card | Expense account(s) | Bank / Credit card |
 | Expense paid personally by owner | Expense account(s) | Due to Owner |
 | Reimburse owner | Due to Owner | Bank |
-| Payroll run (approved) | Wages (gross); Employer SS, Medicare, FUTA, SUTA expense; Health insurance expense | Federal W/H payable; FICA payable (EE+ER); Medicare payable; GA W/H payable; FUTA/SUTA payable; health premium/HSA payable; Net pay → Bank or Due to Owner |
-| Payroll tax payment | Tax liability account(s) | Bank |
+| Payroll run (approved) | `payroll_wages`: gross + health addback (when health is in income tax) + HSA; `payroll_tax_expense`: employer Social Security and Medicare + FUTA + SUTA | `payroll_federal_payable`: federal withholding + employee and employer Social Security and Medicare; `payroll_ga_wh_payable`: Georgia withholding; `payroll_futa_payable`; `payroll_suta_payable`; `payroll_health_payable`: premium (when in income tax); `payroll_hsa_payable`: HSA; net pay to the chosen bank account or Due to Owner. Zero lines are dropped. |
+| Payroll tax payment | The agency's payable account (one of four roles) | Bank |
 | Opening balances | Each balance-sheet account | Each balance-sheet account; difference to Opening Balance Equity |
 | Year-end close | Income accounts; Retained Earnings | Expense accounts; Retained Earnings |
 
-The payroll row is derived from the existing `calc_payroll()` outputs and the
-journal lines that `payroll_run/services.py` already builds as QBO text lines;
-that builder is rewritten to emit `account_id`-based lines instead of name
-strings (zero-amount lines still omitted).
+The payroll row is built from the run's stored figures by `build_lines` in
+`payroll_run/posting.py`; the service refuses to post (422, nothing written) if the lines do
+not balance. The QuickBooks text-line builder in `payroll_run/services.py` and its account-name
+config are kept as they were until M7.
 
 ## 6. Payroll and returns
 
@@ -280,6 +308,9 @@ strings (zero-amount lines still omitted).
 `tax/engine.py` stays a pure function (no I/O) — converted to `Decimal`.
 YTD figures (SS wage base tracking) come from approved runs for the employee
 instead of the manually typed `ytd_fica_before`, removing a manual-entry error.
+In M4 (v2.4.0) the run's `use_previous_ytd_fica` option reads the latest earlier non-void run
+of the same tax year (draft, approved or imported), and approval requires the stored start to match
+that run's end (see the run rules in the RUNBOOK, "Upgrading to v2.4.0").
 
 ### 6.2 Versioned tax constants
 `tax/constants_2026.py`, `constants_2027.py`, … selected by the run's tax year,

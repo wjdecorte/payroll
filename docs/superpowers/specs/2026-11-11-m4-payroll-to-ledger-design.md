@@ -245,3 +245,23 @@ Must be tested:
 Payroll Summary report and the returns (M5); semiweekly deposits; explicit tax-payment applications; split federal
 payables; removing the QuickBooks account names and CSV export (M7); how approved runs made during the parallel run
 relate to the QBO general-ledger import (M6 design must decide whether to void them before import).
+
+## Build rulings (2026-11-11)
+
+Where the build differs from the text above. The code is the reference; the design text is left as written.
+
+- Section 4 and 8 (deposit rules): the due-date rules are in their own single-row table
+  `payroll_deposit_rules` (migration `e5f1b3c9d7a2`), not on `payroll_settings`, which holds only the
+  per-year FUTA and SUTA rates and wage bases.
+- Section 6 and 11.4 (chain rules): a run cannot be saved while a later-period non-void run exists in the
+  tax year, and cannot be approved when its year-to-date start differs from the previous non-void run's end
+  (delete and save it again). Void is stricter than "no later approved run": it is refused while any later
+  non-void run exists, so a later draft (or imported run) blocks it too.
+- Section 7 (tax payment bank account): the account may be an asset or a liability (a card) account, and it
+  may not be bound to any of the eight payroll roles or to A/R, Undeposited Funds or Due to Owner.
+- Section 8 (liability report): a run or tax payment voided after the as-of date still counts as of that
+  date; periods with no liability for an agency are not listed; the Other line is always shown (zero
+  included); overdue is measured against the as-of date, not today.
+- Known limitation, not in the design: when net pay is posted to Due to Owner, the Owner report shows a
+  difference equal to the unpaid net pay until it is settled, and the only way to settle it is a manual
+  journal (Dr Due to Owner / Cr bank). No settlement document exists; it is a follow-up.

@@ -207,6 +207,41 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
   FICA wages). This is an existing open question in the project note and must
   be settled with the CPA before the W-2 and 941 outputs are trusted.
 
+**Rulings made for M4 (v2.4.0), where this spec was silent:**
+
+1. **Run states.** `draft`, `approved`, `void` and `imported`. Saving a run creates a draft; only a
+   draft can be deleted. A run saved before M4 is `imported`: it keeps its figures, is never posted,
+   cannot be deleted, and still counts in the year-to-date wage chain. The database refuses any change
+   to a non-draft run except approved to void.
+2. **Approval posts once.** Approving takes a pay date (not before the first day of the pay period),
+   and net pay from a bank account or Due to Owner, and posts one entry dated the pay date. The stored
+   figures are never recalculated. Voiding takes a date on or after the pay date and after the lock,
+   and posts the reversal. Zero lines are dropped.
+3. **Year-to-date chain.** One non-void run per pay period (a void run frees its period). A run cannot
+   be saved while a later-period non-void run exists in the tax year. It cannot be approved while an
+   earlier run of the year is a draft, or when its year-to-date start differs from the previous non-void
+   run's end (delete it and save it again). It cannot be voided while any later non-void run of the
+   year exists (void later approved runs first and delete a later draft).
+4. **FUTA and SUTA** are calculated at save from the run's FICA wages and the year-to-date wages, with
+   the rates and wage bases in Settings > Payroll, and stored on the run. Rates are entered as
+   percentages. Only the tax engine's year (`TAX_YEAR`) is read; saving a run is refused until that
+   year's settings exist.
+5. **Payroll roles.** Eight system roles (`payroll_wages`, `payroll_tax_expense`,
+   `payroll_federal_payable`, `payroll_ga_wh_payable`, `payroll_futa_payable`, `payroll_suta_payable`,
+   `payroll_health_payable`, `payroll_hsa_payable`). One federal payable account holds withholding,
+   Social Security and Medicare. The roles are frozen once any run is approved or void or any tax
+   payment exists. Approving with a role unbound is refused and names the role.
+6. **Paying the insurer and funding the HSA** are M3 transfers (or an expense when the premium is paid
+   directly), not part of a run.
+7. **Net pay to Due to Owner (known limitation).** The Owner page and the Owner reimbursement report
+   show a difference equal to the unpaid net pay until it is settled. No settlement document exists
+   yet; the only way today is a manual journal, Dr Due to Owner / Cr bank.
+8. **The QuickBooks account names in `PayrollConfig`** and the QuickBooks entries view and CSV stay
+   until M7.
+9. **Owner-only mutations;** accountants and viewers read every page and report. Approve and void are
+   pages only. The JSON API refuses `DELETE` of a non-draft run (409) and run responses gain `status`,
+   `payDate`, `entryId`, `futa` and `suta`.
+
 ### 4.6 Payroll tax payments and returns
 
 - **Liabilities by agency:** IRS (federal withholding, SS, Medicare, FUTA),
@@ -226,6 +261,33 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
 | DOL-4N | Quarterly | Wages, taxable wages vs. SUTA wage base, SUTA due |
 | 940 | Annual | FUTA wages, credit reduction, deposits |
 | W-2 / W-3 | Annual | Year totals per employee |
+
+**Rulings made for M4 (v2.4.0), where this spec was silent:**
+
+1. **Four agency targets.** A tax payment is made to `irs_941`, `irs_futa`, `ga_dor` or `ga_dol`
+   and posts Dr the agency's payable account (`payroll_federal_payable`, `payroll_futa_payable`,
+   `payroll_ga_wh_payable`, `payroll_suta_payable`) / Cr the bank. The bank account is an asset or
+   liability account that is not bound to a payroll role or to A/R, Undeposited Funds or Due to Owner.
+2. **Payments are not tied to a period.** The liability report applies the payments to the oldest
+   period first; nothing is stored. An amount above the balance is an overpayment (a negative
+   balance). Penalties and interest are ordinary expenses.
+3. **Payments are voided** with a date on or after the payment date and after the lock.
+4. **Deposit due dates** are one set of rules (table `payroll_deposit_rules`), not per tax year, with a
+   cadence and a due day per agency. Defaults: Form 941 and Georgia DOR monthly on day 15 of the
+   following month; FUTA and Georgia DOL quarterly, due day 0 (the last day of the month after the
+   quarter). Semiweekly schedules are not supported.
+5. **Liability report.** Per agency: the ledger balance of the payable account, the unpaid amount of each
+   pay period, the next due date, and an Other line (the balance not explained by the periods) that is
+   always shown and never aged. A run or tax payment voided after the as-of date still counts as of
+   that date. Periods with no liability for an agency are not listed. CSV and PDF are available.
+6. **Drill-down.** A payroll run entry opens `/?run={id}`; a tax payment entry opens
+   `/payroll/tax-payments/{id}`.
+
+**Known follow-ups (not in M4):** the Payroll Summary report and the returns (M5); semiweekly deposits;
+explicit tax-payment applications; split federal payables; a settlement document for net pay owed to the
+owner; removing the QuickBooks account names and CSV export (M7); and how approved runs made during the
+parallel run relate to the QBO general-ledger import (the M6 design must decide whether to void them
+before the import).
 
 ### 4.7 Reports
 
@@ -314,7 +376,7 @@ network.
 | M1 | Ledger & reports | **Done (v2.1.0).** Chart of accounts, manual journals, Trial Balance, Balance Sheet, P&L (all presets and custom), GL, CSV/PDF export. Cash (default) and accrual toggle are in place; figures differ once receivables exist (M2, v2.2.0). |
 | M2 | Receivables | **Done (v2.2.0).** Customers, items, invoices (draft, issue, edit, void, PDF), payments with applications, deposits, customer refunds and credit, A/R aging, cash-basis reports with drill-down. |
 | M3 | Expenses | **Done (v2.3.0).** Vendors, expenses with split lines and receipts, owner-paid expenses and whole-expense reimbursement, transfers, the Owner page, owner reimbursement report with drill-down. |
-| M4 | Payroll to ledger | Existing calculator posts to the ledger; payroll liabilities and tax payments. |
+| M4 | Payroll to ledger | **Done (v2.4.0).** Existing calculator posts to the ledger on approval (draft, approved, void, imported), FUTA and Georgia SUTA calculated and posted, tax payments to four agencies, Payroll Liability report with drill-down, Settings > Payroll. |
 | M5 | Payroll returns | 941, GA-7M, DOL-4N, 940, W-2/W-3 worksheets matching QBO's figures for 2026. |
 | M6 | Import & parallel run | QBO import of the current year (chart, customers, general ledger, payroll history) and a parallel run reconcile to the penny; earlier years follow as M8. |
 | M7 | Cutover | Backup/restore drill passed, QBO archive stored, books live on the first of a month, subscription cancelled after one clean month-end. |

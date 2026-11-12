@@ -1,4 +1,4 @@
-# DCI Payroll runbook (v2.3.0)
+# DCI Payroll runbook (v2.4.0)
 
 Compose service names: `db` (Postgres 17) and `api` (the whole app, UI + API).
 Synology paths below assume the stack lives in `/volume1/docker/payroll`.
@@ -61,6 +61,118 @@ What changes for you:
 - API money values are JSON **strings** now. Scripts using the API must parse them as
   decimals (breaking change).
 - Every route requires sign-in with MFA. There is no API-only anonymous access.
+
+## Upgrading to v2.4.0 (payroll to ledger, M4)
+
+The M4 migration (`e5f1b3c9d7a2`) adds columns to `payroll_run` and three tables
+(`payroll_settings`, `payroll_deposit_rules`, `tax_payment`). Every payroll run saved before the
+upgrade becomes status `imported`: it is kept for history and for the year-to-date wage chain, its
+figures do not change, it is never posted to the ledger, and it **cannot be deleted** (the database
+refuses). FUTA and SUTA on those runs are 0.00. The migration also binds the eight payroll roles to
+the default chart's accounts (Wages, Taxes, Federal Taxes (941/943/944), GA Income Tax, FUTA Payable,
+GA SUTA Payable, S-Corp Health Insurance, Co. HSA) when each exists under Payroll Expenses or
+Payroll Liabilities, is active and is not already bound; anything else you bind yourself (First use,
+step 1).
+
+**The downgrade is refused** while any run is approved or void (or has a journal entry) or any tax
+payment exists, because dropping the columns would destroy the links to the ledger. Rolling back after
+real use means restoring the `pg_dump` taken below and pinning the previous image tag.
+
+1. **Check for duplicate pay periods first.** The migration adds a unique index that allows one
+   non-void run per pay period. The old app refused a second run for a period, but the column was
+   never unique in the database, so check:
+   ```bash
+   docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c \
+     "SELECT pay_period, count(*), array_agg(id ORDER BY id) AS run_ids FROM payroll_run GROUP BY pay_period HAVING count(*) > 1"
+   ```
+   No rows means nothing to do. If a period is listed, **the upgrade fails** (the app does not start,
+   because the migration fails) until the duplicate is removed. Delete the extra run in the current
+   release (Payroll history, delete), keeping the one that matches what you entered in QBO, and check
+   that the later runs' year-to-date wages still follow from it. Run the query again until it returns
+   no rows.
+2. **Before merging or pushing to `master`, stop Watchtower** (it would pull the image as soon
+   as the build finishes): `docker compose -f compose.synology.yml stop watchtower`
+3. **Back up the database:**
+   ```bash
+   docker compose -f compose.synology.yml exec -T db pg_dump -U payroll -Fc payroll > payroll_pre_v2_4_$(date +%F).dump
+   ```
+4. Merge/push, and let the image build (tests must pass first).
+5. Pull and start:
+   ```bash
+   docker compose -f compose.synology.yml pull
+   docker compose -f compose.synology.yml up -d --remove-orphans db api   # watchtower stays stopped
+   ```
+6. **Verify:** `docker compose -f compose.synology.yml exec db psql -U payroll -d payroll -c 'select version_num from alembic_version'`
+   prints `e5f1b3c9d7a2`, and
+   `curl -s -o /dev/null -w '%{http_code}' http://localhost:8070/payroll/api/v1/healthcheck` prints 200.
+7. **Start Watchtower again:** `docker compose -f compose.synology.yml start watchtower`
+
+First use, as the owner, before saving the next run:
+
+1. **Map the eight payroll roles** in Settings > Ledger: `payroll_wages`, `payroll_tax_expense`,
+   `payroll_federal_payable` (federal withholding plus Social Security and Medicare, employee and
+   employer), `payroll_ga_wh_payable` (Georgia withholding), `payroll_futa_payable`,
+   `payroll_suta_payable`, `payroll_health_payable` and `payroll_hsa_payable`. Approving a run with a
+   role unbound is refused and names the role. The roles are **frozen** once any run is approved or
+   void or any tax payment exists (drafts and imported runs do not count), so confirm the accounts
+   first.
+2. **Enter the FUTA and SUTA rates and wage bases** in Settings > Payroll. The page opens on the tax
+   engine's year (2026), which is the only year the run service reads, and starts empty. Rates are
+   typed as percentages (0.6 for 0.6%). **Saving a run is refused until that year's settings exist.**
+   FUTA and SUTA are calculated when the run is saved and stored on it; approving never recalculates,
+   so a draft saved with a wrong rate is deleted and saved again.
+3. **Confirm the deposit due dates** in Settings > Payroll. They are one set of rules for all years
+   (table `payroll_deposit_rules`), not part of the per-year settings. The defaults: Form 941 and
+   Georgia DOR monthly, due on the 15th of the month after the pay period; FUTA and Georgia DOL
+   quarterly, due on the last day of the month after the quarter (due day 0 means the last day of the
+   month). FUTA is legally due quarterly only once the accumulated liability passes $500; the report
+   shows the quarterly date regardless. The dates only drive "next due" and "overdue" on the
+   liability report.
+4. **Run lifecycle.** Saving a run creates a **draft**. On the run's panel the owner approves it (a pay
+   date, and net pay from a bank account or to Due to Owner), which posts one journal entry dated the
+   pay date, or voids an approved run, which posts the reversal. Only a draft can be deleted; approved,
+   void and imported runs are kept. These rules keep the year-to-date wages consistent:
+   - A run cannot be saved while a later-period run that is not void exists in the same tax year.
+   - A run cannot be approved while an earlier run of the year is still a draft, or when its
+     year-to-date start differs from the previous non-void run's end (delete it and save it again).
+   - A run cannot be voided while **any** later non-void run of the year exists: void later approved
+     runs first, and delete a later draft (a later draft blocks the void too).
+   - A void run frees its pay period; the same month can be saved and approved again.
+5. **Tax payments** (`/payroll/tax-payments`) record money paid to IRS (941), IRS (FUTA), Georgia DOR
+   or Georgia DOL: Dr the agency's payable account, Cr the bank. The bank account cannot be one bound
+   to a payroll role or to A/R, Undeposited Funds or Due to Owner. A payment may exceed what is owed;
+   the difference shows as an overpayment. Penalties and interest are ordinary expenses.
+6. **Payroll liability report** (`/reports/payroll-liability`, with CSV and PDF): per agency, the
+   ledger balance of the payable account, each pay period's liability, paid and unpaid amounts with
+   its due date, and an **Other** line for whatever the periods do not explain (an opening balance, a
+   manual journal, an overpayment). Payments are applied to the oldest period first. A run or tax
+   payment voided after the as-of date still counts as of that date; periods with no liability for an
+   agency are not listed; the Other line is always shown.
+7. Paying the health insurer and funding the HSA are not part of a run: record them with a Transfer
+   from the bank to the health payable or HSA payable account, or as an expense when the premium is
+   paid directly.
+
+Known limitation: net pay to Due to Owner. When a run's net pay is posted to **Due to Owner** instead of
+a bank account, the Owner page and the Owner reimbursement report show a difference equal to the unpaid
+net pay (the ledger balance includes it, the open owner-paid expenses do not) until it is settled.
+There is no settlement document yet. The only way to settle it today is a manual journal entry,
+Dr Due to Owner / Cr the bank account, dated when you pay yourself. (`seed-demo` does this for its June
+run.)
+
+Other things to know:
+
+- The QuickBooks entries panel and CSV export on the payroll page are unchanged. The QuickBooks account
+  names (`ACCT_*`, edited on the payroll admin page) are a separate setting from the ledger roles and
+  stay until M7; keep the two in step by hand.
+- Approved runs made during the parallel run are not yet reconciled with the QBO general-ledger import;
+  M6 must decide whether to void them before the import.
+- The JSON API is unchanged except that `DELETE /payroll/api/v1/payroll/runs/{id}` answers 409 for a
+  run that is not a draft, and run responses gain `status`, `payDate`, `entryId`, `futa`, `suta` and
+  the FUTA and SUTA wage fields. Approve, void and tax payments are pages only.
+- `seed-demo` now also adds a year of payroll through the real services (twelve runs, one paid to Due
+  to Owner and settled by a journal, March voided and approved again, and tax payments). The demo year
+  still carries its older manual "Owner payroll" journal entries as well, so the demo Profit and Loss
+  shows wage expense from both. Never run it against real books.
 
 ## Upgrading to v2.3.0 (expenses, M3)
 
@@ -143,7 +255,8 @@ Receipts:
 - Downloads need sign-in (any role) and are sent as attachments with `nosniff` and
   `Cache-Control: private, no-store`.
 
-Correcting a document in a locked period (invoice, payment, expense, transfer, reimbursement):
+Correcting a document in a locked period (invoice, payment, expense, transfer, reimbursement,
+payroll run, tax payment):
 move the lock back (Settings > Ledger, password required), void or replace the document, then
 lock again. A reversing manual journal is not a correction, because the document stays live.
 
@@ -253,7 +366,7 @@ After the upgrade, as the owner:
 The period lock (Settings > Ledger, or `PUT /payroll/api/v1/ledger/period-lock`) blocks
 posting into it and voiding entries dated in it. A manual journal entry in a locked period can be
 corrected with a reversal dated after the lock; an invoice, payment, deposit, refund, expense,
-transfer or reimbursement in a locked period cannot (a reversing journal would leave the document live in its subledger), so
+transfer, reimbursement, payroll run or tax payment in a locked period cannot (a reversing journal would leave the document live in its subledger), so
 move the lock back instead. Lock a year once it
 is final: after the CPA has the return figures, the year-end trial balance is saved
 (CSV/PDF from Reports), and any year-end close or adjusting entries are posted. Set the lock to
@@ -374,4 +487,6 @@ so the app can read the files.
 ## System of record
 
 QuickBooks Online remains the system of record until cutover. Do not delete anything
-there; this app produces journal entries to enter into it.
+there. From v2.4.0 an approved payroll run also posts to this app's ledger, and the app still
+produces the QuickBooks journal entries (the QuickBooks entries panel and CSV on the payroll page)
+to enter into QBO.
