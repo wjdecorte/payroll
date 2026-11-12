@@ -492,6 +492,73 @@ def test_delete_over_the_api_is_204_for_a_draft_and_409_otherwise(
     assert session.get(PayrollRun, kept.id) is not None
 
 
+def _refused_delete(service, session, owner_user, run_id, later_period):
+    session.commit()  # a refused delete rolls back; the planted rows must outlive that
+    before = _audit_count(session)
+    with pytest.raises(PayrollRunStateError) as exc:
+        service.delete_run(run_id, actor=owner_user)
+    assert exc.value.http_code == 409
+    assert later_period in exc.value.message and "later runs first" in exc.value.message
+    assert session.get(PayrollRun, run_id) is not None
+    assert _audit_count(session) == before
+
+
+def test_a_draft_with_a_later_run_cannot_be_deleted_imported_predecessor(
+    service, session, owner_user
+):
+    """Imported Jan ends 5,000; Feb and Mar chain from it; deleting Feb would leave Mar stale."""
+    _planted(session, pay_period="2026-01", ytd_fica_after=D("5000.00"))
+    feb = service.calculate(_payload("2026-02", use_previous_ytd_fica=True), actor=owner_user)
+    mar = service.calculate(_payload("2026-03", use_previous_ytd_fica=True), actor=owner_user)
+    assert (feb.tax_detail.ytd_fica_before, feb.tax_detail.ytd_fica_after) == (
+        D("5000.00"),
+        D("13000.00"),
+    )
+    assert mar.tax_detail.ytd_fica_before == D("13000.00")
+    _refused_delete(service, session, owner_user, feb.id, "2026-03")
+
+
+def test_a_draft_with_a_later_run_cannot_be_deleted_no_predecessor(service, session, owner_user):
+    jan = service.calculate(_payload("2026-01"), actor=owner_user)
+    service.calculate(_payload("2026-02", use_previous_ytd_fica=True), actor=owner_user)
+    _refused_delete(service, session, owner_user, jan.id, "2026-02")
+
+
+def test_deleting_the_latest_draft_first_then_the_earlier_works(service, session, owner_user):
+    jan = service.calculate(_payload("2026-01"), actor=owner_user)
+    feb = service.calculate(_payload("2026-02", use_previous_ytd_fica=True), actor=owner_user)
+    service.delete_run(feb.id, actor=owner_user)
+    service.delete_run(jan.id, actor=owner_user)
+    assert session.get(PayrollRun, jan.id) is None and session.get(PayrollRun, feb.id) is None
+
+
+def test_a_later_void_run_or_another_year_does_not_block_a_delete(
+    service, session, owner_user, entries
+):
+    jan = service.calculate(_payload("2026-01"), actor=owner_user)
+    _void(session, entries, pay_period="2026-02")
+    _planted(session, "imported", pay_period="2027-01")  # a stray row of another year
+    service.delete_run(jan.id, actor=owner_user)
+    assert session.get(PayrollRun, jan.id) is None
+
+
+def test_delete_with_a_later_run_is_409_on_the_api_and_the_htmx_route(
+    owner_client, session, payroll_input
+):
+    jan = owner_client.post(f"{PREFIX}/payroll/runs/calculate", json=payroll_input).json()
+    payroll_input |= {"payPeriod": "2026-02", "usePreviousYtdFica": True}
+    owner_client.post(f"{PREFIX}/payroll/runs/calculate", json=payroll_input)
+    session.commit()
+    api = owner_client.delete(f"{PREFIX}/payroll/runs/{jan['id']}")
+    assert api.status_code == 409
+    (error,) = api.json()["errors"]
+    assert error["type"] == "PayrollRunStateError" and "2026-02" in error["message"]
+    page = owner_client.delete(f"/htmx/runs/{jan['id']}", headers={"HX-Request": "true"})
+    assert page.status_code == 409
+    assert "2026-02" in page.text and "later runs first" in page.text
+    assert session.get(PayrollRun, jan["id"]) is not None
+
+
 def test_run_dates_are_json_dates_on_a_planted_approved_run(owner_client, session, entries):
     run = _approved(session, entries, pay_period="2026-02", pay_date=date(2026, 2, 28))
     data = owner_client.get(f"{PREFIX}/payroll/runs/{run.id}").json()

@@ -210,7 +210,10 @@ def test_an_owner_funded_run_freezes_due_to_owner_but_a_bank_funded_one_does_not
     other = accounts.create(
         actor=owner_user, name="Other Owner Liability", type=AccountType.LIABILITY
     )
-    message = "Due to Owner cannot change after owner-paid expenses or reimbursements"
+    message = (
+        "Due to Owner cannot change after owner-paid expenses, reimbursements "
+        "or payroll runs paid to it have been recorded"
+    )
 
     # Before any run: movable.
     accounts.bind_role(SystemRole.DUE_TO_OWNER, other.id, actor=owner_user)

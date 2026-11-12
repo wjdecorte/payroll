@@ -374,7 +374,10 @@ class Model:
         run_id = self._pick(list(self.runs), i)
         if run_id is None:
             return
-        refused = None if self.runs[run_id]["status"] == "draft" else PayrollRunStateError
+        info = self.runs[run_id]
+        later = [r for _i, r in self._live() if r["period"] > info["period"]]
+        # Only a draft, and only while no later non-void run chains from it.
+        refused = PayrollRunStateError if info["status"] != "draft" or later else None
         self._try(
             "delete",
             lambda: PayrollRunService(self.session).delete_run(run_id, actor=self.actor),
@@ -592,14 +595,16 @@ EXAMPLE_SEQUENCES = [
         ("delete", 1),  # the draft April is deleted ... (index is among all runs)
         ("delete", 0),  # refused: approved
     ],
-    # A draft deleted from the middle leaves the next draft with stale year-to-date wages.
+    # A draft in the middle cannot be deleted (the next draft's year-to-date wages follow from
+    # it); the latest draft can, and then the middle one is approved.
     [
         save(0, gross=3_000_000),
         ("approve", 0, 5, False),
         save(1, gross=3_000_000),
         save(2, gross=3_000_000),
-        ("delete", 1),
-        ("approve", 1, 5, False),  # refused: out of date
+        ("delete", 1),  # refused: March is later
+        ("delete", 2),
+        ("approve", 1, 5, False),
         ("pay", 1, 100, 500_000, False),  # an overpayment to FUTA
     ],
     # Imported history: its end figure is a starting point, never a gate, and it blocks

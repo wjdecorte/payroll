@@ -361,8 +361,8 @@ class AccountService:
             if role == SystemRole.DUE_TO_OWNER and self._owner_activity():
                 raise InvalidAccountError(
                     message=(
-                        "Due to Owner cannot change after owner-paid expenses or "
-                        "reimbursements have been recorded"
+                        "Due to Owner cannot change after owner-paid expenses, reimbursements "
+                        "or payroll runs paid to it have been recorded"
                     )
                 )
             if role in PAYROLL_ROLES and self._payroll_activity():

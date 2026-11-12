@@ -27,7 +27,8 @@ from tests.ledger.conftest import chart  # noqa: F401
 D = Decimal
 DAY = date(2026, 3, 10)
 MESSAGE = (
-    "Due to Owner cannot change after owner-paid expenses or reimbursements have been recorded"
+    "Due to Owner cannot change after owner-paid expenses, reimbursements "
+    "or payroll runs paid to it have been recorded"
 )
 
 

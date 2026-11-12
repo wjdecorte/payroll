@@ -201,24 +201,48 @@ class PayrollRunService:
         """
         Delete a draft payroll run by ID. ``actor`` must be an owner (checked first).
 
-        Approved, void and imported runs are history and are kept
-        (``PayrollRunStateError``).
+        Approved, void and imported runs are history and are kept, and a draft is kept while
+        a later non-void run of the tax year exists, because that run's year-to-date wages
+        follow from it (``PayrollRunStateError``).
         """
         ensure_role(actor, OWNER)
 
         def work() -> None:
-            # Row lock: an approval cannot change the status between the check and the delete.
-            run = self.session.exec(
+            # Row locks, in id order like approve and void (the tax year's runs): an approval
+            # cannot change the status, and no run can be saved or approved, between the
+            # checks and the delete.
+            rows = self.session.exec(
                 select(PayrollRun)
-                .where(PayrollRun.id == run_id)
+                .where(
+                    PayrollRun.tax_year
+                    == select(PayrollRun.tax_year).where(PayrollRun.id == run_id).scalar_subquery()
+                )
+                .order_by(col(PayrollRun.id))
                 .with_for_update()
                 .execution_options(populate_existing=True)
-            ).first()
+            ).all()
+            run = next((r for r in rows if r.id == run_id), None)
             if run is None:
                 raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
             if run.status != "draft":
                 raise PayrollRunStateError(
                     message=f"Payroll run {run_id} is {run.status} — only a draft can be deleted"
+                )
+            later = sorted(
+                (
+                    r
+                    for r in rows
+                    if r.status != "void"
+                    and r.pay_period > run.pay_period
+                    and r.pay_period.startswith(f"{run.tax_year}-")
+                ),
+                key=lambda r: r.pay_period,
+            )
+            if later:
+                raise PayrollRunStateError(
+                    message=f"The {later[0].pay_period} payroll run ({later[0].status}) is later "
+                    f"than {run.pay_period}, and its year-to-date wages follow from this one. "
+                    "Delete or void the later runs first."
                 )
             # Audited in the same transaction as the delete.
             record_audit(
