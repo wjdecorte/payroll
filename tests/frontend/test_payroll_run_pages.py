@@ -2,7 +2,10 @@
 
 # ruff: noqa: F811  (fixtures re-exported below are used as arguments)
 
+import re
+from decimal import Decimal
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from sqlmodel import select
@@ -207,6 +210,19 @@ def test_unknown_run_is_404(owner_client, session):
     session.commit()  # the sign-in must survive the first refusal's rollback
     assert approve(owner_client, 999999).status_code == 404
     assert void(owner_client, 999999).status_code == 404
+
+
+def test_a_404_is_an_error_partial_that_the_forms_swap_in(owner_client, session):
+    """The Approve/Void forms swap a 404 in (app.js), so it must be the error partial."""
+    session.commit()
+    for response in (approve(owner_client, 999999), void(owner_client, 999999)):
+        assert response.status_code == 404
+        assert 'class="alert alert-danger' in response.text
+        assert "<strong>Error 404</strong>" in response.text
+        assert "999999" in response.text and "not found" in response.text
+        assert "<html" not in response.text  # a partial, not a page
+    js = (Path(__file__).parents[2] / "payroll/frontend/static/js/app.js").read_text()
+    assert "status === 404 || status === 409 || status === 422" in js
 
 
 # ---------------------------------------------------------------------------
@@ -488,3 +504,59 @@ def test_lifecycle_forms_swap_error_responses_and_the_script_does_it(owner_clien
     assert "data-swap-errors" in owner_client.get(f"/htmx/runs/{run_id}").text
     script = Path("payroll/frontend/static/js/app.js").read_text()
     assert "htmx:beforeSwap" in script and "data-swap-errors" in script
+
+
+def test_index_prefills_the_year_to_date_from_the_latest_non_void_run(owner_client, session, bank):
+    """A voided Feb must not feed the calculator: the default is the imported Jan's 5,000.00."""
+    session.add(
+        PayrollRun(
+            pay_period="2026-01",
+            gross_salary="8000.00",
+            fica_wages="8000.00",
+            ytd_fica_after="5000.00",
+            status="imported",
+        )
+    )
+    session.commit()
+    feb = save_draft(owner_client, "2026-02", ytd_fica_wages="5000.00")
+    assert approve(owner_client, feb, pay_date="2026-02-28").status_code == 200
+    assert void(owner_client, feb, void_date="2026-02-28").status_code == 200
+    voided = session.get(PayrollRun, feb)
+    assert voided.status == "void" and voided.ytd_fica_after != Decimal("5000.00")
+
+    html = owner_client.get("/").text
+    assert re.search(r'name="ytd_fica_wages"[^>]*value="5000\.00"', html, re.S)
+
+
+def test_index_prefills_nothing_from_another_year(owner_client, session):
+    session.add(
+        PayrollRun(
+            pay_period="2025-12",
+            gross_salary="8000.00",
+            fica_wages="8000.00",
+            ytd_fica_after="7777.00",
+            status="imported",
+        )
+    )
+    session.commit()
+    html = owner_client.get("/").text
+    assert re.search(r'name="ytd_fica_wages"[^>]*value="0\.00"', html, re.S)
+
+
+@pytest.mark.parametrize("period", ["2025-12", "2027-01"])
+def test_saving_outside_the_tax_year_is_a_422_on_the_page_and_the_api(
+    owner_client, session, period
+):
+    from tests.conftest import PREFIX
+
+    session.commit()
+    page = owner_client.post("/htmx/save-run", data={**FORM, "pay_period": period})
+    assert page.status_code == 422
+    assert "2026" in page.text and period in page.text
+    api = owner_client.post(
+        f"{PREFIX}/payroll/runs/calculate",
+        json={"payPeriod": period, "grossSalary": "8000.00", "saveRun": True},
+    )
+    assert api.status_code == 422
+    assert period in api.json()["errors"][0]["message"]
+    assert session.exec(select(PayrollRun).where(PayrollRun.pay_period == period)).first() is None

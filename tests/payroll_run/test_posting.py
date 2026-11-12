@@ -7,7 +7,7 @@ and the exact accounts, over the health x HSA x net-pay-destination matrix.
 # ruff: noqa: F811  (fixtures re-exported by conftest are used as arguments)
 
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -599,6 +599,15 @@ def test_void_date_cannot_precede_the_pay_date(session, owner_user, posting, ban
     assert posting.void(run.id, actor=owner_user, void_date=date(2026, 2, 5)).status == "void"
 
 
+def test_a_datetime_is_not_a_void_date(session, owner_user, posting, bank):
+    jan = approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
+    refused(
+        session,
+        lambda: posting.void(jan.id, actor=owner_user, void_date=datetime(2026, 2, 1, 9, 0)),
+    )
+    assert session.get(PayrollRun, jan.id).status == "approved"
+
+
 def test_void_in_a_locked_period_is_refused(session, owner_user, posting, bank):
     run = approve(posting, owner_user, save(session, owner_user), bank)
     session.execute(text("UPDATE period_lock SET lock_date = '2026-01-31' WHERE id = 1"))
@@ -841,3 +850,63 @@ def test_delete_run_rereads_the_row_it_locks(session, owner_user, bank, entries)
     )
     with pytest.raises(PayrollRunStateError):
         PayrollRunService(session).delete_run(run.id, actor=owner_user)
+
+
+# ----------------------------------- imported rows never block; one tax year per chain
+
+
+def test_approval_after_an_imported_run_accepts_any_year_to_date(
+    session, owner_user, posting, bank
+):
+    """Controller ruling P11: an imported row cannot be edited, so its end figure is no gate."""
+    plant(session, "imported", "2026-01", ytd_fica_after=D("5000.00"))
+    feb = save(session, owner_user, period="2026-02", ytd_fica_wages="1234.00")
+    assert feb.ytd_fica_before == D("1234.00") != D("5000.00")
+    assert approve(posting, owner_user, feb, bank, day=FEB_END).status == "approved"
+
+
+def test_approval_after_an_approved_run_still_needs_matching_year_to_date(
+    session, owner_user, posting, bank
+):
+    jan = approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
+    assert jan.ytd_fica_after == D("8000.00")  # one month of $8,000 FICA wages
+    feb = save(session, owner_user, period="2026-02", ytd_fica_wages="1234.00")
+    refused(
+        session,
+        lambda: approve(posting, owner_user, feb, bank, day=FEB_END),
+        InvalidPayrollRunError,
+        fragment="starts at 1,234.00",
+    )
+    assert session.get(PayrollRun, feb.id).status == "draft"
+
+
+def test_the_latest_earlier_run_decides_between_imported_and_approved(
+    session, owner_user, posting, bank
+):
+    approve(posting, owner_user, save(session, owner_user, period="2026-01"), bank)
+    plant(session, "imported", "2026-02", ytd_fica_after=D("99.00"))
+    mar = save(session, owner_user, period="2026-03", ytd_fica_wages="3.00")
+    assert approve(posting, owner_user, mar, bank, day=date(2026, 3, 31)).status == "approved"
+
+
+@pytest.mark.parametrize("period", ["2025-12", "2027-01"])
+def test_saving_a_pay_period_outside_the_tax_year_is_refused(session, owner_user, period):
+    service = PayrollRunService(session)
+    payload = PayrollInput(pay_period=period, gross_salary="8000.00", save_run=True)
+    error = refused(session, lambda: service.calculate(payload, actor=owner_user), fragment="2026")
+    assert isinstance(error, InvalidPayrollRunError) and error.http_code == 422
+    assert period in error.message
+    payload.save_run = False  # an unsaved calculation is unaffected
+    assert not service.calculate(payload, actor=owner_user).saved
+
+
+def test_a_stray_imported_row_of_another_year_takes_no_part(session, owner_user, posting, bank):
+    """An imported 2025-12 row (tax_year 2026) is not the earlier run of 2026-01."""
+    plant(session, "imported", "2025-12", ytd_fica_after=D("70000.00"))
+    plant(session, "imported", "2027-01", ytd_fica_after=D("1.00"))
+    jan = save(session, owner_user, period="2026-01", use_previous_ytd_fica=True)
+    assert jan.ytd_fica_before == ZERO  # not 70,000.00: a new calendar year starts at zero
+    approved = approve(posting, owner_user, jan, bank)
+    assert approved.status == "approved"
+    # Neither stray row is "earlier" or "later" for the void.
+    assert posting.void(jan.id, actor=owner_user, void_date=JAN_END).status == "void"

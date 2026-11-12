@@ -76,7 +76,11 @@ def check_void_date(
     void_date: object, document_date: date, what: str, error_cls: type[AppBaseError]
 ) -> None:
     """Refuse a void dated before the document: the reversal would precede the original."""
-    if not isinstance(void_date, date) or void_date < document_date:
+    if (
+        not isinstance(void_date, date)
+        or isinstance(void_date, datetime)
+        or void_date < document_date
+    ):
         raise error_cls(
             message=f"The void date cannot be before the {what} date ({document_date.isoformat()})"
         )

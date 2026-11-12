@@ -257,6 +257,26 @@ class Model:
     def run(self, op):
         getattr(self, f"op_{op[0]}")(*op[1:])
 
+    def op_import(self, month, ytd_cents):
+        """Imported history (inserted directly, as the upgrade does); it cannot be changed."""
+        period = f"{TAX_YEAR}-{month + 1:02d}"
+        if period in [r["period"] for _i, r in self._live()]:
+            return
+        row = PayrollRun(
+            pay_period=period,
+            gross_salary=D("100.00"),
+            fica_wages=D("100.00"),
+            net_pay=D("100.00"),
+            ytd_fica_after=_cents(ytd_cents),
+            status="imported",
+        )
+        self.session.add(row)
+        self.session.commit()
+        self.runs[row.id] = {"period": period, "status": "imported", "pay_date": None}
+        self.successes["import"] += 1
+        if self.report_events:
+            event("import")
+
     def op_save(self, month, gross_cents, health_pct, hsa_pct, health_in_tax):
         period = f"{TAX_YEAR}-{month + 1:02d}"
         live = [r["period"] for _i, r in self._live()]
@@ -301,7 +321,13 @@ class Model:
             r["status"] == "draft" and r["period"] < info["period"] for r in self.runs.values()
         ):
             refused = PayrollRunStateError
-        elif earlier is not None and row.ytd_fica_before != self._row(earlier[0]).ytd_fica_after:
+        elif (
+            earlier is not None
+            and self.runs[earlier[0]]["status"] == "approved"
+            and row.ytd_fica_before != self._row(earlier[0]).ytd_fica_after
+        ):
+            # Only an approved predecessor is held to the chain; an imported one is a manual
+            # starting point (imported rows can never be edited or deleted).
             refused = InvalidPayrollRunError
         run = self._try(
             "approve",
@@ -435,7 +461,7 @@ def check_invariants(model: Model) -> None:
     for run in approved:
         earlier = [e for e in runs if e.pay_period < run.pay_period and e.status != "void"]
         assert all(e.status != "draft" for e in earlier), run.pay_period
-        if earlier:
+        if earlier and earlier[-1].status == "approved":
             assert run.ytd_fica_before == earlier[-1].ytd_fica_after, run.pay_period
     # One non-void run per period.
     live_periods = [r.pay_period for r in runs if r.status != "void"]
@@ -528,10 +554,11 @@ operation = st.one_of(
         st.sampled_from([False] * 7 + [True]),  # True: a payroll account as the bank, refused
     ),
     st.tuples(st.just("void_payment"), index, st.integers(min_value=-3, max_value=30)),
+    st.tuples(st.just("import"), month, st.integers(min_value=0, max_value=3_000_000)),
 )
 activity = st.lists(operation, min_size=1, max_size=18)
 
-OP_KINDS = {"save", "approve", "void", "delete", "pay", "void_payment"}
+OP_KINDS = {"save", "approve", "void", "delete", "pay", "void_payment", "import"}
 
 
 def save(month_, gross=800_000, health=5, hsa=3, in_tax=True):
@@ -575,12 +602,28 @@ EXAMPLE_SEQUENCES = [
         ("approve", 1, 5, False),  # refused: out of date
         ("pay", 1, 100, 500_000, False),  # an overpayment to FUTA
     ],
+    # Imported history: its end figure is a starting point, never a gate, and it blocks
+    # saving earlier months and voiding earlier runs because it can never be removed.
+    [
+        ("import", 0, 500_000),
+        save(1, gross=300_000),  # chains from the imported 5,000.00
+        ("approve", 1, 5, False),
+        save(0),  # refused: January exists (imported)
+        ("approve", 1, 5, False),  # refused: already approved
+        ("delete", 1),  # refused: approved
+        ("import", 2, 700_000),
+        ("void", 1, 5),  # refused: the imported March is later and can never be removed
+        ("delete", 2),  # refused: imported
+        ("void", 2, 0),  # refused: imported
+        ("approve", 2, 0, False),  # refused: imported
+    ],
 ]
 
 
 @SETTINGS
 @example(ops=EXAMPLE_SEQUENCES[0])
 @example(ops=EXAMPLE_SEQUENCES[1])
+@example(ops=EXAMPLE_SEQUENCES[2])
 @given(ops=activity)
 def test_random_activity_keeps_the_books_consistent(world, ops):
     model = world()

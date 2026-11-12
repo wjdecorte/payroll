@@ -36,6 +36,7 @@ from payroll.tax.unemployment import UnemploymentResult, calc_unemployment
 from .config_services import PayrollConfigService
 from .exceptions import (
     InvalidPayPeriodError,
+    InvalidPayrollRunError,
     PayrollRunAlreadyExistsError,
     PayrollRunNotFoundError,
     PayrollRunStateError,
@@ -91,6 +92,11 @@ class PayrollRunService:
         self._validate_pay_period(payload.pay_period)
 
         if payload.save_run:
+            if payload.pay_period[:4] != str(tax.TAX_YEAR):
+                raise InvalidPayrollRunError(
+                    message=f"Pay period {payload.pay_period} is not in {tax.TAX_YEAR}; "
+                    f"this app calculates and saves tax year {tax.TAX_YEAR} payroll runs only"
+                )
             existing = self._find_by_period(payload.pay_period)
             if existing:
                 raise PayrollRunAlreadyExistsError(
@@ -101,6 +107,7 @@ class PayrollRunService:
                 select(PayrollRun)
                 .where(
                     PayrollRun.tax_year == tax.TAX_YEAR,
+                    col(PayrollRun.pay_period).like(f"{tax.TAX_YEAR}-%"),
                     PayrollRun.pay_period > payload.pay_period,
                     PayrollRun.status != "void",
                 )

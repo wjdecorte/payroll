@@ -443,10 +443,14 @@ class PayrollPostingService:
     def _check_chain_figures(self, run: PayrollRun) -> None:
         """Year-to-date wages must continue from the latest earlier non-void run.
 
-        With no earlier run the figure is a manual starting point and is accepted.
+        Only an earlier APPROVED run is held to this. Imported rows can neither be edited nor
+        deleted, so they never block the owner: after an imported run the figure is a manual
+        starting point and is accepted, as it is with no earlier run at all.
         """
         earlier = self._year_runs(run, earlier=True, statuses=("draft", "approved", "imported"))
-        if earlier and run.ytd_fica_before != earlier[-1].ytd_fica_after:
+        if not earlier or earlier[-1].status != "approved":
+            return
+        if run.ytd_fica_before != earlier[-1].ytd_fica_after:
             raise _invalid(
                 f"The year-to-date figures of payroll run {run.pay_period} are out of date "
                 f"(the {earlier[-1].pay_period} run ends at {earlier[-1].ytd_fica_after:,.2f}, "
@@ -457,13 +461,18 @@ class PayrollPostingService:
     def _year_runs(
         self, run: PayrollRun, *, earlier: bool, statuses: tuple[str, ...]
     ) -> list[PayrollRun]:
-        """Runs of the same tax year before (or after) ``run``'s period, oldest first."""
+        """Runs of the same tax year before (or after) ``run``'s period, oldest first.
+
+        Only pay periods of that calendar year count: a stray imported row of another year
+        (stored with the same ``tax_year``) takes no part in the approve or void rules.
+        """
         period = col(PayrollRun.pay_period)
         return list(
             self.session.exec(
                 select(PayrollRun)
                 .where(
                     PayrollRun.tax_year == run.tax_year,
+                    period.like(f"{run.tax_year}-%"),
                     period < run.pay_period if earlier else period > run.pay_period,
                     col(PayrollRun.status).in_(statuses),
                 )

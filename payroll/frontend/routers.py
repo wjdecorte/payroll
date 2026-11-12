@@ -59,6 +59,7 @@ from payroll.payroll_run.posting import NET_PAY_SOURCES, PayrollPostingService
 from payroll.payroll_run.schemas import PayrollInput
 from payroll.payroll_run.services import PayrollRunService
 from payroll.reports.periods import company_today
+from payroll.tax import constants as tax
 
 logger = logging.getLogger("payroll.frontend")
 
@@ -242,13 +243,15 @@ async def index(
         config = _dump(PayrollConfigService(session).get_config())
         run_service = PayrollRunService(session)
         history = _dump_list(run_service.list_runs(limit=50))
-        if history:
-            latest_run = _dump(run_service.get_run(history[0]["id"]))
-
-            # Only pre-fill YTD FICA if the previous run is in the same year as now
-            current_year = str(datetime.datetime.now().year)
-            if latest_run.get("payPeriod", "").startswith(current_year):
-                ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", "0.00")
+        # Pre-fill from the latest run that still counts (not void) in the engine's tax year.
+        year = f"{tax.TAX_YEAR}-"
+        latest = next(
+            (r for r in history if r["status"] != "void" and r["payPeriod"].startswith(year)),
+            None,
+        )
+        if latest is not None:
+            latest_run = _dump(run_service.get_run(latest["id"]))
+            ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", "0.00")
 
     except Exception:
         logger.exception("Could not load index data")
