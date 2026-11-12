@@ -1,0 +1,8 @@
+{# Settings tabs. ``settings_tab`` names the active one (the top nav already carries aria-current for Settings). #}
+<ul class="nav nav-tabs mb-3 no-print">
+  {% for key, label, href in [("ledger", "Ledger", "/settings/ledger"), ("receivables", "Sales", "/settings/receivables"), ("payroll", "Payroll", "/settings/payroll")] %}
+  <li class="nav-item">
+    <a class="nav-link{% if settings_tab == key %} active{% endif %}" href="{{ href }}">{{ label }}</a>
+  </li>
+  {% endfor %}
+</ul>

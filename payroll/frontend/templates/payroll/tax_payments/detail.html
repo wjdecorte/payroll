@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Tax payment · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+  <div class="card">
+    <div class="card-header bg-primary d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-bank me-2"></i>Tax payment</span>
+      <span class="badge {{ 'bg-secondary' if payment.status == 'void' else 'bg-success' }}">{{ payment.status | capitalize }}</span>
+    </div>
+    <div class="card-body">
+      <dl class="row mb-3">
+        <dt class="col-sm-2">Date</dt><dd class="col-sm-10">{{ payment.payment_date }}</dd>
+        <dt class="col-sm-2">Agency</dt><dd class="col-sm-10">{{ agencies[payment.agency] }}</dd>
+        <dt class="col-sm-2">Paid from</dt><dd class="col-sm-10">{{ accounts[payment.bank_account_id].name }}</dd>
+        <dt class="col-sm-2">Amount</dt><dd class="col-sm-10">{{ payment.amount | currency }}</dd>
+        {% if payment.memo %}<dt class="col-sm-2">Memo</dt><dd class="col-sm-10">{{ payment.memo }}</dd>{% endif %}
+        {% if payment.entry_id %}
+        <dt class="col-sm-2">Ledger entry</dt><dd class="col-sm-10"><a href="/journal/{{ payment.entry_id }}">View the journal entry</a></dd>
+        {% endif %}
+        {% if payment.status == "void" %}
+        <dt class="col-sm-2">Voided</dt>
+        <dd class="col-sm-10">{{ payment.void_date }}{% if payment.void_entry_id %} · <a href="/journal/{{ payment.void_entry_id }}">reversal entry</a>{% endif %}</dd>
+        {% endif %}
+      </dl>
+      <div class="no-print d-flex gap-2 mb-3">
+        <a class="btn btn-outline-secondary" href="/payroll/tax-payments">Back to tax payments</a>
+      </div>
+      {% if is_owner and payment.status == "posted" %}
+      <form method="post" action="/payroll/tax-payments/{{ payment.id }}/void" class="no-print row g-2 align-items-end" id="void-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-auto">
+          <label class="form-label" for="void_date">Void date</label>
+          <input type="date" class="form-control" id="void_date" name="void_date" value="{{ void_values.void_date }}" required>
+        </div>
+        <div class="col-auto">
+          <label class="form-label" for="void_memo">Memo (optional)</label>
+          <input type="text" class="form-control" id="void_memo" name="memo" maxlength="500" value="{{ void_values.memo }}">
+        </div>
+        <div class="col-auto"><button type="submit" class="btn btn-outline-danger">Void tax payment</button></div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

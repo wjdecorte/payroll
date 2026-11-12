@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Payroll Settings · DCI Books{% endblock %}
+{% block content %}
+{% set is_owner = current_user and current_user.role == "owner" %}
+<div class="container-xl py-3">
+  {% set settings_tab = "payroll" %}
+  {% include "settings/_tabs.html" %}
+  {% if saved %}<div class="alert alert-success py-2" role="status">{{ saved }}</div>{% endif %}
+  <div class="row g-3">
+    <div class="col-lg-6">
+      <div class="card">
+        <div class="card-header bg-primary">Unemployment rates for a tax year</div>
+        <div class="card-body">
+          <p class="text-muted">Rates are percentages: type 0.6 for 0.6%. Payroll runs use the settings for their tax year.</p>
+          {% if year_error %}<div class="alert alert-danger py-2" role="alert">{{ year_error }}</div>{% endif %}
+          {% if is_owner %}
+          <form method="get" action="/settings/payroll" class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+              <label class="form-label" for="view_tax_year">Show tax year</label>
+              <input class="form-control" id="view_tax_year" name="tax_year" inputmode="numeric" maxlength="4" value="{{ year_values.tax_year }}">
+            </div>
+            <div class="col-auto"><button type="submit" class="btn btn-outline-secondary">Show</button></div>
+          </form>
+          <form method="post" action="/settings/payroll/year" id="year-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="tax_year" value="{{ year_values.tax_year }}">
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label" for="futa_rate">FUTA rate (%)</label>
+                <input class="form-control" id="futa_rate" name="futa_rate" inputmode="decimal" required value="{{ year_values.futa_rate }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label" for="futa_wage_base">FUTA wage base ($)</label>
+                <input class="form-control" id="futa_wage_base" name="futa_wage_base" inputmode="decimal" required value="{{ year_values.futa_wage_base }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label" for="suta_rate">SUTA rate (%)</label>
+                <input class="form-control" id="suta_rate" name="suta_rate" inputmode="decimal" required value="{{ year_values.suta_rate }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label" for="suta_wage_base">SUTA wage base ($)</label>
+                <input class="form-control" id="suta_wage_base" name="suta_wage_base" inputmode="decimal" required value="{{ year_values.suta_wage_base }}">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-brand">Save {{ year_values.tax_year }}</button>
+          </form>
+          {% else %}
+          <dl class="mb-0">
+            <dt>Tax year</dt><dd>{{ year_values.tax_year }}</dd>
+            <dt>FUTA rate</dt><dd>{{ year_values.futa_rate + "%" if year_values.futa_rate else "Not set" }}</dd>
+            <dt>FUTA wage base</dt><dd>{{ year_values.futa_wage_base or "Not set" }}</dd>
+            <dt>SUTA rate</dt><dd>{{ year_values.suta_rate + "%" if year_values.suta_rate else "Not set" }}</dd>
+            <dt>SUTA wage base</dt><dd>{{ year_values.suta_wage_base or "Not set" }}</dd>
+          </dl>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="card">
+        <div class="card-header bg-primary">Deposit due dates</div>
+        <div class="card-body">
+          <p class="text-muted">How often each agency is paid and the day of the following month it is due. 0 means the last day of the month.</p>
+          {% if rules_error %}<div class="alert alert-danger py-2" role="alert">{{ rules_error }}</div>{% endif %}
+          {% if is_owner %}
+          <form method="post" action="/settings/payroll/deposit-rules" id="rules-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% for agency in agencies %}
+            <div class="row g-2 mb-3 align-items-end">
+              <div class="col-md-4"><strong>{{ deposit_labels[agency] }}</strong></div>
+              <div class="col-md-4">
+                <label class="form-label" for="{{ agency }}_cadence">Cadence</label>
+                <select class="form-select" id="{{ agency }}_cadence" name="{{ agency }}_cadence">
+                  {% for c in cadences %}<option value="{{ c }}"{% if rules[agency ~ "_cadence"] == c %} selected{% endif %}>{{ c | capitalize }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label" for="{{ agency }}_due_day">Due day (0 to 31)</label>
+                <input class="form-control" id="{{ agency }}_due_day" name="{{ agency }}_due_day" inputmode="numeric" maxlength="2" required value="{{ rules[agency ~ '_due_day'] }}">
+              </div>
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-brand">Save deposit rules</button>
+          </form>
+          {% else %}
+          <dl class="mb-0">
+            {% for agency in agencies %}
+            <dt>{{ deposit_labels[agency] }}</dt>
+            <dd>{{ rules[agency ~ "_cadence"] | capitalize }}, due day {{ rules[agency ~ "_due_day"] }}</dd>
+            {% endfor %}
+          </dl>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
