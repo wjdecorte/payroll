@@ -608,9 +608,13 @@ def test_ledger_route_list_matches_the_app():
         "/reports/owner-reimbursement",
         "/reports/owner-reimbursement.csv",
         "/reports/owner-reimbursement.pdf",
+        "/reports/payroll-liability",
+        "/reports/payroll-liability.csv",
+        "/reports/payroll-liability.pdf",
     ):
         assert report_page in pages, report_page
     assert f"{LEDGER}/reports/owner-reimbursement.csv" not in pages  # page-only: no API twin
+    assert f"{LEDGER}/reports/payroll-liability.csv" not in pages
     assert len(pages) >= 20
 
 

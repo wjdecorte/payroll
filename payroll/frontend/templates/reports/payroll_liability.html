@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary"><i class="bi bi-bar-chart me-2"></i>{{ title }}</div>
+    <div class="card-body">
+      {% include "reports/_picker.html" %}
+      {% if error %}
+      <div class="alert alert-danger" role="alert">{{ error }}</div>
+      {% else %}
+      {% include "reports/_exports.html" %}
+      <p class="text-muted small">As of {{ liability.as_of }}. The balance is the ledger balance of the agency's payable account; pay periods are approved runs, less the tax payments applied oldest first.</p>
+      {% for a in liability.agencies %}
+      <h2 class="h6 mt-4" id="agency-{{ a.agency }}">{{ a.label }}</h2>
+      <p class="mb-1">Ledger balance <strong class="num">{{ a.balance | currency }}</strong>
+        {% if a.next_due %}&middot; Next due {{ a.next_due }}{% else %}&middot; Nothing due{% endif %}</p>
+      <table class="table table-sm table-hover align-middle">
+        <thead>
+          <tr><th scope="col">Pay period</th><th scope="col">Due date</th><th scope="col" class="num">Liability</th><th scope="col" class="num">Paid</th><th scope="col" class="num">Unpaid</th><th scope="col"></th></tr>
+        </thead>
+        <tbody>
+          {% for p in a.periods %}
+          <tr>
+            <td>{{ p.pay_period }}</td>
+            <td>{{ p.due_date }}</td>
+            <td class="num">{{ p.liability | currency }}</td>
+            <td class="num">{{ p.paid | currency }}</td>
+            <td class="num">{{ p.unpaid | currency }}</td>
+            <td>{% if p.overdue %}<span class="badge bg-danger">Overdue</span>{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-2">No pay periods.</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="fw-bold"><td colspan="4">Other (not explained by pay periods)</td><td class="num">{{ a.other | currency }}</td><td></td></tr>
+        </tfoot>
+      </table>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
