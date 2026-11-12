@@ -139,12 +139,36 @@ def test_csv_equals_the_service(owner_client, session, books):
     )
     rows = rows_of(response.text)
     assert rows[0] == ["Payroll Liability"] and rows[1] == ["As of", "2026-03-31"]
+    assert rows[3] == [
+        "Agency",
+        "Row",
+        "Pay period",
+        "Due date",
+        "Liability",
+        "Paid",
+        "Unpaid",
+        "Overdue",
+    ]
     for agency in report.agencies:
-        assert [agency.label, "Balance", f"{agency.balance:f}"] in [r[:3] for r in rows]
-        assert [agency.label, "Other", f"{agency.other:f}"] in [r[:3] for r in rows]
-        for p in agency.periods:
-            expected = [
+        mine = [r for r in rows[4:] if r[0] == agency.label]
+        assert all(len(r) == 8 for r in mine)
+        by_kind = {kind: [r for r in mine if r[1] == kind] for kind in ("Balance", "Other")}
+        # Balance sits under Liability, Other under Unpaid; the date column stays empty.
+        assert by_kind["Balance"] == [
+            [agency.label, "Balance", "", "", f"{agency.balance:f}", "", "", ""]
+        ]
+        assert by_kind["Other"] == [
+            [agency.label, "Other", "", "", "", "", f"{agency.other:f}", ""]
+        ]
+        next_due = agency.next_due.isoformat() if agency.next_due else ""
+        assert [r for r in mine if r[1] == "Next due"] == [
+            [agency.label, "Next due", "", next_due, "", "", "", ""]
+        ]
+        periods = [r for r in mine if r[1] == "Period"]
+        assert periods == [
+            [
                 agency.label,
+                "Period",
                 p.pay_period,
                 p.due_date.isoformat(),
                 f"{p.liability:f}",
@@ -152,7 +176,13 @@ def test_csv_equals_the_service(owner_client, session, books):
                 f"{p.unpaid:f}",
                 "Yes" if p.overdue else "No",
             ]
-            assert expected in rows
+            for p in agency.periods
+        ]
+        # The Unpaid column over Period and Other rows adds up to the balance.
+        unpaid = sum(D(r[6]) for r in mine if r[1] in ("Period", "Other"))
+        assert unpaid == agency.balance
+    irs = next(a for a in report.agencies if a.agency == "irs_941")
+    assert irs.next_due is not None  # the Next due assertion above is not vacuous
     audit = session.exec(select(AuditLog).where(AuditLog.action == "report.export")).all()
     assert [a.after["format"] for a in audit] == ["csv"]
 

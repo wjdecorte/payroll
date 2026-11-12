@@ -363,3 +363,89 @@ def test_report_with_no_rules_row_uses_defaults_and_writes_nothing(session, owne
     assert not session.new and not session.dirty
     session.rollback()
     assert session.exec(select(func.count()).select_from(PayrollDepositRules)).one() == 0
+
+
+# ------------------------------------------------------------------------- opening bucket
+
+
+def opening_credit(session, owner_user, chart, payroll_roles, amount, day=date(2026, 1, 2)):
+    """A pre-upgrade liability journaled by hand: credit the 941 payable, debit the bank."""
+    LedgerPostingService(session).post(
+        EntryDraft(
+            day,
+            [
+                LineDraft(chart["Business Checking"].id, debit=D(amount)),
+                LineDraft(payroll_roles[SystemRole.PAYROLL_FEDERAL_PAYABLE].id, credit=D(amount)),
+            ],
+            memo="October 941 liability (before the upgrade)",
+        ),
+        actor=owner_user,
+    )
+
+
+def test_a_payment_of_the_opening_liability_does_not_settle_the_first_period(
+    session, owner_user, bank, chart, payroll_roles
+):
+    opening_credit(session, owner_user, chart, payroll_roles, "3000.00")
+    pay(session, owner_user, bank, "irs_941", D("3000.00"), date(2026, 1, 20))
+    jan = post_run(session, owner_user, bank, "2026-01")
+    report = payroll_liability_report(session, date(2026, 3, 1))
+
+    got = agency(report, "irs_941")
+    # 3,000.00 credited, 3,000.00 paid, then the run's own federal liability is all that is left.
+    assert got.balance == fed(jan)
+    assert [(p.liability, p.paid, p.unpaid) for p in got.periods] == [(fed(jan), ZERO, fed(jan))]
+    assert got.other == ZERO
+    assert got.next_due == date(2026, 2, 15)  # the January deposit still shows as due
+
+
+def test_a_part_payment_of_the_opening_liability_leaves_the_rest_in_other(
+    session, owner_user, bank, chart, payroll_roles
+):
+    opening_credit(session, owner_user, chart, payroll_roles, "3000.00")
+    pay(session, owner_user, bank, "irs_941", D("1200.00"), date(2026, 1, 20))
+    jan = post_run(session, owner_user, bank, "2026-01")
+    got = agency(payroll_liability_report(session, date(2026, 3, 1)), "irs_941")
+
+    assert got.balance == D("1800.00") + fed(jan)  # 3,000.00 - 1,200.00 + the run
+    assert got.periods[0].paid == ZERO and got.periods[0].unpaid == fed(jan)
+    assert got.other == D("1800.00")  # the unpaid remainder of the opening amount
+    assert got.balance == sum((p.unpaid for p in got.periods), ZERO) + got.other
+
+
+def test_payment_beyond_the_opening_liability_goes_to_the_oldest_period(
+    session, owner_user, bank, chart, payroll_roles
+):
+    opening_credit(session, owner_user, chart, payroll_roles, "3000.00")
+    pay(session, owner_user, bank, "irs_941", D("3500.00"), date(2026, 1, 20))
+    jan = post_run(session, owner_user, bank, "2026-01")
+    got = agency(payroll_liability_report(session, date(2026, 3, 1)), "irs_941")
+
+    assert got.periods[0].paid == D("500.00")
+    assert got.periods[0].unpaid == fed(jan) - D("500.00")
+    assert got.other == ZERO
+    assert got.balance == fed(jan) - D("500.00")
+
+
+def test_an_opening_credit_dated_after_as_of_is_not_in_the_opening_bucket(
+    session, owner_user, bank, chart, payroll_roles
+):
+    jan = post_run(session, owner_user, bank, "2026-01")
+    opening_credit(session, owner_user, chart, payroll_roles, "3000.00", date(2026, 4, 1))
+    pay(session, owner_user, bank, "irs_941", D("100.00"), date(2026, 2, 20))
+    got = agency(payroll_liability_report(session, date(2026, 3, 1)), "irs_941")
+
+    assert got.periods[0].paid == D("100.00")  # no opening bucket yet on that date
+    assert got.other == ZERO and got.balance == fed(jan) - D("100.00")
+
+
+def test_other_agencies_opening_amounts_are_kept_apart(
+    session, owner_user, bank, chart, payroll_roles
+):
+    opening_credit(session, owner_user, chart, payroll_roles, "3000.00")
+    jan = post_run(session, owner_user, bank, "2026-01")
+    pay(session, owner_user, bank, "ga_dor", jan.ga_withholding, date(2026, 2, 10))
+    report = payroll_liability_report(session, date(2026, 3, 1))
+
+    assert period(report, "ga_dor", "2026-01").unpaid == ZERO  # no opening on GA withholding
+    assert agency(report, "irs_941").other == D("3000.00")

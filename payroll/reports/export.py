@@ -267,13 +267,18 @@ def _payroll_liability(report: LiabilityReport) -> list[list[Cell]]:
         ["Payroll Liability"],
         ["As of", report.as_of],
         [],
-        ["Agency", "Pay period", "Due date", "Liability", "Paid", "Unpaid", "Overdue"],
+        ["Agency", "Row", "Pay period", "Due date", "Liability", "Paid", "Unpaid", "Overdue"],
     ]
     for agency in report.agencies:
-        rows.append([agency.label, "Balance", agency.balance])
+        label = agency.label
+        # Balance: the ledger balance in the Liability column; Other: the part of it the
+        # periods do not explain, in the Unpaid column so the Unpaid column plus Other sums
+        # to the balance; Next due: the date in the Due date column.
+        rows.append([label, "Balance", None, None, agency.balance, None, None, None])
         rows += [
             [
-                agency.label,
+                label,
+                "Period",
                 p.pay_period,
                 p.due_date,
                 p.liability,
@@ -283,8 +288,8 @@ def _payroll_liability(report: LiabilityReport) -> list[list[Cell]]:
             ]
             for p in agency.periods
         ]
-        rows.append([agency.label, "Other", agency.other])
-        rows.append([agency.label, "Next due", agency.next_due])
+        rows.append([label, "Other", None, None, None, None, agency.other, None])
+        rows.append([label, "Next due", None, agency.next_due, None, None, None, None])
     return rows
 
 

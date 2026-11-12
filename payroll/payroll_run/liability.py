@@ -5,6 +5,12 @@ Per agency: the ledger balance on the payable account, the unpaid amount of each
 (approved runs, oldest first, less the tax payments applied oldest first) with its due date,
 and an ``other`` line for whatever part of the balance the periods do not explain (opening
 balance, manual journal, overpayment). ``other`` is never aged or hidden.
+
+An opening bucket sits before the first period: the net credit on the payable account from
+entries that are neither payroll runs nor tax payments (a pre-upgrade liability journaled by
+hand, an opening balance). Tax payments are applied to it first, then to the periods oldest
+first, so a payment for a pre-upgrade month does not settle the first approved period. Its
+unpaid remainder is part of ``other``.
 """
 
 import calendar
@@ -14,7 +20,7 @@ from decimal import Decimal
 
 from sqlmodel import Session, col, func, or_, select
 
-from payroll.ledger.models import Account, JournalEntry, JournalLine
+from payroll.ledger.models import Account, JournalEntry, JournalLine, SourceType
 from payroll.payroll_run.ledger_models import PayrollDepositRules, TaxPayment
 from payroll.payroll_run.models import PayrollRun
 from payroll.payroll_run.tax_payments import AGENCY_ROLES
@@ -92,6 +98,20 @@ def _balance(session: Session, account_id: int, as_of: date) -> Decimal:
     return Decimal(session.exec(stmt).one()).quantize(ZERO)
 
 
+def _opening(session: Session, account_id: int, as_of: date) -> Decimal:
+    """Net credit on the account from entries other than payroll runs and tax payments."""
+    stmt = (
+        select(func.coalesce(func.sum(JournalLine.credit - JournalLine.debit), 0))
+        .join(JournalEntry, col(JournalEntry.id) == col(JournalLine.entry_id))
+        .where(
+            JournalLine.account_id == account_id,
+            JournalEntry.entry_date <= as_of,
+            col(JournalEntry.source_type).notin_([SourceType.PAYROLL_RUN, SourceType.TAX_PAYMENT]),
+        )
+    )
+    return max(Decimal(session.exec(stmt).one()).quantize(ZERO), ZERO)
+
+
 def _in_force_runs(session: Session, as_of: date) -> list[PayrollRun]:
     """Approved runs paid on or before ``as_of``, plus runs voided after ``as_of`` (still in
     force on that date, which is what the ledger balance shows)."""
@@ -143,6 +163,7 @@ def payroll_liability_report(session: Session, as_of: date) -> LiabilityReport:
         cadence = getattr(rules, f"{prefix}_cadence")
         due_day = getattr(rules, f"{prefix}_due_day")
         remaining = _payment_total(session, agency, as_of)
+        remaining -= min(_opening(session, account_id, as_of), remaining)  # opening bucket first
         periods: list[PeriodLiability] = []
         for run in runs:
             liability = _run_liability(agency, run).quantize(ZERO)
