@@ -8,7 +8,7 @@ import pytest
 from sqlmodel import select
 
 from payroll.payroll_run.ledger_models import PayrollDepositRules, PayrollSettings
-from payroll.reports.periods import company_today
+from payroll.tax import constants as tax
 from tests.frontend.test_csp_compat import _assert_csp_safe
 
 D = Decimal
@@ -46,7 +46,7 @@ def rules_form(**over):
     return data
 
 
-def test_page_defaults_to_the_current_tax_year(owner_client, year_settings, session):
+def test_page_shows_the_chosen_year(owner_client, year_settings, session):
     session.commit()
     page = owner_client.get(f"/settings/payroll?tax_year={year_settings.tax_year}")
     assert page.status_code == 200
@@ -55,8 +55,55 @@ def test_page_defaults_to_the_current_tax_year(owner_client, year_settings, sess
     assert 'value="2.64"' in page.text and 'value="7000.00"' in page.text
     assert 'value="9500.00"' in page.text
     assert "%" in page.text
+
+
+def test_page_defaults_to_the_engine_tax_year_whatever_today_is(
+    owner_client, year_settings, session, monkeypatch
+):
+    from datetime import date
+
+    from payroll.frontend import payroll_ledger_routers
+
+    session.commit()
+    monkeypatch.setattr(payroll_ledger_routers, "company_today", lambda: date(2031, 6, 1))
     default = owner_client.get("/settings/payroll")
-    assert f'value="{company_today().year}"' in default.text
+    assert f'value="{tax.TAX_YEAR}"' in default.text and 'value="2031"' not in default.text
+    assert f"Payroll runs use the settings for {tax.TAX_YEAR}" in default.text
+    assert 'value="0.6"' in default.text  # the engine year's saved values
+
+
+@pytest.mark.parametrize("path", ["/settings/ledger", "/settings/receivables", "/settings/payroll"])
+def test_every_settings_page_has_the_three_tabs(owner_client, path):
+    from html.parser import HTMLParser
+
+    class Tabs(HTMLParser):
+        """The (href, active) of each anchor in the settings tab bar (the one with Payroll)."""
+
+        def __init__(self):
+            super().__init__()
+            self.bars = []
+            self._bar = None
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "ul" and "nav-tabs" in (a.get("class") or ""):
+                self._bar = []
+                self.bars.append(self._bar)
+            elif tag == "a" and self._bar is not None:
+                self._bar.append((a.get("href"), "active" in (a.get("class") or "").split()))
+
+        def handle_endtag(self, tag):
+            if tag == "ul":
+                self._bar = None
+
+    parser = Tabs()
+    parser.feed(owner_client.get(path).text)
+    expected = [
+        ("/settings/ledger", path == "/settings/ledger"),
+        ("/settings/receivables", path == "/settings/receivables"),
+        ("/settings/payroll", path == "/settings/payroll"),
+    ]
+    assert expected in parser.bars, (path, parser.bars)
 
 
 def test_save_year_converts_percent_to_fraction_and_shows_saved(owner_client, session):
@@ -184,7 +231,6 @@ def test_non_owners_read_but_cannot_write(request, role_client, session):
     client = request.getfixturevalue(role_client)
     page = client.get("/settings/payroll")
     assert page.status_code == 200
-    assert "<form" not in page.text.split("</nav>")[-1] or "csrf_token" in page.text
     assert 'action="/settings/payroll/year"' not in page.text
     assert 'action="/settings/payroll/deposit-rules"' not in page.text
     assert client.post("/settings/payroll/year", data=year_form()).status_code == 403

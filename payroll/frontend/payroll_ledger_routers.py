@@ -43,6 +43,7 @@ from payroll.payroll_run.settings_service import (
 )
 from payroll.payroll_run.tax_payments import AGENCY_ROLES, TaxPaymentService
 from payroll.reports.periods import company_today
+from payroll.tax import constants as tax
 
 router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader)])
 
@@ -387,7 +388,7 @@ def _settings_page(
     saved: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
-    fallback = company_today().year
+    fallback = tax.TAX_YEAR
     return templates.TemplateResponse(
         request,
         "settings/payroll.html",
@@ -402,6 +403,7 @@ def _settings_page(
             "agencies": AGENCIES,
             "cadences": sorted(CADENCES),
             "saved": saved,
+            "engine_year": tax.TAX_YEAR,
         },
         status_code=status_code,
     )

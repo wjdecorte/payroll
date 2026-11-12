@@ -11,7 +11,7 @@
       <div class="card">
         <div class="card-header bg-primary">Unemployment rates for a tax year</div>
         <div class="card-body">
-          <p class="text-muted">Rates are percentages: type 0.6 for 0.6%. Payroll runs use the settings for their tax year.</p>
+          <p class="text-muted">Rates are percentages: type 0.6 for 0.6%. Payroll runs use the settings for {{ engine_year }}.</p>
           {% if year_error %}<div class="alert alert-danger py-2" role="alert">{{ year_error }}</div>{% endif %}
           {% if is_owner %}
           <form method="get" action="/settings/payroll" class="row g-2 align-items-end mb-3">
