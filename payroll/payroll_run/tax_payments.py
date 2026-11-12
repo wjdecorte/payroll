@@ -12,7 +12,7 @@ second sees it already void.
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -121,7 +121,11 @@ class TaxPaymentService:
 
         def work() -> TaxPayment:
             # (1) validate the inputs that need no database access
-            if not isinstance(payment_date, date) or not is_supported_date(payment_date):
+            if (
+                not isinstance(payment_date, date)
+                or isinstance(payment_date, datetime)
+                or not is_supported_date(payment_date)
+            ):
                 raise _invalid(f"The payment date must be within {supported_range_text()}")
             clean_agency = _check_agency(agency)
             if not is_int(bank_account_id):

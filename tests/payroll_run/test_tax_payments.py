@@ -2,7 +2,7 @@
 
 # ruff: noqa: F811  (fixtures re-exported by conftest are used as arguments)
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -247,6 +247,22 @@ def test_max_amount_accepted(session, owner_user, bank):
 )
 def test_unsupported_dates_refused(session, owner_user, bank, bad):
     rejected(session, owner_user, bank, payment_date=bad)
+
+
+def test_a_datetime_is_not_a_payment_date(session, owner_user, bank):
+    """A datetime is a date subclass; it is refused, as approve refuses it for a pay date."""
+    rejected(session, owner_user, bank, payment_date=datetime(2026, 3, 1, 12, 0))
+
+
+def test_a_datetime_is_not_a_void_date(session, owner_user, bank):
+    payment = make(session, owner_user, bank)
+    entries, audits = entry_count(session), audit_count(session)
+    with pytest.raises(InvalidTaxPaymentError):
+        TaxPaymentService(session).void(
+            payment.id, actor=owner_user, void_date=datetime(2026, 3, 5, 12, 0)
+        )
+    assert entry_count(session) == entries and audit_count(session) == audits
+    assert session.get(TaxPayment, payment.id).status == "posted"
 
 
 def test_memo_validation(session, owner_user, bank):

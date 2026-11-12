@@ -763,6 +763,16 @@ def test_downgrade_drops_everything_when_only_drafts_and_imports_exist(scratch_e
     with scratch_engine.begin() as conn:
         _plant_run(conn, pay_period="'2026-01'", status="'imported'")
         _plant_run(conn, pay_period="'2026-02'", status="'draft'")
+        for name, type_, role in (
+            ("Wages", "expense", "payroll_wages"),
+            ("Fed", "liability", "payroll_federal_payable"),
+            ("Owner", "liability", "due_to_owner"),
+        ):
+            conn.exec_driver_sql(
+                "INSERT INTO account (create_date, modify_date, name, type, is_active, "
+                "system_role) VALUES (now(), now(), %s, %s, true, %s)",
+                (name, type_, role),
+            )
     alembic_runner.downgrade(PRE_REVISION)
     with scratch_engine.connect() as conn:
         assert (
@@ -787,6 +797,17 @@ def test_downgrade_drops_everything_when_only_drafts_and_imports_exist(scratch_e
         }
         assert not checks
         assert conn.exec_driver_sql("SELECT count(*) FROM payroll_run").scalar_one() == 2
+        # The earlier code does not know the payroll roles: none may remain, the rest stay.
+        assert (
+            conn.exec_driver_sql(
+                "SELECT count(*) FROM account WHERE system_role LIKE 'payroll%%'"
+            ).scalar_one()
+            == 0
+        )
+        assert conn.exec_driver_sql(
+            "SELECT name, system_role FROM account WHERE name IN ('Wages', 'Fed', 'Owner') "
+            "ORDER BY name"
+        ).all() == [("Fed", None), ("Owner", "due_to_owner"), ("Wages", None)]
 
     alembic_runner.upgrade()  # and it can come back
     with scratch_engine.connect() as conn:

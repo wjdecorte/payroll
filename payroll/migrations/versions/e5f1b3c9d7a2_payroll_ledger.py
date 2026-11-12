@@ -347,6 +347,8 @@ def downgrade() -> None:
             "would destroy that data and leave 'tax_payment' journal entries that the earlier "
             "code cannot read. Restore a backup taken before the upgrade instead."
         )
+    # The earlier code does not know the payroll roles; clear them (the underscore is escaped).
+    op.execute(r"UPDATE account SET system_role = NULL WHERE system_role LIKE 'payroll\_%'")
     op.drop_index("ix_tax_payment_agency_date", table_name="tax_payment")
     op.drop_table("tax_payment")
     op.drop_table("payroll_deposit_rules")
