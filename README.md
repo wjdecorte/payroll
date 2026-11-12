@@ -124,9 +124,9 @@ posted, cannot be deleted). Only a draft can be deleted. Approving posts one bal
 figures never change afterwards; voiding posts the reversal. FUTA and SUTA are calculated when the run is
 saved, so enter the year's rates in Settings > Payroll first. Only the engine's tax year (2026)
 can be saved. The year-to-date wages must chain: a run cannot be saved before a later non-void run,
-approved after an earlier draft, approved when it starts at a different year-to-date figure than an
-earlier approved run ends at (an imported run before it is a manual starting point and imposes no
-figure), or voided while any later non-void run (imported included) exists. Eight payroll roles (for example `payroll_ga_wh_payable`) point the postings at your
+approved after an earlier draft, approved when it starts at a different year-to-date figure than the run just before it ends at
+(only if that run is approved; after an imported run any start is accepted), deleted (a draft) or
+voided while any later non-void run (imported included) exists. Eight payroll roles (for example `payroll_ga_wh_payable`) point the postings at your
 accounts in Settings > Ledger; they are frozen once any run is approved or void or any tax payment exists. Due to Owner is also
 frozen once a run has paid net pay to it.
 

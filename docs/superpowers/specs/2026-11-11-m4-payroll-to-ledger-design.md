@@ -255,7 +255,7 @@ Where the build differs from the text above. The code is the reference; the desi
   per-year FUTA and SUTA rates and wage bases.
 - Section 6 and 11.4 (chain rules): a run cannot be saved while a later-period non-void run exists in the
   tax year, and cannot be approved when its year-to-date start differs from the previous non-void run's end
-  (delete and save it again). Void is stricter than "no later approved run": it is refused while any later
+  and that run is approved (after an imported run any start is accepted; amended below, P11). Void is stricter than "no later approved run": it is refused while any later
   non-void run exists, so a later draft (or imported run) blocks it too.
 - Section 7 (tax payment bank account): the account may be an asset or a liability (a card) account, and it
   may not be bound to any of the eight payroll roles or to A/R, Undeposited Funds or Due to Owner.
@@ -274,3 +274,6 @@ Where the build differs from the text above. The code is the reference; the desi
   payable account as of the date (floored at zero) from entries whose source is neither a payroll run nor
   a tax payment, comes before the first period. Payments settle it first, then the periods oldest first;
   its unpaid remainder is part of Other, so `balance = sum(unpaid) + other` still holds.
+- Section 6 (delete, controller ruling P13): a draft cannot be deleted while a later non-void run exists in
+  the tax year (409, naming the later period); otherwise a later draft would keep year-to-date wages that
+  include wages never paid and approve after an imported predecessor.

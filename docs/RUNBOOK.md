@@ -162,6 +162,8 @@ First use, as the owner, before saving the next run:
      year-to-date start differs from the end of the previous run if that run is **approved** (delete
      it and save it again). When the previous run is **imported**, any year-to-date start is accepted:
      an imported run cannot be edited or deleted, so its end figure is only a starting point.
+   - A draft cannot be deleted while any later non-void run of the year exists (the later run's
+     year-to-date wages follow from it): delete or void the later runs first, latest first.
    - A run cannot be voided while **any** later non-void run of the year exists: void later approved
      runs first, and delete a later draft (a later draft blocks the void too). A later **imported**
      run blocks it as well, and that cannot be undone, because an imported run can never be deleted.

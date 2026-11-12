@@ -225,7 +225,8 @@ origination, a mobile app (the web UI must work on a phone browser on the LAN).
    approved** (delete it and save it again); after an imported run any start is accepted, because an
    imported run can never be edited or deleted. It cannot be voided while any later non-void run of
    the year exists (void later approved runs first and delete a later draft); a later imported run
-   blocks the void too, and that cannot be undone.
+   blocks the void too, and that cannot be undone. A draft cannot be deleted while a later non-void
+   run of the year exists, because that run's year-to-date wages follow from it.
 4. **FUTA and SUTA** are calculated at save from the run's FICA wages and the year-to-date wages, with
    the rates and wage bases in Settings > Payroll, and stored on the run. Rates are entered as
    percentages. Only the tax engine's year (`TAX_YEAR`) is read; saving a run is refused until that

@@ -315,7 +315,8 @@ In M4 (v2.4.0) only a pay period in the engine's tax year can be saved. The run'
 `use_previous_ytd_fica` option reads the latest earlier non-void run of the same calendar year (draft,
 approved or imported), and approval requires the stored start to match that run's end only when that
 run is approved: an imported run cannot be edited or deleted, so its end is a manual starting point
-and any start is accepted (see the run rules in the RUNBOOK, "Upgrading to v2.4.0").
+and any start is accepted. A draft cannot be deleted while a later non-void run of the year exists,
+so a later run's start can never go stale (see the run rules in the RUNBOOK, "Upgrading to v2.4.0").
 
 ### 6.2 Versioned tax constants
 `tax/constants_2026.py`, `constants_2027.py`, … selected by the run's tax year,
