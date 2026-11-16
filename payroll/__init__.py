@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "DCI Payroll"
-    app_version: str = "2.3.0"
+    app_version: str = "2.4.0"
     # Git commit the running image was built from; set via BUILD_SHA at image build time
     build_sha: str = "dev"
     # Monotonic CI run number; 0 for local runs

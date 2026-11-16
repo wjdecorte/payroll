@@ -24,6 +24,9 @@ from tests.tax.make_golden import build_inputs
 
 D = Decimal
 
+# Saving a run needs the year's FUTA / SUTA settings.
+pytestmark = pytest.mark.usefixtures("year_settings")
+
 
 @pytest.fixture
 def service(session):

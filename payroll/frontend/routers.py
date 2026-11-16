@@ -2,19 +2,21 @@
 Frontend routes.
 
 Full-page routes (not in the OpenAPI schema):
-  GET  /          -> renders the main page (index.html)
+  GET  /          -> renders the main page (index.html); ``?run={id}`` opens that run's panel
   GET  /admin     -> payroll configuration page
   POST /admin     -> saves the configuration
 
 Authorization (payroll.auth.permissions): every route needs a signed-in user
 (router-level ``require_reader``); ``GET/POST /admin`` and every route that can
 change data (calculate, save-run, delete, increment-journal-no) also need the
-``owner`` role. ``/htmx/calculate`` never saves, but it is the calculator form's
+``owner`` role (approve and void included). ``/htmx/calculate`` never saves, but it is the calculator form's
 action and is owner-only like the rest of the form.
 
 HTMX partial routes — return HTML fragments, not full pages:
   POST /htmx/calculate       -> runs a payroll calculation, returns _results.html
   POST /htmx/save-run        -> calculates and saves, returns _results.html
+  POST /htmx/runs/{id}/approve -> posts a draft run to the ledger, returns the run panel
+  POST /htmx/runs/{id}/void  -> voids an approved run, returns the run panel
   GET  /htmx/history         -> returns _history.html (list of saved runs)
   GET  /htmx/runs/{id}       -> loads a saved run into the results panel
   DELETE /htmx/runs/{id}     -> deletes a run, returns refreshed _history.html
@@ -25,6 +27,7 @@ Service results are rendered via ``model_dump(by_alias=True, mode="json")`` so t
 templates keep consuming the same camelCase dict shape the HTTP API returned.
 """
 
+import calendar
 import datetime
 import logging
 from decimal import Decimal, InvalidOperation
@@ -41,13 +44,22 @@ from payroll.auth.dependencies import csrf_context
 from payroll.auth.models import User
 from payroll.auth.permissions import require_owner, require_reader
 from payroll.common.dependencies import get_session
+from payroll.common.documents import MAX_MEMO, RESERVED_ROLES, clean_text
 from payroll.common.money import round_money
 from payroll.exceptions import AppBaseError
+from payroll.frontend.parsing import _parse_date, _parse_id, _path_id, _text
 from payroll.frontend.source_links import document_label, source_href
+from payroll.ledger.accounts import AccountService
+from payroll.ledger.models import AccountType
 from payroll.payroll_run.config_schemas import PayrollConfigUpdate
 from payroll.payroll_run.config_services import PayrollConfigService
+from payroll.payroll_run.exceptions import InvalidPayrollRunError, PayrollRunNotFoundError
+from payroll.payroll_run.models import PayrollRun
+from payroll.payroll_run.posting import NET_PAY_SOURCES, PayrollPostingService
 from payroll.payroll_run.schemas import PayrollInput
 from payroll.payroll_run.services import PayrollRunService
+from payroll.reports.periods import company_today
+from payroll.tax import constants as tax
 
 logger = logging.getLogger("payroll.frontend")
 
@@ -122,6 +134,93 @@ def _error_partial(request: Request, exc: AppBaseError, *, with_status: bool = T
 
 router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader)])
 
+# ---------------------------------------------------------------------------
+# Run panel: status, ledger preview, Approve and Void forms
+# ---------------------------------------------------------------------------
+
+
+def _run_panel_context(
+    session: Session,
+    run_id: int,
+    *,
+    form: dict[str, str] | None = None,
+    error: str | None = None,
+) -> dict:
+    """What ``_results.html`` needs to show a saved run, its ledger preview and the forms.
+
+    ``form`` holds the typed values to show again after a refused Approve or Void.
+    """
+    run = session.get(PayrollRun, run_id)
+    if run is None:
+        raise PayrollRunNotFoundError(message=f"Payroll run with id={run_id} not found")
+    result = _dump(PayrollRunService(session).get_run(run_id))
+    preview = None
+    preview_error = None
+    if run.status != "imported":
+        try:
+            preview = PayrollPostingService(session).preview(run_id)
+        except AppBaseError as exc:
+            preview_error = exc.message
+    banks = [
+        a
+        for a in AccountService(session).list()
+        if a.type == AccountType.ASSET and a.is_active and a.system_role not in RESERVED_ROLES
+    ]
+    year, month = int(run.pay_period[:4]), int(run.pay_period[5:])
+    default_pay_date = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    default_void_date = max(run.pay_date or default_pay_date, company_today())
+    return {
+        "result": result,
+        "run": run,
+        "preview": preview,
+        "preview_error": preview_error,
+        "banks": banks,
+        "form": form,
+        "error": error,
+        "default_pay_date": default_pay_date.isoformat(),
+        "default_void_date": default_void_date.isoformat(),
+    }
+
+
+def _run_panel(
+    request: Request,
+    session: Session,
+    run_id: int,
+    *,
+    form: dict[str, str] | None = None,
+    error: str | None = None,
+    status_code: int = 200,
+    refresh_history: bool = False,
+) -> HTMLResponse:
+    context = _run_panel_context(session, run_id, form=form, error=error)
+    history = _dump_list(PayrollRunService(session).list_runs(limit=50)) if refresh_history else []
+    context.update(
+        {
+            "history": history,
+            "save_run": refresh_history,
+            "next_journal_no": _next_journal_no(session),
+        }
+    )
+    return templates.TemplateResponse(
+        request, "partials/_results.html", context, status_code=status_code
+    )
+
+
+def _refused_panel(
+    request: Request, session: Session, run_id: int, form: dict[str, str], exc: AppBaseError
+) -> HTMLResponse:
+    """The run panel again with the service's message and the typed values (409 or 422)."""
+    if exc.http_code == 404:
+        return _error_partial(request, exc)
+    status_code = 409 if exc.http_code == 409 else 422
+    return _run_panel(
+        request, session, run_id, form=form, error=exc.message, status_code=status_code
+    )
+
+
+def _invalid_run(message: str) -> InvalidPayrollRunError:
+    return InvalidPayrollRunError(message=message)
+
 
 # ---------------------------------------------------------------------------
 # Full-page routes
@@ -129,8 +228,12 @@ router = APIRouter(include_in_schema=False, dependencies=[Depends(require_reader
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-    """Render the main page with an empty results panel."""
+async def index(
+    request: Request,
+    run: str | None = Query(None),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    """Render the main page; ``?run={id}`` opens that saved run's panel (anything else is ignored)."""
     latest_run = None
     config = None
     ytd_fica_default: str | Decimal = Decimal("0.00")
@@ -140,17 +243,27 @@ async def index(request: Request, session: Session = Depends(get_session)) -> HT
         config = _dump(PayrollConfigService(session).get_config())
         run_service = PayrollRunService(session)
         history = _dump_list(run_service.list_runs(limit=50))
-        if history:
-            latest_run = _dump(run_service.get_run(history[0]["id"]))
-
-            # Only pre-fill YTD FICA if the previous run is in the same year as now
-            current_year = str(datetime.datetime.now().year)
-            if latest_run.get("payPeriod", "").startswith(current_year):
-                ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", "0.00")
+        # Pre-fill from the latest run that still counts (not void) in the engine's tax year.
+        year = f"{tax.TAX_YEAR}-"
+        latest = next(
+            (r for r in history if r["status"] != "void" and r["payPeriod"].startswith(year)),
+            None,
+        )
+        if latest is not None:
+            latest_run = _dump(run_service.get_run(latest["id"]))
+            ytd_fica_default = latest_run.get("taxDetail", {}).get("ytdFicaAfter", "0.00")
 
     except Exception:
         logger.exception("Could not load index data")
         history = []
+
+    panel: dict = {}
+    if run is not None:
+        try:
+            panel = _run_panel_context(session, _path_id(run, "The run id", InvalidPayrollRunError))
+            panel.update({"save_run": False, "next_journal_no": _next_journal_no(session)})
+        except AppBaseError:
+            panel = {}  # not a run we have: show the page as usual
 
     return templates.TemplateResponse(
         request,
@@ -160,6 +273,7 @@ async def index(request: Request, session: Session = Depends(get_session)) -> HT
             "latest_run": latest_run,
             "config": config,
             "ytd_fica_default": ytd_fica_default,
+            **panel,
         },
     )
 
@@ -408,19 +522,9 @@ async def htmx_history(request: Request, session: Session = Depends(get_session)
 async def htmx_get_run(
     request: Request, run_id: int, session: Session = Depends(get_session)
 ) -> HTMLResponse:
-    """Load a saved payroll run into the results panel."""
+    """Load a saved payroll run into the results panel (status, ledger preview, forms)."""
     try:
-        result = _dump(PayrollRunService(session).get_run(run_id))
-        return templates.TemplateResponse(
-            request,
-            "partials/_results.html",
-            {
-                "result": result,
-                "history": [],
-                "save_run": False,
-                "next_journal_no": _next_journal_no(session),
-            },
-        )
+        return _run_panel(request, session, run_id)
     except AppBaseError as exc:
         return _error_partial(request, exc)
 
@@ -444,6 +548,74 @@ async def htmx_delete_run(
         )
     except AppBaseError as exc:
         return _error_partial(request, exc, with_status=False)
+
+
+@router.post("/htmx/runs/{run_id}/approve", response_class=HTMLResponse)
+async def htmx_approve_run(
+    request: Request,
+    run_id: str,
+    pay_date: str = Form(""),
+    net_pay_source: str = Form(""),
+    net_pay_account_id: str = Form(""),
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+) -> HTMLResponse:
+    """Post a draft run to the ledger; returns the run panel (422/409 with the message if refused)."""
+    form = {
+        "pay_date": pay_date,
+        "net_pay_source": net_pay_source,
+        "net_pay_account_id": net_pay_account_id,
+    }
+    try:
+        rid = _path_id(run_id, "The run id", InvalidPayrollRunError)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    try:
+        when = _parse_date(pay_date, "The pay date", InvalidPayrollRunError)
+        if when is None:
+            raise _invalid_run("Enter the pay date")
+        source = _text(net_pay_source)
+        if source not in NET_PAY_SOURCES:
+            raise _invalid_run("Choose whether net pay goes to a bank account or to Due to Owner")
+        account_id = _parse_id(net_pay_account_id, "The bank account", InvalidPayrollRunError)
+        if source == "account" and account_id is None:
+            raise _invalid_run("Choose the bank account net pay is paid from")
+        PayrollPostingService(session).approve(
+            rid,
+            actor=actor,
+            pay_date=when,
+            net_pay_source=source,  # type: ignore[arg-type]
+            net_pay_account_id=account_id if source == "account" else None,
+        )
+    except AppBaseError as exc:
+        return _refused_panel(request, session, rid, form, exc)
+    return _run_panel(request, session, rid, refresh_history=True)
+
+
+@router.post("/htmx/runs/{run_id}/void", response_class=HTMLResponse)
+async def htmx_void_run(
+    request: Request,
+    run_id: str,
+    void_date: str = Form(""),
+    memo: str = Form(""),
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_owner),
+) -> HTMLResponse:
+    """Reverse an approved run's entry; returns the run panel (422/409 with the message if refused)."""
+    form = {"void_date": void_date, "memo": memo}
+    try:
+        rid = _path_id(run_id, "The run id", InvalidPayrollRunError)
+    except AppBaseError as exc:
+        return _error_partial(request, exc)
+    try:
+        when = _parse_date(void_date, "The void date", InvalidPayrollRunError)
+        if when is None:
+            raise _invalid_run("Enter the void date")
+        clean_memo = clean_text(memo, "Memo", MAX_MEMO, InvalidPayrollRunError)
+        PayrollPostingService(session).void(rid, actor=actor, void_date=when, memo=clean_memo)
+    except AppBaseError as exc:
+        return _refused_panel(request, session, rid, form, exc)
+    return _run_panel(request, session, rid, refresh_history=True)
 
 
 @router.post("/htmx/increment-journal-no", response_class=HTMLResponse)

@@ -14,6 +14,9 @@ from payroll.ledger import cli
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, JournalEntry, SourceType
 from payroll.ledger.period_lock import PeriodLockService
+from payroll.payroll_run.ledger_models import TaxPayment
+from payroll.payroll_run.liability import payroll_liability_report
+from payroll.payroll_run.models import PayrollRun
 from payroll.receivables.balances import ar_aging, invoice_states
 from payroll.receivables.models import (
     Customer,
@@ -29,6 +32,7 @@ from payroll.reports.statements import ReportService
 
 END = date(2026, 12, 31)
 D = Decimal
+SETTLEMENT_MEMO = "Owner paid the June net pay owed"  # the payroll section's journal
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +50,10 @@ def _manual_count(session) -> int:
     return session.exec(
         select(func.count())
         .select_from(JournalEntry)
-        .where(col(JournalEntry.source_type).in_((SourceType.MANUAL, SourceType.OPENING_BALANCE)))
+        .where(
+            col(JournalEntry.source_type).in_((SourceType.MANUAL, SourceType.OPENING_BALANCE)),
+            col(JournalEntry.memo) != SETTLEMENT_MEMO,
+        )
     ).one()
 
 
@@ -86,7 +93,10 @@ def test_seed_demo_posts_a_balanced_year(session, owner_user, capsys):
     assert "balanced" in out and "NOT" not in out
     entries = session.exec(select(JournalEntry)).all()
     manual = [
-        e for e in entries if e.source_type in (SourceType.MANUAL, SourceType.OPENING_BALANCE)
+        e
+        for e in entries
+        if e.source_type in (SourceType.MANUAL, SourceType.OPENING_BALANCE)
+        and e.memo != SETTLEMENT_MEMO
     ]
     assert 38 <= len(manual) <= 50
     assert f"Posted {len(manual)} demo journal entries" in out
@@ -100,6 +110,8 @@ def test_seed_demo_posts_a_balanced_year(session, owner_user, capsys):
         SourceType.EXPENSE,
         SourceType.REIMBURSEMENT,
         SourceType.TRANSFER,
+        SourceType.PAYROLL_RUN,
+        SourceType.TAX_PAYMENT,
     }
     assert sum(1 for e in manual if e.status == "void") == 1
     assert all(date(2026, 1, 1) <= e.entry_date <= END for e in entries)
@@ -265,3 +277,62 @@ def test_seed_demo_skips_the_receipt_when_the_directory_is_not_writable(
     assert "Receipt skipped" in out and "0 receipt" in out
     assert _expense_counts(session) == [2, 4, 1, 1, 0]
     assert owner_summary(session, END).matches
+
+
+def _payroll_counts(session) -> list[int]:
+    return [
+        session.exec(select(func.count()).select_from(t)).one() for t in (PayrollRun, TaxPayment)
+    ]
+
+
+def test_seed_demo_adds_a_year_of_payroll_that_reconciles(session, owner_user, capsys):
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    out = capsys.readouterr().out
+    assert "Payroll: 12 runs (1 voided and approved again, 1 paid to Due to Owner)" in out
+
+    runs = session.exec(select(PayrollRun).order_by(col(PayrollRun.id))).all()
+    live = [r for r in runs if r.status == "approved"]
+    assert [r.pay_period for r in live] == [f"2026-{m:02d}" for m in range(1, 13)]
+    assert [r.pay_period for r in runs if r.status == "void"] == ["2026-03"]
+    assert len(runs) == 13
+    # The chain is unbroken, including across the voided and re-approved month.
+    assert live[0].ytd_fica_before == 0
+    for before, after in zip(live, live[1:], strict=False):
+        assert after.ytd_fica_before == before.ytd_fica_after
+    january = live[0]
+    assert january.health_insurance == D("500.00") and january.hsa_contribution == D("300.00")
+    assert all(r.health_insurance == 0 and r.hsa_contribution == 0 for r in live[1:])
+    assert [r.pay_period for r in live if r.net_pay_source == "owner"] == ["2026-06"]
+    assert all(r.net_pay_source == "account" for r in live if r.pay_period != "2026-06")
+
+    assert session.exec(select(func.count()).select_from(TaxPayment)).one() > 10
+    report = payroll_liability_report(session, END)
+    for agency in report.agencies:
+        assert agency.other == 0, agency.agency
+        assert agency.balance == sum((p.unpaid for p in agency.periods), D("0.00"))
+    assert any(p.unpaid > 0 for a in report.agencies for p in a.periods)  # something is owed
+
+    reports = ReportService(session)
+    assert reports.trial_balance(END).balanced
+    aging = ar_aging(session, END)
+    assert aging.difference == 0 and all(i.ok for i in aging.invariants)
+    summary = owner_summary(session, END)
+    assert summary.matches and summary.owed_to_me == D("67.15")
+    year = Period(date(2026, 1, 1), END, "2026")
+    for basis in (Basis.CASH, Basis.ACCRUAL):
+        assert all(i.ok for i in reports.profit_and_loss(year, basis=basis).invariants)
+        assert all(i.ok for i in reports.balance_sheet(END, basis=basis).invariants)
+
+
+def test_seed_demo_twice_leaves_the_payroll_unchanged(session, owner_user, capsys):
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 0
+    before = _payroll_counts(session)
+    entries = _entries(session)
+    capsys.readouterr()
+    assert _run(session, "seed-demo", "--email", owner_user.email) == 1  # refused
+    assert _payroll_counts(session) == before
+    assert _run(session, "seed-demo", "--email", owner_user.email, "--force") == 0
+    assert "Payroll not added" in capsys.readouterr().out
+    assert _payroll_counts(session) == before
+    assert _entries(session) > entries  # --force still adds the year's manual entries
+    assert all(a.other == 0 for a in payroll_liability_report(session, END).agencies)

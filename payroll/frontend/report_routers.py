@@ -10,6 +10,7 @@ Full-page routes (not in the OpenAPI schema), all GET-only:
   GET /reports/journal           -> ``preset``/``start``/``end``
   GET /reports/ar-aging          -> ``asOf``
   GET /reports/owner-reimbursement -> ``as_of``, ``date_from``, ``date_to``
+  GET /reports/payroll-liability -> ``as_of``
   GET /reports/<report>.csv|.pdf -> the same report as a download (same query string)
 
 Every route needs a signed-in user (router-level ``require_reader``). The picker is
@@ -42,6 +43,7 @@ from payroll.reports.runs import (
     run_general_ledger,
     run_journal,
     run_owner_reimbursement,
+    run_payroll_liability,
     run_profit_and_loss,
     run_trial_balance,
     trial_invariants,
@@ -102,6 +104,11 @@ REPORTS = (
         "/reports/owner-reimbursement",
         "What the company owes the owner, the open expenses you paid personally, and reimbursements.",
     ),
+    (
+        "Payroll Liability",
+        "/reports/payroll-liability",
+        "What is owed to each tax agency by pay period, what is paid, what is overdue, and the ledger balance.",
+    ),
 )
 
 
@@ -123,6 +130,7 @@ class Picker:
     comparison: bool = False
     accounts: bool = False
     owner: bool = False
+    liability: bool = False
     date_from: str = ""
     date_to: str = ""
 
@@ -387,7 +395,23 @@ async def owner_reimbursement_report_page(
     )
 
 
+@router.get("/reports/payroll-liability", response_class=HTMLResponse)
+async def payroll_liability_report_page(
+    request: Request,
+    as_of: str = "",
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    picker = Picker("/reports/payroll-liability", as_of=as_of, liability=True)
+    template, title = "reports/payroll_liability.html", "Payroll Liability"
+    try:
+        report = run_payroll_liability(session, {"as_of": as_of}).report
+    except AppBaseError as exc:
+        return _page(request, template, title, picker, session, error=exc)
+    picker.as_of = report.as_of.isoformat()
+    return _page(request, template, title, picker, session, liability=report)
+
+
 # GET /reports/<report>.csv and .pdf: the same query string, validation and report as
-# the page above (see payroll.frontend.report_export). Owner reimbursement is page-only:
+# the page above (see payroll.frontend.report_export). Owner reimbursement and payroll liability are page-only:
 # its downloads are registered here and there is no API twin.
 add_export_routes(router, "/reports", PAGE_RUNNERS)

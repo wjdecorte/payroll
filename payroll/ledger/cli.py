@@ -18,12 +18,18 @@ Commands (no password is ever prompted: the actor is the owner found by email):
   bank-to-card payment transfer, and a tiny PDF receipt stored under the attachment directory
   (skipped with a notice when that directory is not writable), so the Due to Owner balance,
   the owner report and the expense pages have something to show.
+  Last it adds a year of payroll (skipped with a notice when any payroll run exists): the
+  year's FUTA and SUTA settings, twelve monthly runs saved and approved in order (January
+  with health insurance and an HSA contribution, June paid to Due to Owner and settled
+  by a journal in July, March voided and approved again), and tax payments to the agencies
+  that stay within what each period owes, so the payroll liability report has something to show.
 
 When run as a program the CLI first applies pending migrations, like
 ``payroll.auth.cli``. Exit codes: 0 ok, 1 error (message on stderr), 2 usage error.
 """
 
 import argparse
+import calendar
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -48,6 +54,13 @@ from payroll.ledger.accounts import AccountService
 from payroll.ledger.default_chart import seed_default_chart
 from payroll.ledger.models import AccountType, JournalEntry, SourceType
 from payroll.ledger.services import EntryDraft, LedgerPostingService, LineDraft
+from payroll.payroll_run.liability import payroll_liability_report
+from payroll.payroll_run.models import PayrollRun
+from payroll.payroll_run.posting import PayrollPostingService
+from payroll.payroll_run.schemas import PayrollInput
+from payroll.payroll_run.services import PayrollRunService
+from payroll.payroll_run.settings_service import PayrollSettingsService
+from payroll.payroll_run.tax_payments import TaxPaymentService
 from payroll.receivables.credits import RefundService
 from payroll.receivables.customers import CustomerService
 from payroll.receivables.deposits import DepositService
@@ -56,6 +69,7 @@ from payroll.receivables.items import ItemService
 from payroll.receivables.models import Customer
 from payroll.receivables.payments import ApplicationInput, PaymentService
 from payroll.reports.statements import ReportService
+from payroll.tax.constants import TAX_YEAR
 
 DEMO_YEAR = 2026
 
@@ -463,6 +477,131 @@ def _post_demo_expenses(db: Session, actor: User) -> ExpensesSummary:
     )
 
 
+@dataclass(frozen=True)
+class PayrollSummary:
+    runs: int
+    voided_and_reapproved: int
+    tax_payments: int
+    to_owner: int
+
+
+def _month_end(month: int) -> date:
+    return date(DEMO_YEAR, month, calendar.monthrange(DEMO_YEAR, month)[1])
+
+
+def _post_demo_payroll(db: Session, actor: User) -> PayrollSummary:
+    """
+    A year of payroll, built through the real services (each commits itself).
+
+    Twelve monthly runs are saved and approved in order, paid on the last day of the month.
+    January carries health insurance (in income tax) and an HSA contribution; June's net pay
+    goes to Due to Owner and a July journal settles it (so the owner balance still equals the
+    open owner-paid expenses); March is approved, voided while it is the latest run, then
+    saved and approved again. Federal and Georgia withholding are paid the month after each
+    run, and the unemployment taxes the month after each quarter, each for exactly what the
+    liability report says is unpaid, so every agency's ``other`` stays 0.00.
+    """
+    ids = {n.full_name: n.account.id for n in AccountService(db).tree(include_inactive=True)}
+    if PayrollSettingsService(db).get_year(TAX_YEAR) is None:
+        PayrollSettingsService(db).set_year(
+            actor=actor,
+            tax_year=TAX_YEAR,
+            futa_rate=D("0.006"),
+            futa_wage_base=D("7000.00"),
+            suta_rate=D("0.0264"),
+            suta_wage_base=D("9500.00"),
+        )
+    runs, posting, payments = (
+        PayrollRunService(db),
+        PayrollPostingService(db),
+        TaxPaymentService(db),
+    )
+    bank = ids[CHECKING]
+    payments_made = 0
+
+    def pay_unpaid(agency: str, when: date, periods: tuple[str, ...]) -> None:
+        nonlocal payments_made
+        report = payroll_liability_report(db, when)
+        row = next(a for a in report.agencies if a.agency == agency)
+        amount = sum((p.unpaid for p in row.periods if p.pay_period in periods), D("0.00"))
+        if amount > 0:
+            payments.create(
+                actor=actor,
+                payment_date=when,
+                agency=agency,
+                bank_account_id=bank,
+                amount=amount,
+                memo=f"{agency} deposit for {', '.join(periods)}",
+            )
+            payments_made += 1
+
+    def save_and_approve(month: int) -> None:
+        first = month == 1
+        saved = runs.calculate(
+            PayrollInput(
+                pay_period=f"{DEMO_YEAR}-{month:02d}",
+                gross_salary=D("8000.00"),
+                health_insurance=D("500.00") if first else D("0.00"),
+                hsa_contribution=D("300.00") if first else D("0.00"),
+                health_in_income_tax=True,
+                hsa_in_income_tax=False,
+                use_previous_ytd_fica=True,
+                save_run=True,
+                notes="Demo payroll",
+            ),
+            actor=actor,
+        )
+        to_owner = month == 6
+        assert saved.id is not None
+        posting.approve(
+            saved.id,
+            actor=actor,
+            pay_date=_month_end(month),
+            net_pay_source="owner" if to_owner else "account",
+            net_pay_account_id=None if to_owner else bank,
+        )
+
+    voided = 0
+    for month in range(1, 13):
+        save_and_approve(month)
+        period = f"{DEMO_YEAR}-{month:02d}"
+        if month == 3:  # the latest run, so it can be voided; then it is saved afresh
+            march = db.exec(select(PayrollRun).where(PayrollRun.pay_period == period)).one()
+            posting.void(
+                march.id,  # type: ignore[arg-type]
+                actor=actor,
+                void_date=_month_end(3),
+                memo="Wrong hours entered",
+            )
+            voided += 1
+            save_and_approve(month)
+        if month == 6:
+            _simple(
+                LedgerPostingService(db),
+                actor,
+                ids,
+                date(DEMO_YEAR, 7, 5),
+                "Due to Owner",
+                CHECKING,
+                str(
+                    db.exec(select(PayrollRun.net_pay).where(PayrollRun.pay_period == period)).one()
+                ),
+                "Owner paid the June net pay owed",
+            )
+        if month >= 2:  # the previous month's withholding, due by the 15th
+            previous = (f"{DEMO_YEAR}-{month - 1:02d}",)
+            deposit = date(DEMO_YEAR, month, 15)
+            pay_unpaid("irs_941", deposit, previous)
+            pay_unpaid("ga_dor", deposit, previous)
+        if month in (4, 7, 10):  # unemployment taxes for the quarter that just ended
+            quarter = tuple(f"{DEMO_YEAR}-{m:02d}" for m in range(month - 3, month))
+            for agency in ("irs_futa", "ga_dol"):
+                pay_unpaid(agency, date(DEMO_YEAR, month, 30), quarter)
+    return PayrollSummary(
+        runs=12, voided_and_reapproved=voided, tax_payments=payments_made, to_owner=1
+    )
+
+
 # ----------------------------------------------------------------------
 # Commands
 # ----------------------------------------------------------------------
@@ -526,13 +665,24 @@ def _run(args: argparse.Namespace, db: Session) -> str:
         )
         if exp.receipt_notice:
             expenses += f" {exp.receipt_notice}"
+    if db.exec(select(func.count()).select_from(PayrollRun)).one():
+        payroll = "Payroll not added: payroll runs already exist."
+    else:
+        try:
+            pay = _post_demo_payroll(db, actor)
+        except AppBaseError as exc:
+            raise CliError(f"Posted the demo year but not the payroll: {exc.message}") from exc
+        payroll = (
+            f"Payroll: {pay.runs} runs ({pay.voided_and_reapproved} voided and approved again, "
+            f"{pay.to_owner} paid to Due to Owner), {pay.tax_payments} tax payments."
+        )
     return (
         f"Posted {summary.entries} demo journal entries for {DEMO_YEAR} "
         f"({summary.reversals} reversals, {summary.voided} voided); "
         f"created {summary.accounts_created} account(s). "
         f"Trial balance at {DEMO_YEAR}-12-31: debits {summary.total_debits}, "
         f"{'balanced' if summary.balanced else 'NOT balanced'}. "
-        f"{receivables} {expenses}"
+        f"{receivables} {expenses} {payroll}"
     )
 
 

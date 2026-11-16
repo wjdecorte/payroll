@@ -8,6 +8,9 @@ from payroll.frontend.routers import templates
 
 PREFIX = "/payroll/api/v1"
 
+# Saving a run needs the year's FUTA / SUTA settings.
+pytestmark = pytest.mark.usefixtures("year_settings")
+
 FORM = {
     "pay_period": "2026-01",
     "gross_salary": "8000",

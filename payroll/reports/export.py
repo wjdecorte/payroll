@@ -20,6 +20,7 @@ from datetime import date
 from decimal import Decimal
 
 from payroll.expenses.reports import OwnerReport
+from payroll.payroll_run.liability import LiabilityReport
 from payroll.receivables.balances import AgingRow, ARAging
 from payroll.reports.schemas import (
     GeneralLedger,
@@ -261,6 +262,37 @@ def _owner_reimbursement(report: OwnerReport) -> list[list[Cell]]:
     return rows
 
 
+def _payroll_liability(report: LiabilityReport) -> list[list[Cell]]:
+    rows: list[list[Cell]] = [
+        ["Payroll Liability"],
+        ["As of", report.as_of],
+        [],
+        ["Agency", "Row", "Pay period", "Due date", "Liability", "Paid", "Unpaid", "Overdue"],
+    ]
+    for agency in report.agencies:
+        label = agency.label
+        # Balance: the ledger balance in the Liability column; Other: the part of it the
+        # periods do not explain, in the Unpaid column so the Unpaid column plus Other sums
+        # to the balance; Next due: the date in the Due date column.
+        rows.append([label, "Balance", None, None, agency.balance, None, None, None])
+        rows += [
+            [
+                label,
+                "Period",
+                p.pay_period,
+                p.due_date,
+                p.liability,
+                p.paid,
+                p.unpaid,
+                "Yes" if p.overdue else "No",
+            ]
+            for p in agency.periods
+        ]
+        rows.append([label, "Other", None, None, None, None, agency.other, None])
+        rows.append([label, "Next due", None, agency.next_due, None, None, None, None])
+    return rows
+
+
 def _table(report: object) -> list[list[Cell]]:
     if isinstance(report, Statement):
         return _statement(report)
@@ -274,11 +306,19 @@ def _table(report: object) -> list[list[Cell]]:
         return _ar_aging(report)
     if isinstance(report, OwnerReport):
         return _owner_reimbursement(report)
+    if isinstance(report, LiabilityReport):
+        return _payroll_liability(report)
     raise TypeError(f"Cannot export {type(report).__name__} as CSV")
 
 
 def to_csv(
-    report: Statement | TrialBalance | GeneralLedger | JournalReport | ARAging | OwnerReport,
+    report: Statement
+    | TrialBalance
+    | GeneralLedger
+    | JournalReport
+    | ARAging
+    | OwnerReport
+    | LiabilityReport,
 ) -> str:
     """The report as CSV text (UTF-8 by the caller, ``\\r\\n`` line ends)."""
     buffer = io.StringIO()

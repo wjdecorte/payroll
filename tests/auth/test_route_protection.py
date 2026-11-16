@@ -28,6 +28,9 @@ from payroll.auth.permissions import PUBLIC_PATHS, ROLES, is_public_path, requir
 from payroll.payroll_run.models import PayrollRun
 from tests.conftest import add_presession_csrf
 
+# Saving a run needs the year's FUTA / SUTA settings.
+pytestmark = pytest.mark.usefixtures("year_settings")
+
 PREFIX = app_settings.base_url_prefix
 API = f"{PREFIX}/payroll"
 
@@ -48,7 +51,9 @@ ROLE_FREE_UNSAFE_ENDPOINTS = frozenset(
     }
 )
 # the M2 receivables routes added 19, the M3 vendor/expense/transfer/owner routes added 10
-MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 10
+# and the M4 payroll run approve and void routes added 2, the tax payment and payroll
+# settings routes added 4
+MIN_OWNER_ONLY_UNSAFE_ENDPOINTS = 26 + 19 + 10 + 2 + 4
 # The ledger (M1) mutating routes: all owner-only. The sweep test below checks this
 # list against the app's real routes, so a new ledger route cannot be left out.
 LEDGER = f"{PREFIX}/ledger"
@@ -110,6 +115,18 @@ EXPENSES_UNSAFE_ENDPOINTS = (
     ("POST", "/owner/reimburse"),
     ("POST", "/owner/reimbursements/1/void"),
 )
+# The payroll run lifecycle (M4) page routes: owner-only HTMX posts.
+PAYROLL_RUN_UNSAFE_ENDPOINTS = (
+    ("POST", "/htmx/runs/1/approve"),
+    ("POST", "/htmx/runs/1/void"),
+)
+# The tax payment and payroll settings (M4) page routes: owner-only form posts.
+PAYROLL_LEDGER_UNSAFE_ENDPOINTS = (
+    ("POST", "/payroll/tax-payments/new"),
+    ("POST", "/payroll/tax-payments/1/void"),
+    ("POST", "/settings/payroll/year"),
+    ("POST", "/settings/payroll/deposit-rules"),
+)
 DOCS_PATHS = (f"{PREFIX}/docs", f"{PREFIX}/redoc", f"{PREFIX}/openapi.json")
 
 _PATH_PARAM = re.compile(r"\{[^}]+\}")
@@ -132,6 +149,7 @@ HTMX_FORM = {
     "ytd_fica_wages": "0",
 }
 HX = {"HX-Request": "true"}
+APPROVE_FORM = {"pay_date": "2026-01-31", "net_pay_source": "owner"}
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +242,8 @@ def test_every_route_requires_auth(any_app):
         *LEDGER_UNSAFE_ENDPOINTS,
         *RECEIVABLES_UNSAFE_ENDPOINTS,
         *EXPENSES_UNSAFE_ENDPOINTS,
+        *PAYROLL_RUN_UNSAFE_ENDPOINTS,
+        *PAYROLL_LEDGER_UNSAFE_ENDPOINTS,
         *ANONYMOUS_ENDPOINTS,
     ]:
         assert known in endpoints, known
@@ -487,6 +507,95 @@ def test_expense_routes_need_csrf(owner_client, session):
     assert counts()[0] == before[0] + 1
 
 
+def test_payroll_run_route_list_matches_the_app():
+    found = {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS
+        and path.startswith("/htmx/runs/")
+        and path.endswith(("/approve", "/void"))
+    }
+    assert found == set(PAYROLL_RUN_UNSAFE_ENDPOINTS)
+
+
+def test_payroll_run_routes_need_csrf(owner_client, session):
+    """A signed-in owner without the CSRF token is refused (403) and the run is untouched."""
+    from payroll.auth.dependencies import CSRF_HEADER
+
+    run_id = _saved_run_id(owner_client)
+    session.commit()
+    token = owner_client.headers.pop(CSRF_HEADER)
+    audit_before = len(session.exec(select(AuditLog)).all())
+    body = {"pay_date": "2026-01-31", "net_pay_source": "owner", "void_date": "2026-02-01"}
+    for method, path in PAYROLL_RUN_UNSAFE_ENDPOINTS:
+        response = owner_client.request(
+            method, path.replace("/1/", f"/{run_id}/"), data=body, headers=HX
+        )
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json() == {"detail": "CSRF token missing or invalid"}
+    assert session.get(PayrollRun, run_id).status == "draft"
+    assert len(session.exec(select(AuditLog)).all()) == audit_before
+    owner_client.headers[CSRF_HEADER] = token
+
+
+def _payroll_ledger_unsafe_routes() -> set[tuple[str, str]]:
+    return {
+        (method, path)
+        for method, path in _endpoints(app)
+        if method in UNSAFE_METHODS
+        and path.startswith(("/payroll/tax-payments", "/settings/payroll"))
+    }
+
+
+def test_payroll_ledger_route_list_matches_the_app():
+    assert _payroll_ledger_unsafe_routes() == set(PAYROLL_LEDGER_UNSAFE_ENDPOINTS)
+    pages = {
+        path
+        for method, path in _endpoints(app)
+        if method == "GET" and path.startswith(("/payroll/tax-payments", "/settings/payroll"))
+    }
+    assert pages == {
+        "/payroll/tax-payments",
+        "/payroll/tax-payments/new",
+        "/payroll/tax-payments/1",
+        "/settings/payroll",
+    }
+
+
+@pytest.mark.parametrize("role_client", ["viewer_client", "accountant_client"])
+def test_non_owners_and_anonymous_cannot_post_payroll_ledger_pages(
+    request, role_client, anon_client, session
+):
+    client = request.getfixturevalue(role_client)
+    session.commit()
+    for method, path in PAYROLL_LEDGER_UNSAFE_ENDPOINTS:
+        response = client.request(method, path, follow_redirects=False)
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json()["errors"][0]["type"] == "PermissionDeniedError", (method, path)
+        anonymous = anon_client.request(method, path, follow_redirects=False)
+        _assert_refused_unauthenticated(anonymous, method, path)
+    assert client.get("/payroll/tax-payments/new").status_code == 403
+    assert client.get("/payroll/tax-payments").status_code == 200
+    assert client.get("/settings/payroll").status_code == 200
+    assert anon_client.get("/settings/payroll", follow_redirects=False).status_code == 303
+
+
+def test_payroll_ledger_routes_need_csrf(owner_client, session):
+    """A signed-in owner without the CSRF token is refused (403) and nothing is written."""
+    from payroll.auth.dependencies import CSRF_HEADER
+
+    session.commit()
+    token = owner_client.headers.pop(CSRF_HEADER)
+    audit_before = len(session.exec(select(AuditLog)).all())
+    body = {"void_date": "2026-03-01", "tax_year": "2027", "payment_date": "2026-03-01"}
+    for method, path in PAYROLL_LEDGER_UNSAFE_ENDPOINTS:
+        response = owner_client.request(method, path, data=body, follow_redirects=False)
+        assert response.status_code == 403, (method, path, response.status_code)
+        assert response.json() == {"detail": "CSRF token missing or invalid"}
+    assert len(session.exec(select(AuditLog)).all()) == audit_before
+    owner_client.headers[CSRF_HEADER] = token
+
+
 def test_receivables_route_list_matches_the_app():
     assert _receivables_unsafe_routes() == set(RECEIVABLES_UNSAFE_ENDPOINTS)
 
@@ -499,9 +608,13 @@ def test_ledger_route_list_matches_the_app():
         "/reports/owner-reimbursement",
         "/reports/owner-reimbursement.csv",
         "/reports/owner-reimbursement.pdf",
+        "/reports/payroll-liability",
+        "/reports/payroll-liability.csv",
+        "/reports/payroll-liability.pdf",
     ):
         assert report_page in pages, report_page
     assert f"{LEDGER}/reports/owner-reimbursement.csv" not in pages  # page-only: no API twin
+    assert f"{LEDGER}/reports/payroll-liability.csv" not in pages
     assert len(pages) >= 20
 
 
@@ -609,6 +722,8 @@ def test_viewer_cannot_mutate(request, role_client, owner_client, session):
         client.post("/htmx/save-run", data=HTMX_FORM, headers=HX),
         client.delete(f"/htmx/runs/{run_id}", headers=HX),
         client.post("/htmx/increment-journal-no", headers=HX),
+        client.post(f"/htmx/runs/{run_id}/approve", data=APPROVE_FORM, headers=HX),
+        client.post(f"/htmx/runs/{run_id}/void", data={"void_date": "2026-02-01"}, headers=HX),
     ]
     for response in attempts:
         assert response.status_code == 403, (response.request.method, response.request.url)

@@ -42,6 +42,14 @@ class SystemRole(StrEnum):
     DUE_TO_OWNER = "due_to_owner"
     RETAINED_EARNINGS = "retained_earnings"
     OPENING_BALANCE_EQUITY = "opening_balance_equity"
+    PAYROLL_WAGES = "payroll_wages"
+    PAYROLL_TAX_EXPENSE = "payroll_tax_expense"
+    PAYROLL_FEDERAL_PAYABLE = "payroll_federal_payable"
+    PAYROLL_GA_WH_PAYABLE = "payroll_ga_wh_payable"
+    PAYROLL_FUTA_PAYABLE = "payroll_futa_payable"
+    PAYROLL_SUTA_PAYABLE = "payroll_suta_payable"
+    PAYROLL_HEALTH_PAYABLE = "payroll_health_payable"
+    PAYROLL_HSA_PAYABLE = "payroll_hsa_payable"
 
 
 class SourceType(StrEnum):

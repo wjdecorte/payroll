@@ -145,10 +145,14 @@
 
   <!-- ── RIGHT COLUMN: Results ───────────────────────────────────── -->
   <div id="results-panel">
+    {% if result %}
+    {% include "partials/_results.html" %}
+    {% else %}
     <div class="results-placeholder">
       <i class="bi bi-calculator"></i>
       <p class="mb-0">Enter payroll details and click<br><strong>Calculate Payroll</strong> to see results.</p>
     </div>
+    {% endif %}
   </div>
 
 </div><!-- end layout -->

@@ -3,6 +3,8 @@
 {% block content %}
 {% set is_owner = current_user and current_user.role == "owner" %}
 <div class="container-xl py-3">
+  {% set settings_tab = "ledger" %}
+  {% include "settings/_tabs.html" %}
   {% if saved %}<div class="alert alert-success py-2" role="status">{{ saved }}</div>{% endif %}
   <div class="row g-3">
     <div class="col-lg-6">

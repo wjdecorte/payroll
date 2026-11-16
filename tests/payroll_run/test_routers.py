@@ -6,7 +6,12 @@ strings ("8000.00"); inputs may also be JSON numbers.
 
 from decimal import Decimal
 
+import pytest
+
 PREFIX = "/payroll/api/v1"
+
+# Saving a run needs the year's FUTA / SUTA settings.
+pytestmark = pytest.mark.usefixtures("year_settings")
 
 
 class TestCalculateEndpoint:

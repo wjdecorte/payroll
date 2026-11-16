@@ -49,7 +49,7 @@ SETTINGS = settings(
 )
 
 RESET = (
-    "TRUNCATE attachment, expense_line, expense, reimbursement, transfer, vendor, "
+    "TRUNCATE tax_payment, payroll_run, attachment, expense_line, expense, reimbursement, transfer, vendor, "
     "application_income, payment_application, invoice_line, invoice, deposit, payment, "
     "customer_refund, customer, item, journal_line, journal_entry, account"
 )

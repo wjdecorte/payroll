@@ -47,7 +47,6 @@ import io
 import logging
 import re
 import unicodedata
-from datetime import date
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -59,7 +58,6 @@ from sqlmodel import Session, col, select
 from payroll import app_settings
 from payroll.auth.models import User
 from payroll.auth.permissions import require_owner, require_reader
-from payroll.common.dates import is_supported_date, supported_range_text
 from payroll.common.dependencies import get_session
 from payroll.common.documents import PAYMENT_TYPES, RESERVED_ROLES
 from payroll.exceptions import AppBaseError
@@ -83,6 +81,7 @@ from payroll.expenses.reimbursements import MAX_EXPENSES, ReimbursementService
 from payroll.expenses.transfers import TransferService
 from payroll.expenses.vendors import VendorService
 from payroll.frontend.journal_routers import parse_amount
+from payroll.frontend.parsing import _parse_date, _parse_id, _path_id, _text
 from payroll.frontend.routers import _error_partial, templates
 from payroll.ledger.accounts import AccountService
 from payroll.ledger.models import Account, AccountType
@@ -99,7 +98,6 @@ MAX_PAGE_NUMBER = 100_000
 MAX_PICKER = 1000  # vendors offered in a drop-down
 MAX_CSV_ROWS = 10_000
 CSV_CHUNK = 200  # the service's largest page
-MAX_ID = 2_147_483_647  # the largest value of an integer column
 MAX_SEARCH = 200
 INLINE_TYPES = frozenset({"image/png", "image/jpeg"})
 OWNER_SOURCE = "owner"
@@ -111,51 +109,8 @@ STATUS_CHOICES = ("posted", "void")
 # ---------------------------------------------------------------------------
 
 
-def _text(value: object) -> str:
-    return value.strip() if isinstance(value, str) else ""
-
-
 def _invalid(message: str) -> InvalidExpenseError:
     return InvalidExpenseError(message=message)
-
-
-def _parse_id(raw: object, label: str) -> int | None:
-    """A positive database id from text; blank -> None; anything else -> a 422."""
-    text = _text(raw)
-    if not text:
-        return None
-    if not (text.isascii() and text.isdigit() and len(text) <= 10):
-        raise _invalid(f"{label} is not valid")
-    value = int(text)
-    if not 1 <= value <= MAX_ID:
-        raise _invalid(f"{label} is not valid")
-    return value
-
-
-def _path_id(raw: str, label: str = "The id") -> int:
-    value = _parse_id(raw, label)
-    if value is None:
-        raise _invalid(f"{label} is not valid")
-    return value
-
-
-_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-
-
-def _parse_date(raw: object, label: str) -> date | None:
-    """A strict ``YYYY-MM-DD`` calendar date (never a datetime); blank -> None."""
-    text = _text(raw)
-    if not text:
-        return None
-    if not _ISO_DATE.fullmatch(text):
-        raise _invalid(f"{label} must be a date like 2026-03-05")
-    try:
-        value = date.fromisoformat(text)
-    except ValueError as exc:
-        raise _invalid(f"{label} is not a valid date") from exc
-    if not is_supported_date(value):
-        raise _invalid(f"{label} must be within {supported_range_text()}")
-    return value
 
 
 def _parse_page(raw: object) -> int:

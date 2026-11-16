@@ -1,4 +1,4 @@
-{# Link to the document an entry came from (expense, transfer, reimbursement); nothing otherwise. #}
+{# Link to the document an entry came from (expense, transfer, reimbursement, payroll run, tax payment); nothing otherwise. #}
 {% macro source_link(source_type, source_id) -%}
 {%- set href = source_href(source_type, source_id) -%}
 {%- if href %} <a class="source-link small" href="{{ href }}">{{ document_label(source_type) }}</a>{% endif -%}

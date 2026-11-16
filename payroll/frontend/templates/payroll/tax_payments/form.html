@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}New tax payment · DCI Books{% endblock %}
+{% block content %}
+<div class="container-xl py-3">
+  <div class="card">
+    <div class="card-header bg-primary">New tax payment</div>
+    <div class="card-body">
+      {% if error %}<div class="alert alert-danger py-2" role="alert">{{ error }}</div>{% endif %}
+      <p class="text-muted">Record money paid to a tax agency. It reduces what you owe that agency; paying more than is owed is allowed and shows as an overpayment. Penalties and interest are expenses, not tax payments.</p>
+      <form method="post" action="/payroll/tax-payments/new" id="tax-payment-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label class="form-label" for="payment_date">Date</label>
+            <input class="form-control" type="date" id="payment_date" name="payment_date" required value="{{ values.payment_date }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="agency">Agency</label>
+            <select class="form-select" id="agency" name="agency" required>
+              <option value="">Choose an agency</option>
+              {% for key, label in agencies.items() %}
+              <option value="{{ key }}"{% if values.agency == key %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="bank_account_id">Paid from</label>
+            <select class="form-select" id="bank_account_id" name="bank_account_id" required>
+              <option value="">Choose an account</option>
+              {% for id, label in banks %}
+              <option value="{{ id }}"{% if values.bank_account_id == id | string %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label" for="amount">Amount</label>
+            <input class="form-control" id="amount" name="amount" inputmode="decimal" required value="{{ values.amount }}">
+          </div>
+          <div class="col-12">
+            <label class="form-label" for="memo">Memo (optional)</label>
+            <input class="form-control" id="memo" name="memo" maxlength="500" value="{{ values.memo }}">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-success">Save tax payment</button>
+        <a class="btn btn-outline-secondary" href="/payroll/tax-payments">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

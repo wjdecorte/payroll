@@ -13,6 +13,9 @@ from payroll.auth.dependencies import CSRF_HEADER
 from tests.conftest import login_as, make_user
 from tests.frontend.test_pages import FORM
 
+# Saving a run needs the year's FUTA / SUTA settings.
+pytestmark = pytest.mark.usefixtures("year_settings")
+
 
 class _Collector(HTMLParser):
     def __init__(self) -> None:

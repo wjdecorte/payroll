@@ -52,6 +52,14 @@ ROLE_LABELS: dict[SystemRole, str] = {
     SystemRole.DUE_TO_OWNER: "Due to owner",
     SystemRole.RETAINED_EARNINGS: "Retained earnings",
     SystemRole.OPENING_BALANCE_EQUITY: "Opening balance equity",
+    SystemRole.PAYROLL_WAGES: "Payroll wages expense",
+    SystemRole.PAYROLL_TAX_EXPENSE: "Payroll tax expense",
+    SystemRole.PAYROLL_FEDERAL_PAYABLE: "Federal taxes payable",
+    SystemRole.PAYROLL_GA_WH_PAYABLE: "Georgia withholding payable",
+    SystemRole.PAYROLL_FUTA_PAYABLE: "FUTA payable",
+    SystemRole.PAYROLL_SUTA_PAYABLE: "Georgia SUTA payable",
+    SystemRole.PAYROLL_HEALTH_PAYABLE: "Health insurance payable",
+    SystemRole.PAYROLL_HSA_PAYABLE: "HSA payable",
 }
 
 

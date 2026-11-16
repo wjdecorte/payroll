@@ -1,0 +1,13 @@
+{# _macros.html — small shared pieces for the payroll pages #}
+
+{% macro status_badge(status) -%}
+{%- if status == "approved" -%}
+<span class="badge bg-success badge-approved">Approved</span>
+{%- elif status == "void" -%}
+<span class="badge bg-dark badge-void">Void</span>
+{%- elif status == "imported" -%}
+<span class="badge bg-info text-dark badge-imported">Imported</span>
+{%- elif status == "draft" -%}
+<span class="badge bg-secondary badge-draft">Draft</span>
+{%- endif -%}
+{%- endmacro %}

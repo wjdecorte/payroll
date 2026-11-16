@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import Field, computed_field
@@ -176,6 +176,17 @@ class PayrollResult(AppBaseSchema):
     journal_entries: list[JournalEntry]
     tax_payment_summary: TaxPaymentSummary
     create_date: datetime | None = None
+    # Lifecycle (None for a calculation that is not saved).
+    status: str | None = None
+    pay_date: date | None = None
+    entry_id: int | None = None
+    # FUTA and Georgia SUTA; None when the calculation is not saved and the tax year
+    # has no payroll settings.
+    futa_wages: Money | None = None
+    futa: Money | None = None
+    suta_wages: Money | None = None
+    suta: Money | None = None
+    suta_rate: Decimal | None = None
 
 
 class PayrollRunSummary(AppBaseSchema):
@@ -191,3 +202,10 @@ class PayrollRunSummary(AppBaseSchema):
     tax_year: int
     notes: str | None
     create_date: datetime
+    status: str
+    pay_date: date | None
+    entry_id: int | None
+    futa_wages: Money
+    futa: Money
+    suta_wages: Money
+    suta: Money
